@@ -64,7 +64,14 @@ bool OpenSessionController::OpenRawImage(const QString& source) {
         deps_.ffmpeg_panel->SetCurrentFile(QString());
 
     if (!deps_.player_panel->LoadRawImageFile(source)) {
-        emit StatusMessage(tr("打开失败: %1").arg(source));
+        // .raw 一律按原始像素序列分流，最常见的误用是把它当裸 PCM 音频。
+        // 给一条能直接照做的提示，否则用户只会看到"打开失败"而不知道改后缀。
+        if (source.endsWith(QLatin1String(".raw"), Qt::CaseInsensitive)) {
+            emit StatusMessage(
+                tr("打开失败: %1（.raw 按原始像素序列打开；若是裸 PCM 音频，请把后缀改成 .pcm）").arg(source));
+        } else {
+            emit StatusMessage(tr("打开失败: %1").arg(source));
+        }
         // 打开失败时播放面板已被清空，首页必须同步回到"未打开文件"，
         // 不能继续显示上一个文件的摘要与分析结论。
         if (deps_.overview_page) {

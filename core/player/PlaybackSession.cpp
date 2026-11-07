@@ -166,6 +166,12 @@ void PlaybackSession::Seek(int position_ms, model::SeekMode mode) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!format_ctx_)
             return;
+        // 裸流没有容器时长/索引，av_seek_frame 必然失败。直接给出明确原因，
+        // 不投递请求、也不改动当前位置（否则进度条先跳到目标、下一帧又弹回来）。
+        if (duration_ms_ <= 0) {
+            emit Error(QStringLiteral("当前媒体没有时长或索引信息，不支持拖动定位（常见于裸流/直播流）"));
+            return;
+        }
         // 只投递 seek 请求: AVFormatContext 由解码线程独占调用 av_seek_frame / av_read_frame,
         // 避免 UI 线程与解码线程并发访问同一个 FFmpeg 上下文。
         pending_seek_mode_.store(mode);
@@ -222,6 +228,12 @@ void PlaybackSession::DecodeThread() {
     std::vector<std::uint8_t> audio_buffer(192000);
     int last_emitted_position_ms = -1;
     std::int64_t decoded_frames = 0;
+    // 裸流（Annex-B ES）没有容器时间轴，包 pts/dts 恒为 NOPTS。按 packet->duration
+    // 累加补出单调时间戳，否则 PaceTo 全程不 sleep（全速快放）、位置恒 0。
+    RawStreamTimestampFiller raw_ts_filler;
+    bool logged_raw_timestamp_synthesis = false;
+    // 当前包的时间戳（秒）：解码器没能从裸流推出帧时间戳时，作为帧交付的兜底基准。
+    double current_packet_ts_sec = std::numeric_limits<double>::quiet_NaN();
 
     try {
         const int clock_stream_index = SelectPlaybackClockStreamIndex(audio_stream_index_, video_stream_index_);
@@ -253,7 +265,7 @@ void PlaybackSession::DecodeThread() {
             const int ret = av_seek_frame(format_ctx_, -1, timestamp, flags);
             if (ret < 0) {
                 drop_until_sec_.store(-1.0);
-                emit Error("Seek failed");
+                emit Error(QStringLiteral("定位失败：该流不支持随机访问（可能缺少索引或为直播流）"));
                 return true;
             }
 
@@ -292,9 +304,15 @@ void PlaybackSession::DecodeThread() {
                 AVStream* vs = format_ctx_->streams[video_stream_index_];
                 if (vs && vs->time_base.den != 0 && frame_data.pts != AV_NOPTS_VALUE) {
                     frame_ts = frame_data.pts * av_q2d(vs->time_base);
-                    frame_data.timestamp = frame_ts;
                 }
             }
+            if (frame_data.pts == AV_NOPTS_VALUE && std::isfinite(current_packet_ts_sec)) {
+                // 裸流：解码器也没有 best_effort_timestamp（实测 Annex-B 恒 NOPTS），
+                // 用 RawStreamTimestampFiller 合成的包时间戳兜底。否则 frame_ts 恒 0，
+                // PaceTo 不会 sleep、进度条停在 0、A/V 同步采样也拿不到有效样本。
+                frame_ts = current_packet_ts_sec;
+            }
+            frame_data.timestamp = frame_ts;
             // 精确帧定位: 从关键帧向前逐帧解码到目标时间戳。
             // 追赶阶段放行显示(画面快速前进到目标, 不再冻结), 但跳过分析开销
             // (由 catching_up 告知分析侧); 越过目标帧后清除标志。
@@ -501,8 +519,17 @@ void PlaybackSession::DecodeThread() {
                 break;
             }
 
+            // 裸流（Annex-B ES）没有容器时间轴：先按帧间隔（packet duration，缺失时用
+            // 流帧率换算）累加出单调 pts/dts。给过真实时间戳的流会被整条跳过，
+            // 容器时间轴不受影响。
+            if (!logged_raw_timestamp_synthesis && raw_ts_filler.Fill(packet, format_ctx_)) {
+                logged_raw_timestamp_synthesis = true;
+                LOG_INFO("DecodeThread: 裸流缺少时间戳，已按帧间隔合成播放时间轴");
+            }
+
             const std::int64_t pkt_ts = (packet->pts != AV_NOPTS_VALUE) ? packet->pts : packet->dts;
             const double packet_ts_sec = PacketTimestampSeconds(format_ctx_, packet);
+            current_packet_ts_sec = packet_ts_sec;
 
             if (hooks_.on_packet) {
                 PacketContext ctx;

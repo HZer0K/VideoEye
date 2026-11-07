@@ -1281,6 +1281,37 @@ endif()
 add_test(NAME PlayerOpenAsyncTests COMMAND test_player_open_async)
 
 # =================================================
+# 测试 43：裸流播放时间轴（裸流播放能力审计的回归守护）
+#
+# 说明: Annex-B ES 的包 pts/dts 恒为 NOPTS，PlaybackClock 拿不到时间基准会全速
+#       快放、进度条恒 0。这里用真实裸流语料钉住「能打开 + 确实缺时间戳 + 能
+#       解码出帧」，并验证按 packet duration 合成的时间轴能换算成有限的单调秒值；
+#       同时反向守护「有真实时间戳的流绝不被合成值污染」。
+# =================================================
+videoeye_add_test(test_raw_stream_timestamp
+    unit/test_raw_stream_timestamp.cpp
+)
+target_link_libraries(test_raw_stream_timestamp PRIVATE
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil)
+target_compile_definitions(test_raw_stream_timestamp PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec"
+    VIDEOEYE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME RawStreamTimestampTests COMMAND test_raw_stream_timestamp)
+
+# =================================================
+# 测试 44：打开后的探测可信度复核
+#
+# 说明: 无容器头、又没按约定命名的裸音频会被 FFmpeg 猜成某个 pcm_*/adpcm_* 编码
+#       （实测 adpcm_dtk），打开与播放都"成功"但出来是噪声 —— 界面无任何报错。
+#       这里把"该不该提示"的判据钉成纯函数：正向覆盖误判场景，反向覆盖所有
+#       本来正常的文件，避免一个误报废掉整条提示的可信度。
+# =================================================
+videoeye_add_test(test_probe_trust
+    unit/test_probe_trust.cpp
+)
+add_test(NAME ProbeTrustTests COMMAND test_probe_trust)
+
+# =================================================
 # 测试 41：扫描失败必须复位所有共用页面（复查 P1-4）
 #
 # 说明: 码率/GOP、音频 QC、色彩/HDR 三页共用同一次扫描，它们的扫描态由面板转发

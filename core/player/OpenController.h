@@ -125,6 +125,10 @@ struct OpenResult {
     // 媒体信息文本: 在后台探测时顺带从同一个上下文格式化（MediaInfoAnalyzer::
     // FormatFromContext），UI 不再为它单独跑一次 avformat 打开/探测。
     std::string media_info_text;
+    // 探测可信度复核给出的提示（空 = 与文件特征自洽）。目前只覆盖一类：
+    // 没有容器头的裸音频被 FFmpeg 猜成某个 pcm_*/adpcm_* 编码 —— 打开与播放都"成功"，
+    // 出来却是噪声。提示不阻断打开，只在提交时写进媒体信息文本 + 日志。
+    std::string probe_warning;
     int duration_ms = 0;
     QImage cover_art; // 可能为空
 

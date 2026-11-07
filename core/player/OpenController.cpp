@@ -1,5 +1,7 @@
 #include "core/player/OpenController.h"
 
+#include <QFileInfo>
+
 #include <cstdint>
 #include <utility>
 
@@ -19,6 +21,7 @@ extern "C" {
 #include "core/media/probe/FileProbe.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
+#include "core/player/ProbeTrust.h"
 #include "infrastructure/logging/Logger.h"
 #include "infrastructure/logging/PerfMetrics.h"
 
@@ -57,6 +60,38 @@ private:
     PerfScope scope_;
 };
 
+// 探测可信度复核：只在本地文件上做。
+//
+// 网络源没有"用户按约定命名"这回事（http://host/stream 直接回 PCM 是常见形态），
+// 拿扩展名去判断必然误报，所以带 scheme 的 URL 一律跳过。复核只产出提示 ——
+// 把"打开成功但听起来是噪声"变成面板与日志里一句可操作的话，不阻断播放。
+void EvaluateProbeTrust(const QString& url, AVFormatContext* fmt, int video_index, int audio_index,
+                        OpenResult& result) {
+    if (!fmt || audio_index < 0 || audio_index >= static_cast<int>(fmt->nb_streams)) {
+        return;
+    }
+    if (url.contains(QStringLiteral("://"))) {
+        return;
+    }
+    const AVStream* audio_stream = fmt->streams[audio_index];
+    if (!audio_stream || !audio_stream->codecpar) {
+        return;
+    }
+
+    ProbeFacts facts;
+    facts.demuxer_name = (fmt->iformat && fmt->iformat->name) ? fmt->iformat->name : "";
+    facts.codec_name = avcodec_get_name(audio_stream->codecpar->codec_id);
+    facts.file_extension = QFileInfo(url).suffix().toLower().toStdString();
+    facts.has_video = video_index >= 0;
+    facts.has_audio = true;
+
+    if (ClassifyProbeTrust(facts) != ProbeVerdict::SuspectRawAudioMismatch) {
+        return;
+    }
+    result.probe_warning = ProbeTrustMessage(facts);
+    LOG_WARN("Open: " + result.probe_warning);
+}
+
 } // namespace
 
 // --- OpenResult 的所有权 ---
@@ -91,6 +126,7 @@ void OpenResult::MoveFrom(OpenResult& other) noexcept {
     has_video = other.has_video;
     stream_info = std::move(other.stream_info);
     media_info_text = std::move(other.media_info_text);
+    probe_warning = std::move(other.probe_warning);
     duration_ms = other.duration_ms;
     cover_art = std::move(other.cover_art);
 
@@ -99,6 +135,7 @@ void OpenResult::MoveFrom(OpenResult& other) noexcept {
     other.video_stream_index = -1;
     other.audio_stream_index = -1;
     other.has_video = false;
+    other.probe_warning.clear();
     other.duration_ms = 0;
 }
 
@@ -130,6 +167,15 @@ bool OpenController::Commit(OpenResult&& result, model::StreamInfo& out_info, QS
     playback_.SetDuration(result.duration_ms);
     playback_.SetPosition(0);
     playback_.SetIdle();
+
+    // 探测复核提示拼进媒体信息文本：用户是在"媒体信息"面板里看这堆参数，提示放在
+    // 参数旁边才有用（日志里那条后台线程已经记过，用户看不到）。
+    if (!result.probe_warning.empty()) {
+        if (!result.media_info_text.empty()) {
+            result.media_info_text += "\n\n";
+        }
+        result.media_info_text += "【提示】" + result.probe_warning;
+    }
 
     out_info = result.stream_info;
     // 信号顺序: 媒体模式必须**先**发。界面收到 has_video=false 才把自己切进
@@ -216,6 +262,10 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     const auto extract_result = extractor.Extract(fmt, result.video_stream_index, audio_index, params.url);
     result.stream_info = extract_result.info;
     result.duration_ms = extract_result.duration_ms;
+
+    // 探测可信度复核（只提示、不阻断）：无容器头的裸音频很容易被 FFmpeg 猜成
+    // 某个 pcm_*/adpcm_* 编码，打开与播放都"成功"但出来是噪声。
+    EvaluateProbeTrust(params.url, fmt, result.video_stream_index, audio_index, result);
 
     LOG_INFO("Open success (Prepare): " + url_str);
     result.ok = true;

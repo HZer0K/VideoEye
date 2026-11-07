@@ -37,8 +37,13 @@ inline QString BuildMediaFileFilter() {
 
     const QString media = join_patterns(FormatDetector::MediaExtensions());
     const QString audio = join_patterns(FormatDetector::AudioExtensions());
-    const QString raw_pixels = QStringLiteral("*.pcm *.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw");
-    const QString extra = audio + QLatin1Char(' ') + raw_pixels;
+    // 两者语义不同，别再混成"原始像素"一串：
+    //   * .pcm 是原始音频，打开分流会弹窗问采样格式/采样率/声道；
+    //   * .raw 是原始像素序列（按宽高直读），不是音频。裸音频若命名成 .raw
+    //     或其它后缀，会走 FFmpeg 自动探测并被误判成别的编码（实测 adpcm_dtk）。
+    const QString raw_audio = QStringLiteral("*.pcm");
+    const QString raw_pixels = QStringLiteral("*.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw");
+    const QString extra = audio + QLatin1Char(' ') + raw_audio + QLatin1Char(' ') + raw_pixels;
     const QString manifest = join_patterns(FormatDetector::ManifestExtensions());
 
     return QCoreApplication::translate("MainWindow", "媒体文件 (%1 %2);;流媒体清单 (%3);;所有文件 (*)")
