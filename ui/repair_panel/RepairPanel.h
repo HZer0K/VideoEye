@@ -7,9 +7,11 @@
 
 #include <future>
 #include <string>
+#include <vector>
 
 #include <QWidget>
 
+#include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
 #include "core/qt/RepairController.h"
 #include "core/reporting/RepairReportExporter.h"
@@ -44,6 +46,9 @@ private slots:
     void OnCancel();
     void OnOpenOutput();
     void OnOpenReport();
+    void OnAddBatchFiles();
+    void OnRemoveBatchSelection();
+    void OnClearBatch();
     void OnProgress(quint64 task_id, int percent, const QString& stage, const QString& detail);
     void OnFinished(quint64 task_id, const QString& status_text, const QString& summary);
 
@@ -52,9 +57,17 @@ private:
     void SetRunning(bool running);
     void ResetForNewRun();
     void ShowResult();
+    model::RepairRequest BuildRequest(const QString& source) const;
     void StartReportWrite(const std::shared_ptr<const model::RepairResult>& result);
     void PollReportWrite();
     void ClearPendingReport();
+    // P2-14c：串行批量队列。任务在同一 controller 槽上排队，前一项结束（含报告写完）
+    // 才启动下一项；取消只作用于当前项，并把剩余项标记为未执行。
+    void StartNextBatchItem();
+    void AdvanceBatch();
+    // first_unstarted：从第几行开始标"未执行"。当前项还在渲染结果时不能覆盖它。
+    void FinishBatch(int first_unstarted);
+    void MarkBatchRow(int row, const QString& status, const QString& color);
     void UpdateOutputs(const model::RepairResult& result);
     void SetMetric(int index, const QString& value, const QString& color);
     void PopulateFindings(const std::vector<model::DamageFinding>& findings);
@@ -65,17 +78,29 @@ private:
     QLineEdit* reference_edit_ = nullptr;
     QLineEdit* output_edit_ = nullptr;
     QComboBox* mode_combo_ = nullptr;
+    QComboBox* container_combo_ = nullptr;
     QComboBox* level_combo_ = nullptr;
     QComboBox* gap_combo_ = nullptr;
     QCheckBox* segment_check_ = nullptr;
     QCheckBox* timeline_check_ = nullptr;
     QCheckBox* fill_missing_check_ = nullptr;
     QCheckBox* single_track_check_ = nullptr;
+    QCheckBox* keep_partial_check_ = nullptr;
 
     QPushButton* start_button_ = nullptr;
     QPushButton* cancel_button_ = nullptr;
     QPushButton* open_output_button_ = nullptr;
     QPushButton* open_report_button_ = nullptr;
+
+    // 批量队列：表格是待执行清单（行 = 源文件），batch_requests_ 是开始时的配置快照。
+    QTableWidget* batch_table_ = nullptr;
+    QPushButton* batch_add_button_ = nullptr;
+    QPushButton* batch_remove_button_ = nullptr;
+    QPushButton* batch_clear_button_ = nullptr;
+    std::vector<model::RepairRequest> batch_requests_;
+    int batch_index_ = -1;
+    bool batch_running_ = false;
+    bool batch_canceled_ = false;
 
     QProgressBar* progress_bar_ = nullptr;
     QLabel* stage_label_ = nullptr;

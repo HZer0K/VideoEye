@@ -15,6 +15,8 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
+#include <QStringList>
 #include <QTableWidget>
 #include <QTimer>
 #include <QUrl>
@@ -22,6 +24,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <sstream>
 #include <utility>
@@ -172,11 +175,27 @@ void RepairPanel::BuildUi() {
     connect(output_button, &QPushButton::clicked, this, &RepairPanel::OnBrowseOutput);
 
     ++row;
+    grid->addWidget(new QLabel(QStringLiteral("产物容器"), config_group), row, 0);
+    container_combo_ = new QComboBox(config_group);
+    container_combo_->addItem(QStringLiteral("自动（沿用源容器）"),
+                              static_cast<int>(model::RepairOutputContainer::Auto));
+    container_combo_->addItem(QStringLiteral("MP4"), static_cast<int>(model::RepairOutputContainer::Mp4));
+    container_combo_->addItem(QStringLiteral("MKV"), static_cast<int>(model::RepairOutputContainer::Mkv));
+    container_combo_->addItem(QStringLiteral("MPEG-TS"), static_cast<int>(model::RepairOutputContainer::Ts));
+    container_combo_->setToolTip(QStringLiteral("产物封装格式。\n"
+                                                "MPEG-TS 会把 H.264/HEVC 转换为 Annex B 码流，载荷字节与源不一致，"
+                                                "报告会标注跳过载荷哈希比对。"));
+    grid->addWidget(container_combo_, row, 1);
+
+    ++row;
     grid->addWidget(new QLabel(QStringLiteral("修复模式"), config_group), row, 0);
     mode_combo_ = new QComboBox(config_group);
     mode_combo_->addItem(QStringLiteral("保码流（推荐）"), static_cast<int>(model::RepairMode::PreserveBitstream));
-    mode_combo_->addItem(QStringLiteral("救内容（M1 仍按保码流执行）"),
+    mode_combo_->addItem(QStringLiteral("救内容（解码后重编码，画质有损）"),
                          static_cast<int>(model::RepairMode::RecoverContent));
+    mode_combo_->setToolTip(QStringLiteral("保码流：不重编码，只重建索引与时间轴。\n"
+                                           "救内容：解码可读视频帧后重新编码（S08），适合编码层已损坏、"
+                                           "但仍有可解码帧的文件；产物有代际画质损失，时间轴会按推定帧率重写。"));
     grid->addWidget(mode_combo_, row, 1);
 
     auto* level_row = new QHBoxLayout();
@@ -226,10 +245,15 @@ void RepairPanel::BuildUi() {
     single_track_check_->setToolTip(
         QStringLiteral("仅当某条轨的全部样本都确认不可读时，把它从产物中剔除，保证其余轨道仍可播放；"
                        "被剔除轨道的内容不可找回。"));
+    keep_partial_check_ = new QCheckBox(QStringLiteral("取消时保留已写前缀"), config_group);
+    keep_partial_check_->setChecked(false);
+    keep_partial_check_->setToolTip(QStringLiteral("取消或超出预算时，把已经写入的产物前缀另存为 *.partial.<ext>。\n"
+                                                   "该前缀未经验证，不能当作修复完成；默认关闭。"));
     capability_row->addWidget(segment_check_);
     capability_row->addWidget(timeline_check_);
     capability_row->addWidget(fill_missing_check_);
     capability_row->addWidget(single_track_check_);
+    capability_row->addWidget(keep_partial_check_);
     capability_row->addStretch(1);
     grid->addLayout(capability_row, row, 1, 1, 2);
     // 合成时间戳属于时间轴修复的扩展；未启用时间轴修复时该项无意义，直接禁用。
@@ -239,6 +263,44 @@ void RepairPanel::BuildUi() {
     });
 
     root->addWidget(config_group);
+
+    // ---------------- 批量队列 ----------------
+    // 队列非空时「开始修复」按队列串行跑；为空时退回单文件流程（源文件那一行）。
+    auto* batch_group = new QGroupBox(QStringLiteral("批量队列"), this);
+    auto* batch_layout = new QVBoxLayout(batch_group);
+    batch_layout->setContentsMargins(14, 18, 14, 12);
+    batch_layout->setSpacing(8);
+
+    batch_table_ = new QTableWidget(0, 2, batch_group);
+    QStringList batch_headers;
+    batch_headers << QStringLiteral("源文件") << QStringLiteral("状态");
+    batch_table_->setHorizontalHeaderLabels(batch_headers);
+    batch_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    batch_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    batch_table_->setAlternatingRowColors(true);
+    batch_table_->verticalHeader()->setVisible(false);
+    batch_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    batch_table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    batch_table_->setMinimumHeight(96);
+    batch_table_->setToolTip(QStringLiteral("队列非空时按顺序串行修复；前一项的产物与报告写完才启动下一项。"));
+    batch_layout->addWidget(batch_table_, 1);
+
+    auto* batch_buttons = new QHBoxLayout();
+    batch_buttons->setSpacing(8);
+    batch_add_button_ = new QPushButton(QStringLiteral("添加文件…"), batch_group);
+    batch_remove_button_ = new QPushButton(QStringLiteral("移除选中"), batch_group);
+    batch_clear_button_ = new QPushButton(QStringLiteral("清空队列"), batch_group);
+    for (auto* button : {batch_add_button_, batch_remove_button_, batch_clear_button_})
+        button->setMinimumHeight(28);
+    batch_buttons->addWidget(batch_add_button_);
+    batch_buttons->addWidget(batch_remove_button_);
+    batch_buttons->addWidget(batch_clear_button_);
+    batch_buttons->addStretch(1);
+    batch_layout->addLayout(batch_buttons);
+    connect(batch_add_button_, &QPushButton::clicked, this, &RepairPanel::OnAddBatchFiles);
+    connect(batch_remove_button_, &QPushButton::clicked, this, &RepairPanel::OnRemoveBatchSelection);
+    connect(batch_clear_button_, &QPushButton::clicked, this, &RepairPanel::OnClearBatch);
+    root->addWidget(batch_group);
 
     // ---------------- 操作 + 进度 ----------------
     auto* action_row = new QHBoxLayout();
@@ -343,7 +405,7 @@ void RepairPanel::BuildUi() {
 }
 
 void RepairPanel::SetCurrentFile(const QString& path) {
-    if (path.isEmpty() || controller_->IsRunning())
+    if (path.isEmpty() || controller_->IsRunning() || batch_running_)
         return;
     source_edit_->setText(path);
 }
@@ -376,12 +438,37 @@ void RepairPanel::OnBrowseOutput() {
 }
 
 void RepairPanel::OnStart() {
-    if (controller_->IsRunning())
+    if (controller_->IsRunning() || batch_running_)
         return;
+
+    // 队列非空时按队列串行执行；每项复用当前配置快照，只替换源文件。
+    QStringList batch_sources;
+    for (int row = 0; row < batch_table_->rowCount(); ++row) {
+        auto* item = batch_table_->item(row, 0);
+        if (item && !item->text().trimmed().isEmpty())
+            batch_sources << item->text().trimmed();
+    }
+    if (!batch_sources.isEmpty()) {
+        batch_requests_.clear();
+        for (const QString& source : batch_sources) {
+            batch_requests_.push_back(BuildRequest(source));
+            MarkBatchRow(static_cast<int>(batch_requests_.size()) - 1, QStringLiteral("待执行"),
+                         QString::fromLatin1(theme::color::kTextMuted));
+        }
+        batch_index_ = 0;
+        batch_running_ = true;
+        batch_canceled_ = false;
+        last_write_report_ = true;
+        ResetForNewRun();
+        SetRunning(true);
+        StartNextBatchItem();
+        return;
+    }
 
     const QString source = source_edit_->text().trimmed();
     if (source.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("无法开始"), QStringLiteral("请先选择要修复的源文件。"));
+        QMessageBox::warning(this, QStringLiteral("无法开始"),
+                             QStringLiteral("请先选择要修复的源文件，或在批量队列里添加文件。"));
         return;
     }
     const QFileInfo info(source);
@@ -391,19 +478,7 @@ void RepairPanel::OnStart() {
         return;
     }
 
-    model::RepairRequest request;
-    request.source_path = source.toStdString();
-    request.output_directory = output_edit_->text().trimmed().toStdString();
-    request.reference_path = reference_edit_->text().trimmed().toStdString();
-    request.mode = static_cast<model::RepairMode>(mode_combo_->currentData().toInt());
-    request.verification_level = static_cast<model::RepairVerificationLevel>(level_combo_->currentData().toInt());
-    request.gap_policy = static_cast<model::RepairGapPolicy>(gap_combo_->currentData().toInt());
-    request.allow_segment_salvage = segment_check_->isChecked();
-    request.repair_timeline = timeline_check_->isChecked();
-    request.fill_missing_timestamps = request.repair_timeline && fill_missing_check_->isChecked();
-    request.allow_single_track = single_track_check_->isChecked();
-    request.write_report = true;
-    // write_report 的契约由界面落实：引擎只负责命名路径，不写报告。
+    const model::RepairRequest request = BuildRequest(source);
     last_write_report_ = request.write_report;
 
     ResetForNewRun();
@@ -416,11 +491,153 @@ void RepairPanel::OnStart() {
     SetRunning(true);
 }
 
-void RepairPanel::OnCancel() {
-    if (!controller_->IsRunning())
+model::RepairRequest RepairPanel::BuildRequest(const QString& source) const {
+    model::RepairRequest request;
+    request.source_path = source.toStdString();
+    request.output_directory = output_edit_->text().trimmed().toStdString();
+    request.reference_path = reference_edit_->text().trimmed().toStdString();
+    request.mode = static_cast<model::RepairMode>(mode_combo_->currentData().toInt());
+    request.output_container = static_cast<model::RepairOutputContainer>(container_combo_->currentData().toInt());
+    request.verification_level = static_cast<model::RepairVerificationLevel>(level_combo_->currentData().toInt());
+    request.gap_policy = static_cast<model::RepairGapPolicy>(gap_combo_->currentData().toInt());
+    request.allow_segment_salvage = segment_check_->isChecked();
+    request.repair_timeline = timeline_check_->isChecked();
+    request.fill_missing_timestamps = request.repair_timeline && fill_missing_check_->isChecked();
+    request.allow_single_track = single_track_check_->isChecked();
+    request.keep_partial_on_cancel = keep_partial_check_->isChecked();
+    request.write_report = true;
+    return request;
+}
+
+void RepairPanel::StartNextBatchItem() {
+    if (!batch_running_)
         return;
+    while (batch_index_ < static_cast<int>(batch_requests_.size())) {
+        if (batch_canceled_) {
+            FinishBatch(batch_index_);
+            return;
+        }
+        const int index = batch_index_;
+        const QString source = QString::fromStdString(batch_requests_[index].source_path);
+        const QFileInfo info(source);
+        if (!info.exists() || !info.isFile()) {
+            MarkBatchRow(index, QStringLiteral("跳过（文件不存在）"), QString::fromLatin1(theme::color::kTextMuted));
+            ++batch_index_;
+            continue;
+        }
+
+        last_write_report_ = batch_requests_[index].write_report;
+        ResetForNewRun();
+        progress_bar_->setValue(0);
+        stage_label_->setText(
+            QStringLiteral("批量 %1/%2 · %3").arg(index + 1).arg(batch_requests_.size()).arg(info.fileName()));
+        MarkBatchRow(index, QStringLiteral("运行中…"), QString::fromLatin1(theme::color::kAccent));
+        SetRunning(true);
+
+        const quint64 task_id = controller_->StartRepair(batch_requests_[index]);
+        if (task_id == 0) {
+            MarkBatchRow(index, QStringLiteral("启动失败（任务槽忙）"), QString::fromLatin1(theme::color::kDanger));
+            FinishBatch(index + 1);
+            return;
+        }
+        return;
+    }
+    FinishBatch(batch_index_);
+}
+
+void RepairPanel::AdvanceBatch() {
+    if (!batch_running_)
+        return;
+    ++batch_index_;
+    StartNextBatchItem();
+}
+
+void RepairPanel::FinishBatch(int first_unstarted) {
+    if (!batch_running_)
+        return;
+    const QString pending_text = batch_canceled_ ? QStringLiteral("已取消（未执行）") : QStringLiteral("未执行");
+    for (int row = std::max(first_unstarted, 0); row < batch_table_->rowCount(); ++row)
+        MarkBatchRow(row, pending_text, QString::fromLatin1(theme::color::kTextMuted));
+
+    batch_running_ = false;
+    batch_canceled_ = false;
+    batch_index_ = -1;
+    batch_requests_.clear();
+    SetRunning(false);
+    cancel_button_->setEnabled(false);
+    stage_label_->setText(QStringLiteral("批量队列已结束"));
+}
+
+void RepairPanel::MarkBatchRow(int row, const QString& status, const QString& color) {
+    if (!batch_table_ || row < 0 || row >= batch_table_->rowCount())
+        return;
+    auto* item = batch_table_->item(row, 1);
+    if (!item) {
+        item = new QTableWidgetItem();
+        batch_table_->setItem(row, 1, item);
+    }
+    item->setText(status);
+    item->setForeground(QColor(color));
+}
+
+void RepairPanel::OnAddBatchFiles() {
+    if (controller_->IsRunning() || batch_running_)
+        return;
+    const QStringList paths = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("添加到批量队列"), QFileInfo(source_edit_->text()).absolutePath(),
+        QStringLiteral("媒体文件 (*.mp4 *.mov *.m4v *.m4a *.3gp *.mkv *.avi *.ts);;所有文件 (*)"));
+    for (const QString& path : paths) {
+        bool duplicate = false;
+        for (int row = 0; row < batch_table_->rowCount(); ++row) {
+            auto* existing = batch_table_->item(row, 0);
+            if (existing && existing->text() == path) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+        const int row = batch_table_->rowCount();
+        batch_table_->insertRow(row);
+        auto* source = new QTableWidgetItem(path);
+        source->setToolTip(path);
+        batch_table_->setItem(row, 0, source);
+        MarkBatchRow(row, QStringLiteral("待执行"), QString::fromLatin1(theme::color::kTextMuted));
+    }
+}
+
+void RepairPanel::OnRemoveBatchSelection() {
+    if (controller_->IsRunning() || batch_running_)
+        return;
+    QSet<int> rows;
+    for (auto* item : batch_table_->selectedItems())
+        rows.insert(item->row());
+    QList<int> sorted = rows.values();
+    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
+    for (int row : sorted)
+        batch_table_->removeRow(row);
+}
+
+void RepairPanel::OnClearBatch() {
+    if (controller_->IsRunning() || batch_running_)
+        return;
+    batch_table_->setRowCount(0);
+}
+
+void RepairPanel::OnCancel() {
+    if (!controller_->IsRunning()) {
+        // 批量模式的空档：上一项已结束、报告仍在异步写盘，下一项尚未启动。
+        // 此时直接结束队列，不再等待报告（报告本身会照常写完）。
+        if (batch_running_) {
+            batch_canceled_ = true;
+            FinishBatch(batch_index_ + 1);
+        }
+        return;
+    }
     cancel_button_->setEnabled(false);
     stage_label_->setText(QStringLiteral("正在取消…"));
+    if (batch_running_)
+        batch_canceled_ = true;
     controller_->Cancel();
 }
 
@@ -439,7 +656,10 @@ void RepairPanel::OnOpenReport() {
 void RepairPanel::OnProgress(quint64 task_id, int percent, const QString& stage, const QString& detail) {
     Q_UNUSED(task_id);
     progress_bar_->setValue(std::clamp(percent, 0, 100));
-    QString text = stage;
+    QString text;
+    if (batch_running_ && batch_index_ >= 0 && batch_index_ < static_cast<int>(batch_requests_.size()))
+        text = QStringLiteral("批量 %1/%2 · ").arg(batch_index_ + 1).arg(batch_requests_.size());
+    text += stage;
     if (!detail.isEmpty())
         text += QStringLiteral(" · ") + detail;
     stage_label_->setText(text);
@@ -449,10 +669,29 @@ void RepairPanel::OnFinished(quint64 task_id, const QString& status_text, const 
     Q_UNUSED(task_id);
     Q_UNUSED(status_text);
     Q_UNUSED(summary);
-    SetRunning(false);
     progress_bar_->setValue(100);
-    stage_label_->setText(QStringLiteral("已完成"));
+
+    if (!batch_running_) {
+        SetRunning(false);
+        stage_label_->setText(QStringLiteral("已完成"));
+        ShowResult();
+        return;
+    }
+
+    // 批量：先记录当前项的结论，控件保持禁用；报告写完（PollReportWrite）后才推进。
+    auto result = controller_->result();
+    if (batch_index_ >= 0 && batch_index_ < static_cast<int>(batch_requests_.size())) {
+        if (result) {
+            MarkBatchRow(batch_index_, QString::fromStdString(model::DisplayName(result->status)),
+                         StatusColor(result->status));
+        } else {
+            MarkBatchRow(batch_index_, QStringLiteral("无结果"), QString::fromLatin1(theme::color::kDanger));
+        }
+    }
     ShowResult();
+    stage_label_->setText(report_future_.valid() ? QStringLiteral("等待报告写入…") : QStringLiteral("准备下一项…"));
+    if (!report_future_.valid())
+        AdvanceBatch();
 }
 
 void RepairPanel::SetRunning(bool running) {
@@ -463,12 +702,18 @@ void RepairPanel::SetRunning(bool running) {
     reference_edit_->setEnabled(idle);
     output_edit_->setEnabled(idle);
     mode_combo_->setEnabled(idle);
+    container_combo_->setEnabled(idle);
     level_combo_->setEnabled(idle);
     gap_combo_->setEnabled(idle);
     segment_check_->setEnabled(idle);
     timeline_check_->setEnabled(idle);
     fill_missing_check_->setEnabled(idle && timeline_check_->isChecked());
     single_track_check_->setEnabled(idle);
+    keep_partial_check_->setEnabled(idle);
+    batch_table_->setEnabled(idle);
+    batch_add_button_->setEnabled(idle);
+    batch_remove_button_->setEnabled(idle);
+    batch_clear_button_->setEnabled(idle);
     if (running) {
         open_output_button_->setEnabled(false);
         open_report_button_->setEnabled(false);
@@ -589,6 +834,9 @@ void RepairPanel::PollReportWrite() {
     }
     pending_report_html_.clear();
     pending_report_json_.clear();
+    // 批量：报告落盘完成才算这一项真正收尾，之后才能清空界面进入下一项。
+    if (batch_running_)
+        AdvanceBatch();
 }
 
 void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
@@ -655,7 +903,9 @@ void RepairPanel::UpdateOutputs(const model::RepairResult& result) {
 
     QString quality;
     if (result.fidelity.video_reencoded || result.fidelity.audio_reencoded) {
-        quality = QStringLiteral("存在重编码 · 画质风险需人工复核");
+        quality = result.fidelity.perceptual_fidelity == "measured_psnr"
+                      ? QStringLiteral("已重编码 · 抽帧 PSNR 已量化")
+                      : QStringLiteral("存在重编码 · 画质风险需人工复核");
     } else if (result.output_published) {
         quality = QStringLiteral("保码流 · 画质风险未量化");
     } else {

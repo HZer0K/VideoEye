@@ -41,6 +41,14 @@ struct RepairRequest {
     RepairMode mode = RepairMode::PreserveBitstream;
     RepairVerificationLevel verification_level = RepairVerificationLevel::V2_FullDecode;
 
+    // 产物容器。Auto = 沿用源扩展名（mov/m4v 保留，其它统一 mp4）。
+    RepairOutputContainer output_container = RepairOutputContainer::Auto;
+
+    // 取消 / 超预算时是否保留已经写入的产物前缀。
+    // 默认关闭：未完成验证的前缀不能当作"修复完成"发布；开启后产物以
+    // *.partial.<ext> 命名（不覆盖既有文件），并在报告里标注为未验证前缀。
+    bool keep_partial_on_cancel = false;
+
     // ---- 第一阶段恢复能力开关（默认全部开启，单轨抢救需显式允许）----
 
     // 读到损坏区间后是否继续向后寻找恢复点，把后半段一起抢救回来。

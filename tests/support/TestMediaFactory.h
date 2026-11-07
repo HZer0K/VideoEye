@@ -39,6 +39,9 @@ struct TestMediaSpec {
     // 非空时强制使用该编码器（如 "mpeg4"）；默认空走 libx264 → mpeg4 降级链。
     // 需要构造「解码器会做错误隐藏」的样本时必须指定，因为 H.264 不设帧标记。
     std::string video_codec;
+    // 让 x264 在每个关键帧前重复写 SPS/PPS（repeat-headers=1），使参数集出现在
+    // 码流载荷里而不只是 extradata。自建初始化段需要 in-band 参数集才有证据可用。
+    bool repeat_parameter_sets = false;
 };
 
 struct TestMedia {
@@ -73,7 +76,7 @@ struct FragmentedTestMedia {
 };
 
 FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, const std::string& name,
-                                              const TestMediaSpec& spec = TestMediaSpec());
+                                              const TestMediaSpec& spec = TestMediaSpec(), bool global_sidx = false);
 
 // ---- 产物校验 ----
 struct MediaProbe {

@@ -436,6 +436,22 @@ def build_mp4_faststart(ffmpeg):
     ], ".mp4")
 
 
+def build_h264_inband_faststart(ffmpeg):
+    r"""MP4 / 纯 H.264，关键帧重复携带 SPS/PPS（repeat-headers=1）。
+
+    "普通 MP4 无参考 moov 重建"的正面样本：mdat 是单轨 AVCC，参数集与 VUI
+    timing 都在码流里，重建器才能在没有任何参考文件时推断样本表与时基。
+    刻意不混音轨 —— 音视频交织的 mdat 无法在不猜边界的前提下拆开。"""
+    return run_ffmpeg(ffmpeg, [
+        "-f", "lavfi", "-i", "testsrc2=size=320x176:rate=25:duration=1.2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-g", "15",
+        "-x264-params", "repeat-headers=1",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-f", "mp4",
+    ], ".mp4")
+
+
 def build_fmp4(ffmpeg):
     r"""分片 MP4（fMP4）：empty_moov + 每个关键帧一个 moof/mdat。
 
@@ -606,6 +622,11 @@ register("container/real_h264_aac_tail_truncated.mp4", "mp4_tail_truncated",
          derive=lambda d: truncate_tail(d, 0.7))
 register("container/real_h264_aac_missing_moov.mp4", "mp4_missing_moov",
          derived="container/real_h264_aac_faststart.mp4",
+         derive=lambda d: drop_top_level_box(d, b"moov"))
+# 无参考 moov 重建的正面样本：单轨视频 + 关键帧内嵌 SPS/PPS + SPS VUI timing。
+register("container/real_h264_inband_faststart.mp4", "mp4", build=build_h264_inband_faststart)
+register("container/real_h264_inband_missing_moov.mp4", "mp4_missing_moov",
+         derived="container/real_h264_inband_faststart.mp4",
          derive=lambda d: drop_top_level_box(d, b"moov"))
 register("container/real_h264_aac_mid_damaged.mp4", "mp4_mid_damaged",
          derived="container/real_h264_aac_faststart.mp4",

@@ -39,6 +39,19 @@ enum class RepairGapPolicy {
     MergeContiguous,          // 删除损坏区间，把后续片段平移到前一段末尾
 };
 
+// ---- 产物容器 ----
+//
+// 选择产物封装格式。Auto 沿用源文件扩展名（mov/m4v 保留，其它统一 mp4）。
+// ⚠️ MPEG-TS 要求 H.264/HEVC 使用 Annex B 码流，执行器会应用
+// h264_mp4toannexb / hevc_mp4toannexb 比特流过滤器；此时产物载荷与源不一致，
+// 不能再声称"码流载荷未改动"，验证会跳过载荷哈希比对并在报告里标注。
+enum class RepairOutputContainer {
+    Auto,
+    Mp4,
+    Mkv,
+    Ts,
+};
+
 // ---- 业务状态（终态之外的"修复结果"语义）----
 enum class RepairBusinessStatus {
     Repaired,             // 修复完成，且指定验证通过、未发现内容缺失
@@ -112,6 +125,7 @@ enum class RepairFidelityStatus {
 
 const char* ToString(RepairMode value);
 const char* ToString(RepairGapPolicy value);
+const char* ToString(RepairOutputContainer value);
 const char* ToString(RepairBusinessStatus value);
 const char* ToString(RepairCheckStatus value);
 const char* ToString(DamageLayer value);
@@ -126,6 +140,7 @@ const char* ToString(RepairFidelityStatus value);
 const char* DisplayName(RepairBusinessStatus value);
 const char* DisplayName(RepairAction value);
 const char* DisplayName(RepairGapPolicy value);
+const char* DisplayName(RepairOutputContainer value);
 const char* DisplayName(RepairVerificationLevel value);
 
 // ---- 字节区间（半开区间 [begin, end)）----
@@ -563,6 +578,9 @@ struct RepairResult {
     std::string input_check_method; // 说明发布前到底核对了什么、有什么局限
     std::string output_path;
     bool output_published = false;
+    // 产物实际容器（auto / mp4 / mov / mkv / ts）：与请求的 output_container 区分，
+    // Auto 模式下真正落盘的容器由源扩展名决定。
+    std::string output_container;
 
     std::vector<RepairActionExecution> executions;
     std::vector<RepairTrackConservation> track_conservation;

@@ -41,6 +41,32 @@ struct RepairExecutionOutcome {
     // 检测到"轨道提前结束"但跳段恢复失败：产物必然缺失中间内容，不能按完整修复上报。
     bool premature_end_unrecovered = false;
 
+    // P1-9：moov 样本表索引不自洽（chunk 越界 / stts / ctts / stss 计数不符）时，
+    // 执行前先重建索引正确的临时副本；成功时后续重封装读取该副本。
+    bool index_rebuild_attempted = false;
+    bool index_table_rebuilt = false;
+    uint64_t index_rebuilt_chunks = 0;
+    std::string index_rebuild_note;
+    std::string index_rebuild_error;
+
+    // P2-12：普通 MP4 无 moov 时，先扫描 mdat 重建样本表，再走重封装。
+    bool moov_rebuild_attempted = false;
+    bool moov_rebuilt = false;
+    uint64_t moov_rebuilt_samples = 0;
+    std::string moov_rebuild_note;
+    std::string moov_rebuild_error;
+
+    // P2-13：S08 容忍式转码的实测结果。
+    bool video_reencoded = false;
+    bool audio_reencoded = false;
+    // 解码成功但无法稳定重编码，被丢弃的帧数（残缺/GOP 内解码失败的帧）。
+    uint64_t transcoded_frames = 0;
+    uint64_t dropped_video_frames = 0;
+    // 抽帧 PSNR 实测（0 样本时 perceptual_fidelity 保持 unknown_without_reference）。
+    uint64_t psnr_samples = 0;
+    double psnr_average_db = 0.0;
+    std::string transcode_note;
+
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;
     // 源侧声明的可播放时长（容器时长或最长轨道时长），用于恢复比例估算。

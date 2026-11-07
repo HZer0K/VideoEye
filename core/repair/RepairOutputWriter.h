@@ -52,6 +52,10 @@ public:
 
     static bool Publish(const std::string& part_path, const std::string& final_path, std::string* error);
 
+    // 取消 / 超预算时保留已写前缀的目标路径：在 final 的扩展名前插入 ".partial"。
+    // 例如 a.repaired.x.mp4 -> a.repaired.x.partial.mp4，绝不覆盖已有文件。
+    static std::string PartialPath(const std::string& final_path);
+
     // 尽最大努力删除临时文件；不存在的错误码忽略。
     static void Discard(const std::string& path);
 };

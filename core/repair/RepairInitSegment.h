@@ -59,7 +59,11 @@ struct RepairInitSegment {
     // ftyp + moov 的原始字节
     std::vector<uint8_t> bytes;
 
-    // verified / unverified / rejected（结构失败时 ok=false，不用看这个字段）
+    // 由 in-band 参数集自建（没有参考样片）。compatibility 会写成 "synthesized"，
+    // 与"从参考文件借用"区分开，报告不能把自建说成借用。
+    bool synthesized = false;
+
+    // verified / unverified / synthesized / rejected（结构失败时 ok=false，不用看这个字段）
     std::string compatibility = "unverified";
     std::string compatibility_reason;
     std::vector<std::string> borrowed_parameters;

@@ -119,6 +119,76 @@ void WriteBe32(std::vector<char>& bytes, std::size_t offset, uint32_t value) {
     bytes[offset + 3] = static_cast<char>(value & 0xFF);
 }
 
+// 在文件头垫一个同长度的 free 盒：盒结构合法，但 mdat 整体后移，
+// stco/co64 里的 chunk 偏移因此全部指向了真实数据之前的位置。
+// 这是"数据还在、索引错位"的最小可控形态（整体位移可以被解释与重建）。
+bool PrependFreeBox(const std::string& source, const std::string& target, uint32_t pad) {
+    if (pad < 8)
+        return false;
+    std::ifstream in(source, std::ios::binary);
+    if (!in)
+        return false;
+    std::vector<char> body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<char> out(static_cast<std::size_t>(pad), '\0');
+    WriteBe32(out, 0, pad);
+    out[4] = 'f';
+    out[5] = 'r';
+    out[6] = 'e';
+    out[7] = 'e';
+    out.insert(out.end(), body.begin(), body.end());
+    std::ofstream file(target, std::ios::binary | std::ios::trunc);
+    if (!file)
+        return false;
+    file.write(out.data(), static_cast<std::streamsize>(out.size()));
+    return static_cast<bool>(file);
+}
+
+bool HasLimitationContaining(const RepairResult& result, const std::string& needle) {
+    for (const auto& limitation : result.fidelity.limitations) {
+        if (limitation.find(needle) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+// 去掉指定类型的顶层盒（保留其余字节），用来构造"moov 丢失、mdat 仍在"的样本。
+bool StripTopLevelBox(const std::string& source, const std::string& target, const std::string& box_type) {
+    std::ifstream in(source, std::ios::binary);
+    if (!in)
+        return false;
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<char> out;
+    std::size_t pos = 0;
+    bool removed = false;
+    while (pos + 8 <= bytes.size()) {
+        uint32_t size = ReadBe32(bytes, pos);
+        const std::string type(bytes.begin() + static_cast<std::ptrdiff_t>(pos) + 4,
+                               bytes.begin() + static_cast<std::ptrdiff_t>(pos) + 8);
+        std::size_t box_size = size;
+        if (size == 1) {
+            if (pos + 16 > bytes.size())
+                return false;
+            box_size = (static_cast<std::size_t>(ReadBe32(bytes, pos + 8)) << 32) | ReadBe32(bytes, pos + 12);
+        }
+        if (box_size < 8 || pos + box_size > bytes.size())
+            return false;
+        if (type == box_type) {
+            removed = true;
+        } else {
+            out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(pos),
+                       bytes.begin() + static_cast<std::ptrdiff_t>(pos + box_size));
+        }
+        pos += box_size;
+    }
+    if (!removed)
+        return false;
+    std::ofstream file(target, std::ios::binary | std::ios::trunc);
+    if (!file)
+        return false;
+    file.write(out.data(), static_cast<std::streamsize>(out.size()));
+    return static_cast<bool>(file);
+}
+
 // 把每条轨的 stco 中同一比例的条目改成远超文件大小的偏移，模拟"录制中途
 // 存储区域损坏、但文件结构与后续数据仍在"。
 //
@@ -444,6 +514,97 @@ TEST(RepairEngine, FragmentedSegmentsWithoutInitNeedReference) {
     EXPECT_FALSE(result.plan.feasible);
     EXPECT_FALSE(result.output_published);
     EXPECT_TRUE(result.output_path.empty());
+}
+
+// P1-8：没有参考样片时，从分片 in-band SPS/PPS 与 sidx 时基自建 ftyp+moov。
+// 样本必须是"视频轨 + global_sidx + 参数集在码流里"，三者缺一都只能拒绝。
+TEST(RepairEngine, FragmentedSegmentsSynthesizeInitFromInBandParameterSets) {
+    const std::string dir = MakeTempDir("fmp4_synth");
+    videoeye_test::TestMediaSpec spec;
+    spec.with_audio = false;
+    spec.repeat_parameter_sets = true;
+    const auto media = videoeye_test::CreateFragmentedTestMedia(dir, "synth", spec, true);
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const RepairResult result = repair::RepairEngine::Run(
+        MakeRequest(media.segment_path, dir + "/out", RepairVerificationLevel::V1_FrameSample), nullptr, nullptr);
+
+    // 自建初始化段没有同源参考段可交叉验证，结论只能是 PartiallyRecovered。
+    std::string blocking;
+    for (const auto& reason : result.diagnosis.blocking_reasons)
+        blocking += "[" + reason + "]";
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error << " | " << blocking;
+    ASSERT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered)
+        << ToString(result.status) << " summary=" << result.summary;
+    EXPECT_TRUE(HasResidualFinding(result, "init_segment.synthesized")) << "自建来源必须作为残留问题上报";
+    EXPECT_EQ(result.fidelity.reference_compatibility, "synthesized");
+    EXPECT_EQ(result.fidelity.timeline_status, "unchanged");
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+    EXPECT_GT(probe.width, 0);
+}
+
+// 反向守护：没有 sidx 时不能猜时基 —— 猜错会保留全部帧却改变播放速度。
+TEST(RepairEngine, FragmentedSegmentsWithoutSidxStillNeedReference) {
+    const std::string dir = MakeTempDir("fmp4_nosidx");
+    videoeye_test::TestMediaSpec spec;
+    spec.with_audio = false;
+    spec.repeat_parameter_sets = true;
+    const auto media = videoeye_test::CreateFragmentedTestMedia(dir, "nosidx", spec, false);
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const RepairResult result =
+        repair::RepairEngine::Run(MakeRequest(media.segment_path, dir + "/out"), nullptr, nullptr);
+    EXPECT_EQ(result.status, RepairBusinessStatus::NeedsReference) << ToString(result.status);
+    EXPECT_FALSE(result.output_published);
+    EXPECT_FALSE(result.diagnosis.blocking_reasons.empty());
+    bool mentions_timescale = false;
+    for (const auto& reason : result.diagnosis.blocking_reasons) {
+        if (reason.find("timescale") != std::string::npos || reason.find("时基") != std::string::npos)
+            mentions_timescale = true;
+    }
+    EXPECT_TRUE(mentions_timescale) << "拒绝原因必须指向缺失的时基证据";
+}
+
+// P1-9：文件头被垫入字节后 chunk 偏移整体错位，但 mdat 载荷仍完整。
+// 执行前重建索引应恢复可读性，而不是把整份文件当成尾部截断只抢救前缀。
+TEST(RepairEngine, ShiftedChunkOffsetsAreRebuiltBeforeRemux) {
+    const std::string dir = MakeTempDir("index_rebuild");
+    const auto media = videoeye_test::CreateTestMedia(dir, "index_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const std::string broken = dir + "/shifted.mp4";
+    ASSERT_TRUE(PrependFreeBox(media.path, broken, 1024u));
+
+    const RepairResult result = repair::RepairEngine::Run(
+        MakeRequest(broken, dir + "/out", RepairVerificationLevel::V1_FrameSample), nullptr, nullptr);
+
+    EXPECT_TRUE(HasFinding(result, "track.sample_table_inconsistent")) << result.diagnosis.summary;
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_TRUE(result.status == RepairBusinessStatus::Repaired ||
+                result.status == RepairBusinessStatus::PartiallyRecovered)
+        << ToString(result.status);
+    EXPECT_TRUE(HasLimitationContaining(result, "重建")) << "索引重建必须写进报告";
+    EXPECT_TRUE(result.diagnosis.findings.empty() == false);
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+    EXPECT_NEAR(probe.duration_seconds, media.duration_seconds, 0.30);
+}
+
+// 反向守护：索引没坏时不得触发重建（避免每次修复都整份拷贝一遍）。
+TEST(RepairEngine, IntactIndexDoesNotTriggerRebuild) {
+    const std::string dir = MakeTempDir("index_noop");
+    const auto media = videoeye_test::CreateTestMedia(dir, "noop_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out"), nullptr, nullptr);
+    EXPECT_FALSE(HasFinding(result, "track.sample_table_inconsistent"));
+    EXPECT_FALSE(HasLimitationContaining(result, "重建"));
+    ASSERT_EQ(result.status, RepairBusinessStatus::Repaired) << result.summary;
 }
 
 TEST(RepairEngine, FragmentedSegmentsRepairedWithReferenceInit) {
@@ -944,4 +1105,138 @@ TEST(RepairExecutor, DroppedInputStreamIsOmittedFromOutput) {
     EXPECT_EQ(probe.audio_streams, 0);
     EXPECT_GT(probe.frame_count, 0);
     repair::RepairOutputWriter::Discard(outcome.part_path);
+}
+
+// ============================================================
+// P2：高成本能力
+// ============================================================
+
+// P2-14a：产物容器可切换为 MKV / MPEG-TS，产物必须能被 FFmpeg 重新打开并解码。
+TEST(RepairEngine, OutputContainerSelectionProducesPlayableMkvAndTs) {
+    const std::string dir = MakeTempDir("p2_container");
+    const auto media = videoeye_test::CreateTestMedia(dir, "container_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    struct Case {
+        RepairOutputContainer container;
+        const char* extension;
+    };
+    for (const Case& item : {Case{RepairOutputContainer::Mkv, "mkv"}, Case{RepairOutputContainer::Ts, "ts"}}) {
+        RepairRequest request = MakeRequest(media.path, dir + "/out_" + std::string(item.extension),
+                                            RepairVerificationLevel::V1_FrameSample);
+        request.output_container = item.container;
+        const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+
+        ASSERT_TRUE(result.output_published) << item.extension << ": " << result.summary << " | " << result.error;
+        ASSERT_FALSE(result.output_path.empty());
+        EXPECT_EQ(std::filesystem::path(result.output_path).extension().string(), "." + std::string(item.extension));
+        EXPECT_EQ(result.output_container, item.extension);
+        EXPECT_TRUE(result.status == RepairBusinessStatus::Repaired ||
+                    result.status == RepairBusinessStatus::PartiallyRecovered)
+            << item.extension << ": " << ToString(result.status);
+
+        const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+        EXPECT_TRUE(probe.opened) << item.extension << ": " << probe.error;
+        EXPECT_GT(probe.frame_count, 0) << item.extension;
+    }
+}
+
+// P2-14b：取消时保留已写前缀 —— 产物以 *.partial.<ext> 发布，状态仍然是 Canceled，
+// 内容完整性标注为 partial（不能当作修复完成）。
+TEST(RepairEngine, CancelKeepsWrittenPrefixWhenRequested) {
+    const std::string dir = MakeTempDir("p2_partial");
+    const auto media = videoeye_test::CreateTestMedia(dir, "partial_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.keep_partial_on_cancel = true;
+    std::atomic<bool> cancel{false};
+    auto progress = [&cancel](int percent, const std::string&, const std::string&) {
+        if (percent >= 89)
+            cancel.store(true);
+    };
+    const RepairResult result = repair::RepairEngine::Run(request, &cancel, progress);
+
+    ASSERT_EQ(result.status, RepairBusinessStatus::Canceled) << ToString(result.status) << " " << result.summary;
+    ASSERT_TRUE(result.output_published) << result.summary;
+    EXPECT_NE(result.output_path.find(".partial."), std::string::npos) << result.output_path;
+    EXPECT_TRUE(std::filesystem::exists(result.output_path));
+    EXPECT_EQ(result.fidelity.content_completeness, "partial");
+    EXPECT_EQ(result.fidelity.timeline_status, "unknown");
+    EXPECT_TRUE(HasLimitationContaining(result, "未完成验证")) << "未验证前缀必须在报告里写明";
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+}
+
+// P2-13：救内容模式对可解码的视频帧做容忍式重编码，产物可播放且画质结论有量化口径。
+TEST(RepairEngine, RecoverContentModeTranscodesReadableFrames) {
+    const std::string dir = MakeTempDir("p2_transcode");
+    const auto media = videoeye_test::CreateTestMedia(dir, "transcode_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered) << ToString(result.status);
+    EXPECT_TRUE(result.fidelity.video_reencoded);
+    EXPECT_TRUE(result.fidelity.timeline_modified);
+    EXPECT_TRUE(HasLimitationContaining(result, "重编码"));
+
+    const RepairActionExecution* transcode = FindExecution(result, RepairAction::S08_TolerantTranscode);
+    ASSERT_NE(transcode, nullptr);
+    EXPECT_TRUE(transcode->attempted) << transcode->detail;
+    EXPECT_TRUE(transcode->succeeded) << transcode->detail;
+    EXPECT_GT(transcode->packets_written, 0u);
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+}
+
+// P2-12：普通 MP4 丢失 moov、但单个 mdat 是纯 H.264 AVCC（参数集与 VUI timing
+// 都在码流里）时，无参考扫描 mdat 重建 ftyp+moov/样本表，产物应可直接解码。
+// 样本用真实 ffmpeg 产物（real_h264_inband_missing_moov.mp4）：x264 的 SPS 带 VUI
+// timing，关键帧重复携带 SPS/PPS —— 这是重建器能推断时基的唯一合法证据。
+TEST(RepairEngine, RealCorpusInbandMp4WithoutMoovIsRebuiltFromMdat) {
+    const std::string source = RealCorpusSample("real_h264_inband_missing_moov.mp4");
+    if (!std::filesystem::exists(source)) {
+        GTEST_SKIP() << "缺真实样本 real_h264_inband_missing_moov.mp4，先跑 tests/corpus/generate_real_corpus.py";
+    }
+
+    const std::string dir = MakeTempDir("real_plain_moov");
+    const RepairResult result = repair::RepairEngine::Run(
+        MakeRequest(source, dir + "/out", RepairVerificationLevel::V1_FrameSample), nullptr, nullptr);
+
+    std::string blocking;
+    for (const auto& reason : result.diagnosis.blocking_reasons)
+        blocking += "[" + reason + "]";
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error << " | " << blocking;
+    EXPECT_TRUE(result.status == RepairBusinessStatus::Repaired ||
+                result.status == RepairBusinessStatus::PartiallyRecovered)
+        << ToString(result.status);
+    EXPECT_TRUE(HasFinding(result, "container.mdat_unindexed")) << result.diagnosis.summary;
+    EXPECT_TRUE(HasLimitationContaining(result, "moov")) << "无参考重建必须写进报告";
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
+}
+
+// 反向守护：mdat 里音视频交织时无法在不猜边界的前提下拆成单轨，必须如实要求参考样片。
+TEST(RepairEngine, InterleavedPlainMdatWithoutMoovStillNeedsReference) {
+    const std::string dir = MakeTempDir("p2_plain_interleaved");
+    const auto media = videoeye_test::CreateTestMedia(dir, "interleaved_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const std::string broken = dir + "/no_moov.mp4";
+    ASSERT_TRUE(StripTopLevelBox(media.path, broken, "moov"));
+
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(broken, dir + "/out"), nullptr, nullptr);
+
+    EXPECT_EQ(result.status, RepairBusinessStatus::NeedsReference) << ToString(result.status) << " " << result.summary;
+    EXPECT_FALSE(result.output_published);
+    EXPECT_FALSE(result.diagnosis.blocking_reasons.empty());
 }

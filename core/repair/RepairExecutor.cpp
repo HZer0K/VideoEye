@@ -14,12 +14,16 @@
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairIndexRepair.h"
 #include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPlainMp4Rebuilder.h"
+#include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/dict.h>
@@ -83,6 +87,17 @@ public:
 private:
     std::string path_;
 };
+
+// P1-9 触发条件：诊断阶段确认"索引与 mdat 布局对不上、但数据可能仍在"。
+// 越界样本（track.sample_out_of_bounds）不在触发范围内：那类损伤意味着数据
+// 已经缺失，整体位移救不回来，重建函数本身也会拒绝。
+bool NeedsIndexRebuild(const model::RepairDiagnosis& diagnosis) {
+    for (const auto& finding : diagnosis.findings) {
+        if (finding.code == "track.sample_table_inconsistent")
+            return true;
+    }
+    return false;
+}
 
 bool CopyFileInto(std::ofstream& out, const std::string& source_path, const std::atomic<bool>* cancel,
                   const RepairRunBudget* budget, bool* canceled, bool* timed_out) {
@@ -159,6 +174,22 @@ int64_t NominalFrameDuration(const AVStream* stream) {
         return 0;
     const int64_t ticks = av_rescale_q(1, AVRational{fps.den, fps.num}, stream->time_base);
     return ticks > 0 ? ticks : 0;
+}
+
+bool HasAvailableAction(const model::RepairPlan& plan, model::RepairAction action) {
+    for (const auto& entry : plan.actions) {
+        if (entry.action == action && entry.available)
+            return true;
+    }
+    return false;
+}
+
+bool HasFinding(const model::RepairDiagnosis& diagnosis, const std::string& code) {
+    for (const auto& finding : diagnosis.findings) {
+        if (finding.code == code)
+            return true;
+    }
+    return false;
 }
 
 bool CheckpointOrStop(const std::atomic<bool>* cancel, const RepairRunBudget* budget, bool* canceled, bool* timed_out) {
@@ -270,7 +301,6 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                                                const RepairOutputPaths& paths, const RepairInitSegment* reference_init,
                                                const std::atomic<bool>* cancel, const RepairProgress& progress,
                                                const RepairRunBudget* budget) {
-    (void)diagnosis;
     const std::string& part_path = paths.part_path;
     RepairExecutionOutcome outcome;
     outcome.part_path = part_path;
@@ -282,10 +312,91 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     }
     outcome.ffmpeg_version = av_version_info();
 
+    // P2-13：救内容模式优先尝试 S08 容忍式转码。转码失败不阻断修复流程 ——
+    // 退回保码流重封装，并把失败原因写入报告。
+    std::string transcode_fallback_error;
+    if (request.mode == model::RepairMode::RecoverContent &&
+        HasAvailableAction(plan, model::RepairAction::S08_TolerantTranscode)) {
+        Emit(progress, 73, "尝试容忍式转码（S08）");
+        RepairExecutionOutcome transcoded =
+            RepairTolerantTranscode::Execute(request, diagnosis, plan, paths, cancel, progress, budget);
+        if (transcoded.ok)
+            return transcoded;
+        if (transcoded.canceled || transcoded.timed_out)
+            return transcoded;
+        transcode_fallback_error = transcoded.error.empty() ? "容忍式转码未成功，已退回保码流重封装" : transcoded.error;
+    }
+
+    // P1-9：moov 样本表索引不自洽时，先按样本表重建一个索引正确的副本。
+    // 重建只调整 chunk 偏移 / 表计数，不改变码流内容；失败则按原索引继续尝试，
+    // 失败原因写进报告，不静默忽略。
+    std::string input_path = request.source_path;
+    std::unique_ptr<TempFileGuard> plain_guard;
+    std::unique_ptr<TempFileGuard> index_guard;
+
+    // P2-12：普通 MP4 完全没有 moov（且有单个可扫描的 mdat）时，先重建样本表。
+    if (HasFinding(diagnosis, "container.mdat_unindexed")) {
+        Emit(progress, 74, "扫描 mdat 重建缺失的 moov");
+        const std::string rebuilt_path = part_path + ".plain-moov";
+        if (CreateExclusiveFile(rebuilt_path)) {
+            plain_guard = std::make_unique<TempFileGuard>(rebuilt_path);
+            RepairPlainMp4RebuildResult rebuilt = RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel);
+            const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
+            if (stopped) {
+                outcome.canceled = budget != nullptr ? budget->Canceled() : true;
+                outcome.timed_out = budget != nullptr && !outcome.canceled;
+                return outcome;
+            }
+            outcome.moov_rebuild_attempted = rebuilt.attempted;
+            if (rebuilt.ok) {
+                input_path = rebuilt_path;
+                outcome.moov_rebuilt = true;
+                outcome.moov_rebuilt_samples = rebuilt.samples_rebuilt;
+                outcome.moov_rebuild_note = rebuilt.note;
+            } else {
+                outcome.moov_rebuild_attempted = true;
+                outcome.moov_rebuild_error = rebuilt.error;
+                outcome.error = "无参考 moov 重建失败：" + rebuilt.error;
+                return outcome;
+            }
+        } else {
+            outcome.moov_rebuild_attempted = true;
+            outcome.moov_rebuild_error = "无法独占创建 moov 重建临时文件: " + rebuilt_path;
+            outcome.error = outcome.moov_rebuild_error;
+            return outcome;
+        }
+    }
+
+    const bool needs_index_rebuild = NeedsIndexRebuild(diagnosis);
+    const bool use_reference_init = reference_init != nullptr && reference_init->ok && !reference_init->bytes.empty();
+    if (needs_index_rebuild && !use_reference_init) {
+        Emit(progress, 74, "按样本表重建 moov 索引");
+        const std::string rebuilt_path = part_path + ".index-rebuilt";
+        if (CreateExclusiveFile(rebuilt_path)) {
+            index_guard = std::make_unique<TempFileGuard>(rebuilt_path);
+            const RepairIndexRepairResult index = RepairIndexRepair::Rebuild(input_path, rebuilt_path, cancel);
+            const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
+            if (stopped) {
+                outcome.canceled = budget != nullptr ? budget->Canceled() : true;
+                outcome.timed_out = budget != nullptr && !outcome.canceled;
+                return outcome;
+            }
+            outcome.index_rebuild_attempted = index.attempted;
+            if (index.ok) {
+                input_path = rebuilt_path;
+                outcome.index_table_rebuilt = true;
+                outcome.index_rebuilt_chunks = index.rebuilt_chunks;
+                outcome.index_rebuild_note = index.note;
+            } else if (index.attempted) {
+                outcome.index_rebuild_error = index.error;
+            }
+        } else {
+            outcome.index_rebuild_error = "无法独占创建索引重建临时文件: " + rebuilt_path;
+        }
+    }
+
     // 缺少初始化段的 fMP4 媒体分片：先拼出 init + 分片的临时文件，之后整条
     // 重封装链路与普通 MP4 完全一致。
-    const bool use_reference_init = reference_init != nullptr && reference_init->ok && !reference_init->bytes.empty();
-    std::string input_path = request.source_path;
     std::unique_ptr<TempFileGuard> assembled_guard;
     if (use_reference_init) {
         Emit(progress, 76, "前置参考初始化段并组装源媒体分片");
@@ -298,8 +409,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         bool canceled_copy = false;
         bool timed_out_copy = false;
         std::string assemble_error;
-        if (!AssembleWithInitSegment(request.source_path, reference_init->bytes, assembled_path, cancel, budget,
-                                     &canceled_copy, &timed_out_copy, &assemble_error)) {
+        if (!AssembleWithInitSegment(input_path, reference_init->bytes, assembled_path, cancel, budget, &canceled_copy,
+                                     &timed_out_copy, &assemble_error)) {
             if (canceled_copy) {
                 outcome.canceled = true;
                 return outcome;
@@ -412,8 +523,15 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         return outcome;
     }
 
-    const std::string ext = LowerExtension(part_path);
-    const char* format_name = ext == "mov" ? "mov" : "mp4";
+    // 用产物最终扩展名选封装器：临时文件路径带 .part 后缀，直接取扩展名会得到 "part"。
+    const std::string ext = paths.extension.empty() ? LowerExtension(part_path) : paths.extension;
+    const char* format_name = "mp4";
+    if (ext == "mov")
+        format_name = "mov";
+    else if (ext == "mkv")
+        format_name = "matroska";
+    else if (ext == "ts")
+        format_name = "mpegts";
 
     AVFormatContext* out = nullptr;
     if (avformat_alloc_output_context2(&out, nullptr, format_name, part_path.c_str()) < 0 || !out) {
@@ -439,6 +557,15 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     double last_resync_seconds = -1.0;
     double last_resync_from = -1.0;
     std::vector<uint64_t> per_output_packets(mapped_streams.size(), 0);
+    // MPEG-TS 要求 H.264/HEVC 使用 Annex B 码流；MP4 内是 length-prefixed，
+    // 必须在写入前经比特流过滤器转换，否则产物在播放器里无法解码。
+    std::vector<AVBSFContext*> bsf_contexts(mapped_streams.size(), nullptr);
+    auto free_bsf = [&]() {
+        for (auto*& context : bsf_contexts) {
+            if (context != nullptr)
+                av_bsf_free(&context);
+        }
+    };
     // 这些统计在 do 块内累加、在 do 块之后的执行记录里使用，必须提升到函数作用域。
     uint64_t resync_count = 0;
     double skipped_total_seconds = 0.0;
@@ -470,10 +597,44 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             break;
 
         // 修复产物优先写 moov 在前：即使以后尾部再被截断，索引仍然可读。
-        if (out->priv_data) {
+        // 只有 MP4/MOV 封装器认识 movflags，其它容器设置该选项会失败。
+        if (out->priv_data && (ext == "mp4" || ext == "mov" || ext == "m4v")) {
             if (av_opt_set(out->priv_data, "movflags", "+faststart", 0) < 0) {
                 // 不是所有封装器都支持该选项；失败时退回默认布局，不阻断修复。
             }
+        }
+
+        // MPEG-TS：按编码类型挂上 mp4→Annex B 的比特流过滤器。
+        if (format_name == std::string("mpegts")) {
+            for (std::size_t i = 0; i < mapped_streams.size(); ++i) {
+                const AVStream* src = mapped_streams[i];
+                const char* filter_name = nullptr;
+                if (src->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && src->codecpar->codec_id == AV_CODEC_ID_H264)
+                    filter_name = "h264_mp4toannexb";
+                else if (src->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && src->codecpar->codec_id == AV_CODEC_ID_HEVC)
+                    filter_name = "hevc_mp4toannexb";
+                if (filter_name == nullptr)
+                    continue;
+                const AVBitStreamFilter* filter = av_bsf_get_by_name(filter_name);
+                if (filter == nullptr) {
+                    failure = "缺少比特流过滤器 " + std::string(filter_name) + "，无法写出 MPEG-TS";
+                    break;
+                }
+                AVBSFContext* context = nullptr;
+                if (av_bsf_alloc(filter, &context) < 0 || context == nullptr) {
+                    failure = "无法分配比特流过滤器 " + std::string(filter_name);
+                    break;
+                }
+                if (avcodec_parameters_copy(context->par_in, src->codecpar) < 0 || av_bsf_init(context) < 0) {
+                    av_bsf_free(&context);
+                    failure = "比特流过滤器 " + std::string(filter_name) + " 初始化失败（缺少参数集）";
+                    break;
+                }
+                context->time_base_in = src->time_base;
+                bsf_contexts[i] = context;
+            }
+            if (!failure.empty())
+                break;
         }
 
         if (avio_open(&out->pb, part_path.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -866,16 +1027,39 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             packet->stream_index = out_index;
             packet->pos = -1;
 
+            // MPEG-TS 等需要 Annex B 的容器：先过滤再写。
+            AVPacket* to_write = packet;
+            AVPacket* filtered = nullptr;
+            if (out_index >= 0 && out_index < static_cast<int>(bsf_contexts.size()) &&
+                bsf_contexts[static_cast<std::size_t>(out_index)] != nullptr) {
+                AVBSFContext* context = bsf_contexts[static_cast<std::size_t>(out_index)];
+                if (av_bsf_send_packet(context, packet) < 0) {
+                    write_failed = true;
+                    write_error = "比特流过滤器接收输入包失败";
+                    break;
+                }
+                filtered = av_packet_alloc();
+                if (filtered == nullptr || av_bsf_receive_packet(context, filtered) < 0) {
+                    av_packet_free(&filtered);
+                    write_failed = true;
+                    write_error = "比特流过滤器转换输出包失败";
+                    break;
+                }
+                to_write = filtered;
+            }
+
             // av_interleaved_write_frame 会接管并 unref packet，所以先把需要统计的
             // 字段取出来 —— 写完再读 packet->size 拿到的是 0。
-            const int written_size = packet->size;
-            const int write_ret = av_interleaved_write_frame(out, packet);
+            const int written_size = to_write->size;
+            const int write_ret = av_interleaved_write_frame(out, to_write);
             if (write_ret < 0) {
                 write_failed = true;
                 write_error = AvErrorText(write_ret);
+                av_packet_free(&filtered);
                 av_packet_unref(packet);
                 break;
             }
+            av_packet_free(&filtered);
 
             ++packets_seen;
             ++outcome.packets_written;
@@ -975,11 +1159,26 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 failure += "；已前置参考初始化段，请确认它与源分片同源、编码参数与时间基一致";
         }
 
+        // 刷出比特流过滤器缓存（Annex B 转换一般不缓存，仍按契约发一次空包）。
+        for (AVBSFContext* context : bsf_contexts) {
+            if (context == nullptr)
+                continue;
+            if (av_bsf_send_packet(context, nullptr) < 0)
+                continue;
+            AVPacket* trailing = av_packet_alloc();
+            while (trailing != nullptr && av_bsf_receive_packet(context, trailing) >= 0) {
+                av_interleaved_write_frame(out, trailing);
+                av_packet_unref(trailing);
+            }
+            av_packet_free(&trailing);
+        }
+
         if (av_write_trailer(out) < 0 && failure.empty()) {
             failure = "写入封装尾失败（产物可能不完整）";
         }
     } while (false);
 
+    free_bsf();
     if (opened_io)
         avio_closep(&out->pb);
     avformat_free_context(out);
@@ -1038,6 +1237,28 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     if (outcome.output_size_capped)
         remux.detail += "；超过输出字节上限，仅保留可播放前缀";
     outcome.executions.push_back(std::move(remux));
+
+    if (!transcode_fallback_error.empty()) {
+        model::RepairActionExecution transcode;
+        transcode.action = model::RepairAction::S08_TolerantTranscode;
+        transcode.attempted = true;
+        transcode.succeeded = false;
+        transcode.error = transcode_fallback_error;
+        transcode.detail = "容忍式转码未成功，已退回保码流重封装";
+        outcome.executions.push_back(std::move(transcode));
+
+        model::DamageFinding finding;
+        finding.code = "transcode.fallback_to_remux";
+        finding.detector = "repair.transcode";
+        finding.layer = model::DamageLayer::Decode;
+        finding.severity = model::IssueSeverity::Warning;
+        finding.confidence = model::DamageConfidence::Confirmed;
+        finding.location.precision = model::DamagePrecision::Unknown;
+        finding.evidence = "容忍式转码未成功：" + transcode_fallback_error;
+        finding.limitations.push_back("产物按保码流重封装生成；编码层已损坏的内容仍未恢复");
+        finding.candidate_actions.push_back(model::RepairAction::S08_TolerantTranscode);
+        outcome.residual_findings.push_back(std::move(finding));
+    }
 
     if (plan.salvage_end_seconds.has_value()) {
         model::RepairActionExecution salvage;

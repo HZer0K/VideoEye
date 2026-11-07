@@ -23,6 +23,20 @@ const char* ToString(RepairGapPolicy value) {
     return "unknown";
 }
 
+const char* ToString(RepairOutputContainer value) {
+    switch (value) {
+    case RepairOutputContainer::Auto:
+        return "auto";
+    case RepairOutputContainer::Mp4:
+        return "mp4";
+    case RepairOutputContainer::Mkv:
+        return "mkv";
+    case RepairOutputContainer::Ts:
+        return "ts";
+    }
+    return "unknown";
+}
+
 const char* ToString(RepairBusinessStatus value) {
     switch (value) {
     case RepairBusinessStatus::Repaired:
@@ -199,6 +213,20 @@ const char* DisplayName(RepairGapPolicy value) {
         return "保留原时间间隔";
     case RepairGapPolicy::MergeContiguous:
         return "删除损坏区间，连续播放";
+    }
+    return "未知";
+}
+
+const char* DisplayName(RepairOutputContainer value) {
+    switch (value) {
+    case RepairOutputContainer::Auto:
+        return "自动（沿用源容器）";
+    case RepairOutputContainer::Mp4:
+        return "MP4";
+    case RepairOutputContainer::Mkv:
+        return "Matroska (MKV)";
+    case RepairOutputContainer::Ts:
+        return "MPEG-TS";
     }
     return "未知";
 }

@@ -461,6 +461,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     JsonValue output = JsonValue::MakeObject();
     output.Set("path", JOptString(result.output_path));
     output.Set("published", JsonValue(result.output_published));
+    output.Set("container", JOptString(result.output_container));
     root.Set("output", output);
 
     root.Set("input", BuildInput(result.input));
@@ -545,6 +546,7 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     if (!result.error.empty())
         conclusion.rows.emplace_back("错误", result.error);
     conclusion.rows.emplace_back("产物", result.output_path.empty() ? "（未发布）" : result.output_path);
+    conclusion.rows.emplace_back("产物容器", result.output_container.empty() ? "（未知）" : result.output_container);
     conclusion.rows.emplace_back("已发布", result.output_published ? "yes" : "no");
     conclusion.rows.emplace_back("验证等级", model::DisplayName(result.verification.level));
     conclusion.rows.emplace_back("逐轨验证条数", std::to_string(result.verification.per_track.size()));

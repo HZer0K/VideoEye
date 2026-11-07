@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -24,6 +25,13 @@ constexpr double kPi = 3.14159265358979323846;
 
 std::string JoinPath(const std::string& directory, const std::string& file_name) {
     return (std::filesystem::path(directory) / file_name).string();
+}
+
+void WriteBe32Char(std::vector<char>& bytes, std::size_t offset, uint32_t value) {
+    bytes[offset] = static_cast<char>((value >> 24) & 0xFF);
+    bytes[offset + 1] = static_cast<char>((value >> 16) & 0xFF);
+    bytes[offset + 2] = static_cast<char>((value >> 8) & 0xFF);
+    bytes[offset + 3] = static_cast<char>(value & 0xFF);
 }
 
 // 画面: 亮度是 (x,y,帧号) 的确定性线性组合, 色度随帧号缓慢漂移。
@@ -185,6 +193,8 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         av_opt_set(venc->priv_data, "preset", "veryfast", 0);
         if (spec.max_b_frames <= 0)
             av_opt_set(venc->priv_data, "tune", "zerolatency", 0);
+        if (spec.repeat_parameter_sets)
+            av_opt_set(venc->priv_data, "x264-params", "repeat-headers=1", 0);
     }
     if (avcodec_open2(venc, vcodec, nullptr) < 0)
         return finish(false, "打开视频编码器失败");
@@ -313,7 +323,7 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 }
 
 FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, const std::string& name,
-                                              const TestMediaSpec& spec) {
+                                              const TestMediaSpec& spec, bool global_sidx) {
     FragmentedTestMedia result;
     result.init_path = JoinPath(directory, name + "_init.mp4");
     result.segment_path = JoinPath(directory, name + "_seg.ts");
@@ -368,7 +378,87 @@ FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, cons
     }
     // empty_moov：moov 里不写样本表，样本全部由 moof/trun 描述；
     // default_base_moof：trun 的 data_offset 相对 moof 起点，截断前缀后仍然有效。
-    av_opt_set(out->priv_data, "movflags", "empty_moov+default_base_moof+frag_keyframe", 0);
+    // global_sidx：在首个 moof 之前写一份覆盖全部分片的 sidx，为"无参考自建初始化段"
+    // 提供源侧 timescale 证据（自建器拒绝在缺少该证据时猜测时基）。
+    std::string movflags = "empty_moov+default_base_moof+frag_keyframe";
+    if (global_sidx)
+        movflags += "+global_sidx";
+    av_opt_set(out->priv_data, "movflags", movflags.c_str(), 0);
+
+    // 把 avcC 里的 SPS/PPS 以 length-prefixed NAL 形式插到每个关键帧样本前面，
+    // 让参数集真正出现在分片载荷里（部分编码器/构建只把参数集写进 extradata）。
+    // 自建初始化段只能从 in-band 参数集取证，所以测试样本必须带这一层。
+    int parameter_stream_index = -1;
+    std::vector<uint8_t> parameter_sets;
+    if (spec.repeat_parameter_sets) {
+        for (unsigned i = 0; i < in->nb_streams; ++i) {
+            const AVCodecParameters* par = in->streams[i]->codecpar;
+            if (par->codec_type != AVMEDIA_TYPE_VIDEO || par->codec_id != AV_CODEC_ID_H264)
+                continue;
+            const uint8_t* ed = par->extradata;
+            const int ed_size = par->extradata_size;
+            if (!ed || ed_size < 8 || ed[0] != 1)
+                continue;
+            // avcC: configurationVersion(1) profile(1) compat(1) level(1)
+            //       lengthSizeMinusOne(1) numOfSPS(1) [sps_len(2) sps...] numOfPPS(1) [pps_len(2) pps...]
+            const int length_size = (ed[4] & 0x03) + 1;
+            if (length_size != 4)
+                continue;
+            const auto append = [&parameter_sets](const uint8_t* nal, int size) {
+                if (size <= 0)
+                    return;
+                const uint32_t value = static_cast<uint32_t>(size);
+                parameter_sets.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+                parameter_sets.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+                parameter_sets.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+                parameter_sets.push_back(static_cast<uint8_t>(value & 0xFF));
+                parameter_sets.insert(parameter_sets.end(), nal, nal + size);
+            };
+            int pos = 5;
+            const int sps_count = ed[pos++] & 0x1F;
+            bool parsed = true;
+            for (int n = 0; n < sps_count && parsed; ++n) {
+                if (pos + 2 > ed_size) {
+                    parsed = false;
+                    break;
+                }
+                const int size = (static_cast<int>(ed[pos]) << 8) | ed[pos + 1];
+                pos += 2;
+                if (pos + size > ed_size) {
+                    parsed = false;
+                    break;
+                }
+                append(ed + pos, size);
+                pos += size;
+            }
+            if (!parsed || pos >= ed_size) {
+                parameter_sets.clear();
+                continue;
+            }
+            const int pps_count = ed[pos++];
+            for (int n = 0; n < pps_count && parsed; ++n) {
+                if (pos + 2 > ed_size) {
+                    parsed = false;
+                    break;
+                }
+                const int size = (static_cast<int>(ed[pos]) << 8) | ed[pos + 1];
+                pos += 2;
+                if (pos + size > ed_size) {
+                    parsed = false;
+                    break;
+                }
+                append(ed + pos, size);
+                pos += size;
+            }
+            if (!parsed) {
+                parameter_sets.clear();
+                continue;
+            }
+            parameter_stream_index = static_cast<int>(i);
+            break;
+        }
+    }
+
     if (!(out->oformat->flags & AVFMT_NOFILE) && avio_open(&out->pb, fragmented_path.c_str(), AVIO_FLAG_WRITE) < 0) {
         return cleanup(false, "无法创建分片输出文件");
     }
@@ -378,12 +468,41 @@ FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, cons
     AVPacket* pkt = av_packet_alloc();
     if (!pkt)
         return cleanup(false, "无法分配包");
+    uint64_t fragment_duration_ticks = 0;
+    uint32_t fragment_timescale = 0;
+    uint32_t fragment_track_id = 0;
     while (av_read_frame(in, pkt) >= 0) {
         AVStream* src_stream = in->streams[pkt->stream_index];
         AVStream* dst_stream = out->streams[pkt->stream_index];
         av_packet_rescale_ts(pkt, src_stream->time_base, dst_stream->time_base);
         pkt->pos = -1;
-        const int write_ret = av_interleaved_write_frame(out, pkt);
+        if (dst_stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && pkt->duration > 0) {
+            fragment_duration_ticks += static_cast<uint64_t>(pkt->duration);
+            fragment_timescale = static_cast<uint32_t>(dst_stream->time_base.den);
+            fragment_track_id = static_cast<uint32_t>(dst_stream->id);
+        }
+        const bool inject = parameter_stream_index == pkt->stream_index && !parameter_sets.empty() &&
+                            (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+        AVPacket* rebuilt = nullptr;
+        AVPacket* to_write = pkt;
+        if (inject) {
+            rebuilt = av_packet_alloc();
+            if (!rebuilt || av_new_packet(rebuilt, pkt->size + static_cast<int>(parameter_sets.size())) < 0) {
+                av_packet_free(&rebuilt);
+                av_packet_free(&pkt);
+                return cleanup(false, "无法构造带参数集的样本");
+            }
+            std::memcpy(rebuilt->data, parameter_sets.data(), parameter_sets.size());
+            std::memcpy(rebuilt->data + parameter_sets.size(), pkt->data, static_cast<std::size_t>(pkt->size));
+            rebuilt->pts = pkt->pts;
+            rebuilt->dts = pkt->dts;
+            rebuilt->duration = pkt->duration;
+            rebuilt->stream_index = pkt->stream_index;
+            rebuilt->flags = pkt->flags;
+            to_write = rebuilt;
+        }
+        const int write_ret = av_interleaved_write_frame(out, to_write);
+        av_packet_free(&rebuilt);
         av_packet_unref(pkt);
         if (write_ret < 0) {
             av_packet_free(&pkt);
@@ -394,7 +513,9 @@ FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, cons
     if (av_write_trailer(out) < 0)
         return cleanup(false, "写入分片文件尾失败");
 
-    // ---- 按第一个 moof 切分：前半是初始化段，后半是媒体分片 ----
+    // ---- 切分：前半是初始化段，后半是媒体分片 ----
+    // 切在第一个 moof。构建分片后追加的 mfra 属于分片文件尾部，不影响 trun
+    // 的 moof 相对偏移，因此保留在媒体段里。
     std::ifstream fragmented(fragmented_path, std::ios::binary);
     std::vector<char> bytes((std::istreambuf_iterator<char>(fragmented)), std::istreambuf_iterator<char>());
     if (bytes.size() < 16)
@@ -421,8 +542,36 @@ FragmentedTestMedia CreateFragmentedTestMedia(const std::string& directory, cons
 
     std::ofstream init_out(result.init_path, std::ios::binary | std::ios::trunc);
     init_out.write(bytes.data(), static_cast<std::streamsize>(split));
+
+    std::vector<char> segment(bytes.begin() + static_cast<std::ptrdiff_t>(split), bytes.end());
+    if (global_sidx) {
+        // FFmpeg 的 global_sidx 在 stream copy 场景会写出 reference_count=0 的空表
+        // （本构建实测如此），不能当时基证据。这里按实测的样本时长与 timescale
+        // 自造一条覆盖全段的 sidx，让自建初始化段有可核对的源侧证据。
+        if (fragment_timescale == 0 || fragment_duration_ticks == 0)
+            return cleanup(false, "无法统计分片时基证据");
+        const std::size_t sidx_size = 44;
+        std::vector<char> sidx(sidx_size, '\0');
+        WriteBe32Char(sidx, 0, static_cast<uint32_t>(sidx_size));
+        std::memcpy(sidx.data() + 4, "sidx", 4);
+        // version 0 / flags 0
+        WriteBe32Char(sidx, 8, 0);
+        WriteBe32Char(sidx, 12, fragment_track_id); // reference_ID
+        WriteBe32Char(sidx, 16, fragment_timescale);
+        WriteBe32Char(sidx, 20, 0); // earliest_presentation_time
+        WriteBe32Char(sidx, 24, 0); // first_offset：首个 moof 紧跟 sidx
+        // reserved(2) + reference_count(2)
+        WriteBe32Char(sidx, 28, 1);
+        // reference_type=0 + referenced_size，覆盖 sidx 之后的全部媒体段
+        WriteBe32Char(sidx, 32, static_cast<uint32_t>(segment.size()));
+        WriteBe32Char(sidx, 36, static_cast<uint32_t>(fragment_duration_ticks));
+        // starts_with_SAP=1 + SAP_type=1 + SAP_delta_time=0
+        WriteBe32Char(sidx, 40, 0x90000000u);
+        segment.insert(segment.begin(), sidx.begin(), sidx.end());
+    }
+
     std::ofstream segment_out(result.segment_path, std::ios::binary | std::ios::trunc);
-    segment_out.write(bytes.data() + split, static_cast<std::streamsize>(bytes.size() - split));
+    segment_out.write(segment.data(), static_cast<std::streamsize>(segment.size()));
     if (!init_out || !segment_out)
         return cleanup(false, "写出初始化段/分片失败");
 

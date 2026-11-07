@@ -812,50 +812,64 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
     }
 
     // ---- 跳转验证（只在第一条视频轨上做，逐轨全量解码已覆盖其余轨）----
+    // MPEG-TS 是线性流式容器：没有样本索引，BACKWARD seek 落在任意包上（多半不是
+    // 关键帧），跳转后短窗口解不出帧并不代表产物损坏。因此对 TS 不执行严格跳转判据，
+    // 只如实标注"未执行"，避免把合法的容器转换误判成验证失败。
+    // 注意：验证拿到的是临时 .part 路径，不能靠扩展名判断容器，必须看实际 demuxer。
     if (seek_stream_index >= 0) {
         ffmpeg_io::AvInterruptState seek_interrupt;
         int seek_open_ret = 0;
         AVFormatContext* seek_fmt = OpenOutput(output_path, cancel, budget, &seek_interrupt, &seek_open_ret);
         if (seek_open_ret >= 0 && seek_fmt) {
-            double duration_seconds = container_duration;
-            if (seek_fmt->streams[seek_stream_index]->duration > 0)
-                duration_seconds = static_cast<double>(seek_fmt->streams[seek_stream_index]->duration) *
-                                   av_q2d(seek_fmt->streams[seek_stream_index]->time_base);
-            const double near_end = duration_seconds > 0 ? std::max(0.0, duration_seconds - 0.5) : 0.0;
-            std::vector<double> seek_points;
-            if (level == model::RepairVerificationLevel::V1_FrameSample)
-                seek_points = {0.0, duration_seconds * 0.5, near_end};
-            else if (full)
-                seek_points = {0.0, duration_seconds * 0.25, duration_seconds * 0.5, duration_seconds * 0.75, near_end};
-            for (double point : seek_points) {
-                if (CheckStop(cancel, budget)) {
-                    outcome.canceled = budget == nullptr || budget->Canceled();
-                    outcome.timed_out = budget != nullptr && !outcome.canceled;
-                    break;
+            const std::string demuxer_name =
+                seek_fmt->iformat != nullptr && seek_fmt->iformat->name != nullptr ? seek_fmt->iformat->name : "";
+            if (demuxer_name.find("mpegts") != std::string::npos) {
+                AddVerificationCheck(verification, "decode.seek_unavailable", model::DamageLayer::Decode,
+                                     model::RepairCheckStatus::Inconclusive,
+                                     "MPEG-TS 为线性流式容器，缺少样本索引；本次未执行随机跳转验证（不据此判定失败）");
+                avformat_close_input(&seek_fmt);
+            } else {
+                double duration_seconds = container_duration;
+                if (seek_fmt->streams[seek_stream_index]->duration > 0)
+                    duration_seconds = static_cast<double>(seek_fmt->streams[seek_stream_index]->duration) *
+                                       av_q2d(seek_fmt->streams[seek_stream_index]->time_base);
+                const double near_end = duration_seconds > 0 ? std::max(0.0, duration_seconds - 0.5) : 0.0;
+                std::vector<double> seek_points;
+                if (level == model::RepairVerificationLevel::V1_FrameSample)
+                    seek_points = {0.0, duration_seconds * 0.5, near_end};
+                else if (full)
+                    seek_points = {0.0, duration_seconds * 0.25, duration_seconds * 0.5, duration_seconds * 0.75,
+                                   near_end};
+                for (double point : seek_points) {
+                    if (CheckStop(cancel, budget)) {
+                        outcome.canceled = budget == nullptr || budget->Canceled();
+                        outcome.timed_out = budget != nullptr && !outcome.canceled;
+                        break;
+                    }
+                    ++verification.seek_checks;
+                    DecodePass seek_pass = SeekAndDecode(seek_fmt, seek_stream_index, point, cancel, budget);
+                    if (seek_pass.frames > 0) {
+                        ++verification.seek_passes;
+                    } else {
+                        std::ostringstream check_detail;
+                        check_detail << "跳转到 " << FormatSeconds(point) << " s 后未能解出帧";
+                        if (!seek_pass.detail.empty())
+                            check_detail << "（" << seek_pass.detail << "）";
+                        AddVerificationCheck(verification, "decode.seek@" + FormatSeconds(point),
+                                             model::DamageLayer::Decode, model::RepairCheckStatus::Failed,
+                                             check_detail.str());
+                    }
                 }
-                ++verification.seek_checks;
-                DecodePass seek_pass = SeekAndDecode(seek_fmt, seek_stream_index, point, cancel, budget);
-                if (seek_pass.frames > 0) {
-                    ++verification.seek_passes;
-                } else {
-                    std::ostringstream check_detail;
-                    check_detail << "跳转到 " << FormatSeconds(point) << " s 后未能解出帧";
-                    if (!seek_pass.detail.empty())
-                        check_detail << "（" << seek_pass.detail << "）";
-                    AddVerificationCheck(verification, "decode.seek@" + FormatSeconds(point),
-                                         model::DamageLayer::Decode, model::RepairCheckStatus::Failed,
-                                         check_detail.str());
+                if (!seek_points.empty()) {
+                    AddVerificationCheck(verification, "decode.seek_summary", model::DamageLayer::Decode,
+                                         verification.seek_passes == verification.seek_checks
+                                             ? model::RepairCheckStatus::Passed
+                                             : model::RepairCheckStatus::Inconclusive,
+                                         std::to_string(verification.seek_passes) + "/" +
+                                             std::to_string(verification.seek_checks) + " 个跳转点可解码");
                 }
+                avformat_close_input(&seek_fmt);
             }
-            if (!seek_points.empty()) {
-                AddVerificationCheck(verification, "decode.seek_summary", model::DamageLayer::Decode,
-                                     verification.seek_passes == verification.seek_checks
-                                         ? model::RepairCheckStatus::Passed
-                                         : model::RepairCheckStatus::Inconclusive,
-                                     std::to_string(verification.seek_passes) + "/" +
-                                         std::to_string(verification.seek_checks) + " 个跳转点可解码");
-            }
-            avformat_close_input(&seek_fmt);
         } else {
             if (seek_fmt)
                 avformat_close_input(&seek_fmt);

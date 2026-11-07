@@ -16,7 +16,9 @@
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairFragmentForensics.h"
+#include "core/repair/RepairInitSegmentBuilder.h"
 #include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPlainMp4Rebuilder.h"
 #include "core/repair/RepairSampleBounds.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
@@ -152,10 +154,13 @@ int PickTargetStream(const AVFormatContext* fmt, const std::vector<int>& request
 // 取证不改变业务结论 —— 可修 / 不可修仍由 RepairPlanner 决定。
 bool ApplyFragmentForensics(const model::RepairRequest& request, const IsobmffFile& parsed,
                             const std::atomic<bool>* cancel, const RepairProgress& progress,
-                            model::RepairDiagnosis& diagnosis, RepairSourceCompatibilityEvidence* source_evidence) {
+                            model::RepairDiagnosis& diagnosis, RepairSourceCompatibilityEvidence* source_evidence,
+                            RepairFragmentEvidence* fragment_evidence) {
     const auto start = Clock::now();
     Emit(progress, 52, stage::Inspecting(), "取证媒体分片结构与码流参数集");
     const RepairFragmentEvidence ev = RepairFragmentForensics::Analyze(request.source_path, parsed, cancel);
+    if (fragment_evidence != nullptr)
+        *fragment_evidence = ev;
     if (!ev.analyzed) {
         AddCheck(diagnosis, "container.fragment_forensics", model::DamageLayer::Container,
                  model::RepairCheckStatus::Failed, ev.error, ElapsedMs(start));
@@ -605,6 +610,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     bool init_segment_missing = false;
     bool fragment_forensics_applied = false;
     RepairSourceCompatibilityEvidence source_evidence;
+    RepairFragmentEvidence fragment_evidence;
     if (is_isobmff) {
         Emit(progress, 35, stage::Inspecting(), "解析 MP4/MOV 盒结构与样本表");
         const auto parse_start = Clock::now();
@@ -703,8 +709,8 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
 
             // 先取证：源侧 sidx 时基 / 逐 NAL 码流是核对参考段的独立证据（R03）。
             // 旧顺序把取证放在参考段之后，Reader 只能看到 track_id。
-            fragment_forensics_applied =
-                ApplyFragmentForensics(request, parsed, cancel, progress, diagnosis, &source_evidence);
+            fragment_forensics_applied = ApplyFragmentForensics(request, parsed, cancel, progress, diagnosis,
+                                                                &source_evidence, &fragment_evidence);
             outcome.source_evidence = source_evidence;
 
             AddCheck(diagnosis, "container.structure", model::DamageLayer::Container, model::RepairCheckStatus::Failed,
@@ -749,17 +755,79 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
             diagnosis.findings.push_back(std::move(finding));
 
             if (!media_segment_sequence) {
-                diagnosis.blocking_reasons.push_back(
-                    "缺少 moov（索引/元数据），当前版本尚未实现结构重建（需要参考样片或初始化段）");
+                // P2-12：普通 MP4 缺 moov，但 mdat 载荷可能是可直接扫描重建的
+                // 纯 H.264（AVCC）或纯 ADTS AAC。必须实测能完整解释整段载荷，
+                // 才允许进入重建流程；否则仍按"需要参考初始化段"阻止执行。
+                const auto probe_start = Clock::now();
+                Emit(progress, 55, stage::Inspecting(), "尝试无参考扫描 mdat 载荷");
+                const RepairPlainMp4Probe probe = RepairPlainMp4Rebuilder::Probe(request.source_path, cancel);
+                if (probe.attemptable) {
+                    model::DamageFinding plain;
+                    plain.code = "container.mdat_unindexed";
+                    plain.detector = kInspector;
+                    plain.layer = model::DamageLayer::Container;
+                    plain.severity = model::IssueSeverity::Warning;
+                    plain.confidence = model::DamageConfidence::Confirmed;
+                    plain.location.precision = model::DamagePrecision::Bounded;
+                    plain.location.provenance = "mdat payload scan (NAL length-prefix / ADTS frames)";
+                    plain.evidence = "缺少 moov；mdat 载荷可无参考解析为 " + probe.codec_summary;
+                    plain.limitations = probe.limitations;
+                    plain.candidate_actions.push_back(model::RepairAction::S01_Remux);
+                    diagnosis.findings.push_back(std::move(plain));
+                    AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
+                             model::RepairCheckStatus::Passed, "可无参考重建样本表：" + probe.codec_summary,
+                             ElapsedMs(probe_start));
+                } else {
+                    AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
+                             model::RepairCheckStatus::Unsupported, "无参考重建不可行: " + probe.reason,
+                             ElapsedMs(probe_start));
+                    diagnosis.blocking_reasons.push_back("缺少 moov（索引/元数据），且自动无参考重建不可行：" +
+                                                         probe.reason + "；请提供同源参考样片或初始化段");
+                }
             } else {
                 // 参考样片：只在缺初始化段的场景下有意义。
                 const std::vector<uint32_t> required_track_ids(source_track_ids.begin(), source_track_ids.end());
                 if (request.reference_path.empty()) {
-                    AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
-                             model::RepairCheckStatus::NotRun, "未提供参考样片/初始化段");
-                    diagnosis.blocking_reasons.push_back(
-                        "源文件是 fMP4 媒体分片序列但缺少初始化段（ftyp+moov）；请在「参考样片」中提供同源"
-                        "ftyp+moov 初始化段（含 mvex/trex），或含该初始化段的完整分片 MP4 后重试");
+                    // 没有参考样片时先尝试从 in-band 参数集自建。Builder 内部对时基、
+                    // 参数集完整性和轨道类型都有硬门槛；任何一条不满足都会拒绝并写明原因。
+                    const auto synth_start = Clock::now();
+                    Emit(progress, 55, stage::Inspecting(), "尝试从 in-band 参数集自建初始化段");
+                    const RepairSynthesizedInit synthesized =
+                        RepairInitSegmentBuilder::Build(request.source_path, parsed, fragment_evidence, cancel);
+                    if (synthesized.ok) {
+                        RepairInitSegment init;
+                        init.ok = true;
+                        init.synthesized = true;
+                        init.reference_path = request.source_path;
+                        init.codec_summary = synthesized.codec_summary;
+                        init.track_ids = synthesized.track_ids;
+                        init.init_size = synthesized.bytes.size();
+                        init.bytes = synthesized.bytes;
+                        init.compatibility = "synthesized";
+                        init.compatibility_reason = "由 in-band 参数集自建，未经同源参考段交叉验证";
+                        init.reference_timescale = synthesized.movie_timescale;
+                        init.reference_tracks = synthesized.tracks;
+                        init.timescale_check = synthesized.timescale_basis;
+                        AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
+                                 model::RepairCheckStatus::Inconclusive,
+                                 "未提供参考样片；已自建初始化段 " + std::to_string(init.init_size) + " 字节（" +
+                                     init.codec_summary + "，时基 " + init.timescale_check + "）",
+                                 ElapsedMs(synth_start));
+                        AddCheck(diagnosis, "reference.init_segment_synthesized", model::DamageLayer::Timing,
+                                 model::RepairCheckStatus::Inconclusive,
+                                 synthesized.limitations.empty() ? "自建初始化段未经交叉验证"
+                                                                 : synthesized.limitations.front());
+                        outcome.reference_init = std::move(init);
+                    } else {
+                        AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
+                                 model::RepairCheckStatus::NotRun,
+                                 "未提供参考样片/初始化段；自动自建未成功: " + synthesized.error,
+                                 ElapsedMs(synth_start));
+                        diagnosis.blocking_reasons.push_back(
+                            "源文件是 fMP4 媒体分片序列但缺少初始化段（ftyp+moov）；自动自建未成功：" +
+                            synthesized.error +
+                            "。请在「参考样片」中提供同源初始化段（含 mvex/trex），或含该初始化段的完整分片 MP4");
+                    }
                 } else if (SamePath(request.reference_path, request.source_path)) {
                     AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
                              model::RepairCheckStatus::Failed, "参考文件与源文件相同，无法提供缺失的初始化段");
@@ -879,6 +947,94 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 diagnosis.findings.push_back(std::move(finding));
 
                 bad_detail << " track=" << track.track_id << " bad=" << bounds.bad_sample_count;
+            }
+
+            // ---- 样本表自洽性（索引与 mdat 布局 / 表计数）----
+            // 与"越过文件尾"是两种损伤：越界说明数据已缺失，只能跳段或截断；
+            // 这里检测的是"数据仍可能完整、只是索引对不上"的形态 —— 例如文件头
+            // 被插入/删除字节后 chunk 偏移整体偏移，或 stts/ctts/stss 条目数与
+            // stsz 样本数不符。这类问题可以在执行前重建索引，而不必丢弃内容。
+            if (!parsed.fragmented) {
+                const auto table_start = Clock::now();
+                const IsobmffBox* mdat_box = nullptr;
+                std::uint32_t mdat_count = 0;
+                for (const auto& box : parsed.top_level) {
+                    if (box.type == "mdat") {
+                        mdat_box = &box;
+                        ++mdat_count;
+                    }
+                }
+                if (mdat_box != nullptr && mdat_count == 1 && mdat_box->size >= mdat_box->header_size) {
+                    const uint64_t payload_start = mdat_box->offset + mdat_box->header_size;
+                    const uint64_t payload_end = mdat_box->offset + mdat_box->size;
+                    bool inconsistent = false;
+                    std::ostringstream table_detail;
+                    for (const auto& track : parsed.tracks) {
+                        if (track.handler != "vide" && track.handler != "soun")
+                            continue;
+                        if (track.tables_truncated)
+                            continue;
+                        std::ostringstream track_issues;
+                        if ((track.has_stco || track.has_co64) && !track.chunk_offsets.empty()) {
+                            for (uint64_t offset : track.chunk_offsets) {
+                                if (offset < payload_start || offset >= payload_end) {
+                                    track_issues << "chunk 偏移 " << offset << " 不在 mdat 载荷范围 [" << payload_start
+                                                 << ", " << payload_end << ")；";
+                                    break;
+                                }
+                            }
+                        }
+                        if (track.has_stsz && track.has_stts && track.SttsSampleCount() != track.stsz.sample_count)
+                            track_issues << "stts 计数 " << track.SttsSampleCount() << " != stsz 样本数 "
+                                         << track.stsz.sample_count << "；";
+                        if (track.has_stsz && track.has_ctts && track.CttsSampleCount() != track.stsz.sample_count)
+                            track_issues << "ctts 计数 " << track.CttsSampleCount() << " != stsz 样本数 "
+                                         << track.stsz.sample_count << "；";
+                        if (track.has_stsz) {
+                            for (uint32_t index : track.stss) {
+                                if (index == 0 || index > track.stsz.sample_count) {
+                                    track_issues << "stss 同步样本序号 " << index << " 越界；";
+                                    break;
+                                }
+                            }
+                        }
+                        if (track_issues.str().empty())
+                            continue;
+                        inconsistent = true;
+                        table_detail << " track=" << track.track_id << " " << track_issues.str();
+
+                        model::DamageFinding finding;
+                        finding.code = "track.sample_table_inconsistent";
+                        finding.detector = kInspector;
+                        finding.layer = model::DamageLayer::Track;
+                        finding.severity = model::IssueSeverity::Warning;
+                        finding.confidence = model::DamageConfidence::Confirmed;
+                        finding.location.track_id = track.track_id;
+                        finding.location.structure_path = "moov/trak/mdia/minf/stbl";
+                        finding.location.field_name = "stco/co64/stts/ctts/stss";
+                        finding.location.precision = model::DamagePrecision::Exact;
+                        finding.location.provenance = "isobmff.stco/co64 vs mdat payload + table counts";
+                        finding.evidence = "轨道 " + std::to_string(track.track_id) + " (" + track.TypeName() +
+                                           "): " + track_issues.str();
+                        finding.candidate_actions.push_back(model::RepairAction::S01_Remux);
+                        finding.limitations.push_back("索引可重建的前提是 mdat 载荷仍完整；"
+                                                      "重建后需重新封装并解码验证");
+                        diagnosis.findings.push_back(std::move(finding));
+                    }
+                    if (inconsistent) {
+                        AddCheck(diagnosis, "track.sample_table", model::DamageLayer::Track,
+                                 model::RepairCheckStatus::Failed, "样本表与 mdat 布局不一致:" + table_detail.str(),
+                                 ElapsedMs(table_start));
+                    } else {
+                        AddCheck(diagnosis, "track.sample_table", model::DamageLayer::Track,
+                                 model::RepairCheckStatus::Passed,
+                                 "chunk 偏移均位于唯一 mdat 载荷范围内，表计数与样本数一致", ElapsedMs(table_start));
+                    }
+                } else {
+                    AddCheck(diagnosis, "track.sample_table", model::DamageLayer::Track,
+                             model::RepairCheckStatus::Inconclusive,
+                             "缺少 mdat 或存在多个 mdat，无法核对 chunk 偏移与 mdat 布局", ElapsedMs(table_start));
+                }
             }
             if (!any_checked) {
                 AddCheck(diagnosis, "track.sample_bounds", model::DamageLayer::Track,

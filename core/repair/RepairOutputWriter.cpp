@@ -11,9 +11,19 @@ namespace videoeye {
 namespace repair {
 namespace {
 
-// 源容器之外的格式统一输出为 mp4：M1 的执行器只挂了 MP4/MOV 多路复用器。
-std::string OutputExtension(const std::string& source_path) {
-    const std::string ext = LowerExtension(source_path);
+// 源容器之外的格式统一输出为 mp4：未指定容器时沿用源扩展名（mov/m4v），其它统一 mp4。
+std::string OutputExtension(const model::RepairRequest& request) {
+    switch (request.output_container) {
+    case model::RepairOutputContainer::Mkv:
+        return "mkv";
+    case model::RepairOutputContainer::Ts:
+        return "ts";
+    case model::RepairOutputContainer::Mp4:
+        return "mp4";
+    case model::RepairOutputContainer::Auto:
+        break;
+    }
+    const std::string ext = LowerExtension(request.source_path);
     if (ext == "mov" || ext == "m4v")
         return ext;
     return "mp4";
@@ -105,7 +115,7 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
     }
 
     paths.directory = directory.u8string();
-    paths.extension = OutputExtension(request.source_path);
+    paths.extension = OutputExtension(request);
     const std::string stem = FileStem(request.source_path);
 
     auto build = [&](const std::string& final_path) {
@@ -291,6 +301,14 @@ void RepairOutputWriter::Discard(const std::string& path) {
         return;
     std::error_code ec;
     std::filesystem::remove(ToNativePath(path), ec);
+}
+
+std::string RepairOutputWriter::PartialPath(const std::string& final_path) {
+    const std::filesystem::path fp(final_path);
+    const std::filesystem::path dir = fp.parent_path();
+    const std::string stem = fp.stem().u8string();
+    const std::string ext = fp.extension().u8string();
+    return (dir / (stem + ".partial" + ext)).u8string();
 }
 
 } // namespace repair

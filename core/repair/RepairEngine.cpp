@@ -193,10 +193,46 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.timeline_repair = execution.timeline_repair;
     result.fidelity.omitted_items = execution.omitted_items;
 
+    // P2-14b：取消 / 超预算时按需保留已经写入的产物前缀。
+    // 该前缀未完成验证，绝不能当作"修复完成"：状态仍是 Canceled/TimedOut，
+    // 产物以 *.partial.<ext> 另存，报告标注为未验证前缀。
+    auto finish_with_partial = [&](model::RepairBusinessStatus status, const std::string& message) {
+        std::string summary = message;
+        if (request.keep_partial_on_cancel && execution.packets_written > 0) {
+            const std::string partial_path = RepairOutputWriter::PartialPath(paths.final_path);
+            const std::string output_mime = paths.extension == "mkv"  ? "video/x-matroska"
+                                            : paths.extension == "ts" ? "video/mp2t"
+                                                                      : "video/mp4";
+            std::string publish_error;
+            if (RepairOutputWriter::Publish(paths.part_path, partial_path, &publish_error)) {
+                part_guard.Release();
+                result.output_path = partial_path;
+                result.output_published = true;
+                result.output_container = paths.extension;
+                std::error_code partial_ec;
+                const uint64_t partial_size = std::filesystem::file_size(partial_path, partial_ec);
+                result.artifacts.push_back(
+                    model::RepairArtifact{"output_partial", partial_path, output_mime,
+                                          "bytes [0, " + std::to_string(partial_ec ? 0 : partial_size) + ")"});
+                result.fidelity.limitations.push_back("产物是取消 / 超预算时保留的已写前缀（" +
+                                                      std::to_string(execution.packets_written) +
+                                                      " 个包），未完成验证，不能当作修复完成；请按需人工复核");
+                result.fidelity.content_completeness = "partial";
+                result.fidelity.timeline_status = "unknown";
+                result.fidelity.timeline_note = "产物前缀未完成验证，时间轴未核验";
+                summary += "；已保留未验证的已写前缀: " + partial_path;
+            } else {
+                result.fidelity.limitations.push_back("取消时未能保留已写前缀: " + publish_error);
+                summary += "；未能保留已写前缀: " + publish_error;
+            }
+        }
+        return finish_failed(status, summary);
+    };
+
     if (execution.canceled || (budget.Checkpoint() && budget.Canceled()))
-        return finish_failed(model::RepairBusinessStatus::Canceled, "执行阶段被取消，未发布产物");
+        return finish_with_partial(model::RepairBusinessStatus::Canceled, "执行阶段被取消，未发布完整产物");
     if (execution.timed_out || (budget.Checkpoint() && !budget.Canceled()))
-        return finish_failed(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布产物");
+        return finish_with_partial(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布完整产物");
     if (!execution.ok) {
         result.error = execution.error.empty() ? "执行失败" : execution.error;
         std::string summary = result.error;
@@ -205,6 +241,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
             return finish_failed(model::RepairBusinessStatus::NoRecoverableContent, summary);
         if (result.error.find("无法打开源文件") != std::string::npos)
             return finish_failed(model::RepairBusinessStatus::Unsupported, summary);
+        if (result.error.find("无参考 moov 重建失败") != std::string::npos ||
+            result.error.find("moov 重建临时文件") != std::string::npos)
+            return finish_failed(model::RepairBusinessStatus::NeedsReference, summary);
         return finish_failed(model::RepairBusinessStatus::Failed, summary);
     }
 
@@ -260,11 +299,17 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     }
 
     // ---- 4. 验证（逐目标轨，R04 / R05 / R09）----
+    // MPEG-TS 需要 Annex B 转换、S08 转码会重建视频帧：两者都让产物载荷与输入
+    // 必然不同，此时不能再用载荷哈希断言"码流未被改动"，否则会把一次合法的
+    // 容器转换 / 画质有损的重编码误判成保真度失败。
+    const bool payload_transformed = paths.extension == "ts" || execution.video_reencoded;
     std::optional<uint64_t> expected_hash;
-    for (const auto& action : execution.executions) {
-        if (action.action == model::RepairAction::S01_Remux && action.input_video_payload_hash.has_value()) {
-            expected_hash = action.input_video_payload_hash;
-            break;
+    if (!payload_transformed) {
+        for (const auto& action : execution.executions) {
+            if (action.action == model::RepairAction::S01_Remux && action.input_video_payload_hash.has_value()) {
+                expected_hash = action.input_video_payload_hash;
+                break;
+            }
         }
     }
     Emit(progress, 89, stage::Verifying(), "开始验证产物");
@@ -280,9 +325,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
                                     verified.verification.residual_findings.end());
 
     if (verified.canceled || (budget.Checkpoint() && budget.Canceled()))
-        return finish_failed(model::RepairBusinessStatus::Canceled, "验证阶段被取消，未发布产物");
+        return finish_with_partial(model::RepairBusinessStatus::Canceled, "验证阶段被取消，未发布完整产物");
     if (verified.timed_out || (budget.Checkpoint() && !budget.Canceled()))
-        return finish_failed(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布产物");
+        return finish_with_partial(model::RepairBusinessStatus::TimedOut, "超出本次修复预算，未发布完整产物");
     if (verified.verification.status == model::RepairCheckStatus::Failed)
         return finish_failed(model::RepairBusinessStatus::Failed, "产物验证未通过: " + verified.verification.evidence);
 
@@ -295,15 +340,18 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     const bool container_limits = !inspect.diagnosis.container_known;
     const bool content_lost = execution.read_error || execution.salvage_truncated ||
                               execution.premature_end_unrecovered || planning.plan.salvage_end_seconds.has_value() ||
-                              segment_split || track_dropped || execution.output_size_capped;
+                              segment_split || track_dropped || execution.output_size_capped ||
+                              execution.video_reencoded;
     const bool inconclusive = verified.verification.status == model::RepairCheckStatus::Inconclusive ||
                               verified.verification.decode_errors > 0 || verified.verification.corrupt_frames > 0 ||
                               verified.verification.error_recovery_frames > 0;
 
     // R03：借用参考初始化段就是借用了 mdhd 时基。只有「源侧有独立时基证据 +
     // 产物时长可比对 + 没有偏差」才能说时间轴未变；否则必须标不确定。
-    const bool borrowed_reference = inspect.reference_init.has_value();
-    const bool reference_unverified = borrowed_reference && inspect.reference_init->compatibility != "verified";
+    const bool synthesized_init = inspect.reference_init.has_value() && inspect.reference_init->synthesized;
+    const bool borrowed_reference = inspect.reference_init.has_value() && !synthesized_init;
+    const bool reference_unverified =
+        inspect.reference_init.has_value() && inspect.reference_init->compatibility != "verified";
     const bool timeline_mismatch = verified.verification.timeline_mismatch;
     const bool timeline_unknown = borrowed_reference && !timeline_mismatch &&
                                   (reference_unverified || !verified.verification.timeline_comparable);
@@ -312,9 +360,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     Emit(progress, 97, stage::Publishing(), "发布产物");
     if (budget.Checkpoint()) {
         const model::RepairBusinessStatus status = BudgetTerminal(budget);
-        return finish_failed(status, status == model::RepairBusinessStatus::Canceled
-                                         ? "发布前收到取消，未发布产物"
-                                         : "发布前超出本次修复预算，未发布产物");
+        return finish_with_partial(status, status == model::RepairBusinessStatus::Canceled
+                                               ? "发布前收到取消，未发布完整产物"
+                                               : "发布前超出本次修复预算，未发布完整产物");
     }
     std::string publish_error;
     if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &publish_error, &source_method))
@@ -336,15 +384,19 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
 
     result.output_path = paths.final_path;
     result.output_published = true;
+    result.output_container = paths.extension;
     std::error_code size_ec;
     const uint64_t output_size = std::filesystem::file_size(paths.final_path, size_ec);
-    result.artifacts.push_back(model::RepairArtifact{"output", paths.final_path, "video/mp4",
+    const std::string output_mime = paths.extension == "mkv"  ? "video/x-matroska"
+                                    : paths.extension == "ts" ? "video/mp2t"
+                                                              : "video/mp4";
+    result.artifacts.push_back(model::RepairArtifact{"output", paths.final_path, output_mime,
                                                      "bytes [0, " + std::to_string(size_ec ? 0 : output_size) + ")"});
 
     // ---- 6. 保真度 / 业务状态 ----
     model::RepairFidelity& fidelity = result.fidelity;
-    fidelity.video_reencoded = false;
-    fidelity.audio_reencoded = false;
+    fidelity.video_reencoded = execution.video_reencoded;
+    fidelity.audio_reencoded = execution.audio_reencoded;
     fidelity.synthetic_frames_inserted = false;
     fidelity.synthetic_frame_count = 0;
     // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
@@ -352,8 +404,12 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     const bool timeline_adjusted = execution.timeline_repair.gap_removed ||
                                    execution.timeline_repair.rewritten_timestamps > 0 ||
                                    execution.timeline_repair.synthesized_timestamps > 0;
-    fidelity.timeline_modified = timeline_mismatch || timeline_adjusted;
-    if (timeline_mismatch) {
+    fidelity.timeline_modified = timeline_mismatch || timeline_adjusted || execution.video_reencoded;
+    if (execution.video_reencoded) {
+        fidelity.timeline_status = "modified";
+        fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
+                                 std::string("源时间戳不再保留，帧序与源侧可解码帧一一对应");
+    } else if (timeline_mismatch) {
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "产物实测时长 " + FormatSeconds(verified.verification.observed_duration_seconds) +
                                  "s 与源侧估算 " + FormatSeconds(verified.verification.expected_duration_seconds) +
@@ -375,6 +431,26 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未补齐 / 未合成";
         if (borrowed_reference)
             fidelity.timeline_note += "；参考段时基已与源侧独立证据核对，产物实测时长与源侧估算一致";
+    }
+    if (execution.video_reencoded) {
+        fidelity.video = model::RepairFidelityStatus::PartiallyVerified;
+        if (execution.psnr_samples > 0) {
+            std::ostringstream psnr_note;
+            psnr_note.setf(std::ios::fixed);
+            psnr_note.precision(2);
+            psnr_note << "抽帧 PSNR 均值 " << execution.psnr_average_db << " dB（" << execution.psnr_samples
+                      << " 个样本，亮度平面）；重编码不是原码流无损重封装";
+            fidelity.perceptual_fidelity = "measured_psnr";
+            fidelity.limitations.push_back(psnr_note.str());
+        } else {
+            fidelity.perceptual_fidelity = "unknown_without_reference";
+            fidelity.limitations.push_back("视频轨已重编码，但抽帧 PSNR 未取得有效样本，画质损失无法量化");
+        }
+        if (execution.dropped_video_frames > 0)
+            fidelity.limitations.push_back("转码丢弃 " + std::to_string(execution.dropped_video_frames) +
+                                           " 个无法解码 / 编码的视频包或帧，对应画面内容不可恢复");
+        if (!execution.transcode_note.empty())
+            fidelity.limitations.push_back(execution.transcode_note);
     }
     if (content_lost || execution.timed_out || conservation_loss)
         fidelity.content_completeness = "partial";
@@ -448,6 +524,18 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     if (container_limits)
         fidelity.limitations.push_back(
             "源容器未识别为 ISOBMFF，未做盒/样本表级结构校验；损伤定位与完整性结论仅覆盖运行时读取与产物解码");
+    if (paths.extension == "ts")
+        fidelity.limitations.push_back("产物封装为 MPEG-TS，H.264/HEVC 已转换为 Annex B 码流；载荷字节与源不一致，"
+                                       "本次未做载荷哈希比对，保真度按解码可读性评估");
+    if (execution.index_table_rebuilt)
+        fidelity.limitations.push_back("源 moov 样本表索引不自洽，执行前已按原 chunk 顺序重建 stco/stts/ctts/stss；" +
+                                       execution.index_rebuild_note);
+    else if (!execution.index_rebuild_error.empty())
+        fidelity.limitations.push_back("源 moov 样本表索引重建未成功（" + execution.index_rebuild_error +
+                                       "），本次仍按原索引尝试重封装");
+    if (execution.moov_rebuilt)
+        fidelity.limitations.push_back("源文件缺少 moov，执行前扫描 mdat 无参考重建了单轨样本表；" +
+                                       execution.moov_rebuild_note + "（样本边界为实测推断，未经原索引交叉验证）");
     if (!content_lost)
         fidelity.limitations.push_back("未与原始完整内容比对（输入本身已是损坏文件）");
     if (execution.premature_end_unrecovered)
@@ -520,22 +608,33 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         const RepairInitSegment& init = *inspect.reference_init;
         fidelity.reference_compatibility = init.compatibility;
         fidelity.borrowed_parameters = init.borrowed_parameters;
-        fidelity.timeline_note += "；本次借用了参考初始化段的 ftyp+moov/mvex/trex 与 mdhd 时基";
+        if (init.synthesized) {
+            fidelity.timeline_note +=
+                "；本次由源分片 in-band 参数集自建初始化段（无参考样片），时基证据：" + init.timescale_check;
+        } else {
+            fidelity.timeline_note += "；本次借用了参考初始化段的 ftyp+moov/mvex/trex 与 mdhd 时基";
+        }
         if (init.compatibility != "verified") {
             fidelity.timeline_note += "；兼容性=" + init.compatibility + "（" + init.compatibility_reason + "）";
-            fidelity.limitations.push_back("参考初始化段兼容性=" + init.compatibility + "：" +
-                                           init.compatibility_reason);
+            fidelity.limitations.push_back((init.synthesized ? "自建初始化段" : "参考初始化段") +
+                                           ("兼容性=" + init.compatibility + "：" + init.compatibility_reason));
             model::DamageFinding finding;
-            finding.code = "reference.parameters_unverified";
+            finding.code = init.synthesized ? "init_segment.synthesized" : "reference.parameters_unverified";
             finding.detector = "repair.engine";
             finding.layer = model::DamageLayer::Timing;
             finding.severity = model::IssueSeverity::Warning;
             finding.confidence = model::DamageConfidence::Possible;
             finding.location.precision = model::DamagePrecision::Bounded;
-            finding.location.provenance = "sidx timescale / mdat NAL vs reference mdhd/stsd";
-            finding.evidence = "产物借用了参考文件 " + FileName(init.reference_path) + " 的解码参数与时基（" +
-                               init.compatibility + "）: " + init.compatibility_reason;
-            finding.limitations.push_back("track_id 相同不能证明同源，错误时基会保留全部帧却改变播放时长");
+            finding.location.provenance = init.synthesized ? "in-band SPS/PPS + sidx timescale"
+                                                           : "sidx timescale / mdat NAL vs reference mdhd/stsd";
+            finding.evidence = init.synthesized
+                                   ? "初始化段由源分片 in-band 参数集自建（" + init.compatibility_reason +
+                                         "）；时基=" + init.timescale_check
+                                   : "产物借用了参考文件 " + FileName(init.reference_path) + " 的解码参数与时基（" +
+                                         init.compatibility + "）: " + init.compatibility_reason;
+            finding.limitations.push_back(init.synthesized
+                                              ? "时基来自 sidx / 分片声明；推断错误会保留全部帧却改变播放时长"
+                                              : "track_id 相同不能证明同源，错误时基会保留全部帧却改变播放时长");
             finding.limitations.push_back("没有原始完整视频，无法给出确定的无失真结论或恢复百分比");
             result.residual_findings.push_back(std::move(finding));
         }

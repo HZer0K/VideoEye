@@ -99,7 +99,20 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     plan.diagnosis_id = diagnosis.diagnosis_id;
     plan.plan_id = "plan-" + FormatLocalRunId();
     plan.mode = request.mode;
-    plan.expected_output_extension = "mp4";
+    switch (request.output_container) {
+    case model::RepairOutputContainer::Mkv:
+        plan.expected_output_extension = "mkv";
+        break;
+    case model::RepairOutputContainer::Ts:
+        plan.expected_output_extension = "ts";
+        break;
+    case model::RepairOutputContainer::Mp4:
+        plan.expected_output_extension = "mp4";
+        break;
+    case model::RepairOutputContainer::Auto:
+        plan.expected_output_extension = LowerExtension(request.source_path) == "mov" ? "mov" : "mp4";
+        break;
+    }
     if (request.limits.user_confirmed_exceed && request.limits.max_seconds > 0)
         plan.global_preconditions.push_back("用户已确认可超出时间预算，本次修复不设硬超时");
 
@@ -117,21 +130,60 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
                                                                       return f.code == "container.moov_missing";
                                                                   });
     if (moov_missing && diagnosis.container_known) {
+        const bool mdat_unindexed =
+            std::any_of(diagnosis.findings.begin(), diagnosis.findings.end(),
+                        [](const model::DamageFinding& f) { return f.code == "container.mdat_unindexed"; });
+        if (mdat_unindexed) {
+            // P2-12：普通 MP4 缺 moov，但 mdat 载荷可无参考扫描重建。
+            plan.global_preconditions.push_back(
+                "普通 MP4 缺少 moov：执行前扫描单个 mdat 重建 ftyp+moov/样本表（仅支持纯 H.264 或纯 ADTS AAC 单轨）");
+            plan.actions.push_back(MakeAction(
+                model::RepairAction::S01_Remux, "无参考扫描 mdat 载荷，重建 ftyp+moov/stbl 后再重新封装",
+                "产物具备可读索引；样本边界由 NAL/ADTS 帧结构实测得出",
+                "样本边界是推断值；音视频交织的 mdat 无法拆分；不重建 edts/ctts，含 B 帧时显示顺序可能不符"));
+            AddFirstStageActions(plan, request, diagnosis);
+            if (request.mode == model::RepairMode::RecoverContent) {
+                plan.actions.push_back(MakeAction(model::RepairAction::S08_TolerantTranscode,
+                                                  "解码可读视频帧后重新编码为 H.264（恒定帧率），音频尽量按原码流复制",
+                                                  "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物",
+                                                  "重编码有代际画质损失；时间轴按推定帧率重写"));
+            } else {
+                AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
+                               "保码流模式不重编码；切换到救内容模式才启用");
+            }
+            plan.feasible = true;
+            outcome.can_execute = true;
+            outcome.early_status = model::RepairBusinessStatus::Repaired;
+            return outcome;
+        }
         if (init_segment_missing && reference_init != nullptr && reference_init->ok) {
             if (request.mode == model::RepairMode::RecoverContent) {
-                plan.global_preconditions.push_back("当前版本未提供转码路径，救内容模式按保码流执行");
+                plan.global_preconditions.push_back("源分片缺初始化段，无法直接打开解码；本策略仍按保码流执行");
             }
-            plan.global_preconditions.push_back("使用参考文件 " + FileName(reference_init->reference_path) +
-                                                " 的初始化段（" + std::to_string(reference_init->init_size) +
-                                                " 字节）补全 ftyp+moov");
-            plan.actions.push_back(
-                MakeAction(model::RepairAction::S01_Remux,
-                           "前置参考初始化段补全 ftyp+moov，解析源媒体分片并重建索引，重新封装为 MP4",
-                           "产物具备完整 moov/样本表，时间轴连续",
-                           "参考初始化段与源分片编码参数不匹配时产物无法解码；无法恢复编码层损坏的帧"));
+            const bool synthesized = reference_init->synthesized;
+            if (synthesized) {
+                plan.global_preconditions.push_back("未提供参考样片：由源分片 in-band SPS/PPS 自建初始化段（" +
+                                                    std::to_string(reference_init->init_size) + " 字节），时基证据：" +
+                                                    reference_init->timescale_check);
+                plan.actions.push_back(
+                    MakeAction(model::RepairAction::S01_Remux,
+                               "用 in-band 参数集自建 ftyp+moov，解析源媒体分片并重建索引，重新封装为 MP4",
+                               "产物具备完整 moov/样本表；时基在自建时已按 sidx/分片声明交叉核对",
+                               "自建初始化段覆盖 H.264/H.265 视频轨；时基推断错误会静默改变播放速度；"
+                               "音频轨因缺少 ASC 不参与自建"));
+            } else {
+                plan.global_preconditions.push_back("使用参考文件 " + FileName(reference_init->reference_path) +
+                                                    " 的初始化段（" + std::to_string(reference_init->init_size) +
+                                                    " 字节）补全 ftyp+moov");
+                plan.actions.push_back(
+                    MakeAction(model::RepairAction::S01_Remux,
+                               "前置参考初始化段补全 ftyp+moov，解析源媒体分片并重建索引，重新封装为 MP4",
+                               "产物具备完整 moov/样本表，时间轴连续",
+                               "参考初始化段与源分片编码参数不匹配时产物无法解码；无法恢复编码层损坏的帧"));
+            }
             AddFirstStageActions(plan, request, diagnosis);
             AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
-                           "需要解码-编码链与画质评估，当前版本未实现");
+                           "源分片缺初始化段时无法直接解码，需要先补全初始化段才能转码");
             plan.feasible = true;
             outcome.can_execute = true;
             outcome.early_status = model::RepairBusinessStatus::Repaired;
@@ -175,9 +227,8 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     }
 
     if (request.mode == model::RepairMode::RecoverContent) {
-        // M1 的救内容仍走"保留码流"这条真实能力，但必须把预期写清楚：
-        // 没有转码路径时，它救不出编码层已损坏的内容。
-        plan.global_preconditions.push_back("当前版本未提供转码路径，救内容模式按保码流执行");
+        plan.global_preconditions.push_back(
+            "救内容模式：视频轨将解码可读帧后重新编码（S08），产物存在代际画质损失，时间轴按推定帧率重写");
     }
 
     plan.actions.push_back(
@@ -195,8 +246,16 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     }
 
     AddFirstStageActions(plan, request, diagnosis);
-    AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
-                   "需要解码-编码链与画质评估，当前版本未实现");
+    if (request.mode == model::RepairMode::RecoverContent) {
+        plan.actions.push_back(MakeAction(
+            model::RepairAction::S08_TolerantTranscode,
+            "解码可读视频帧后重新编码为 H.264（恒定帧率），音频尽量按原码流复制，并对产物做抽帧 PSNR 画质评估",
+            "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物；解码失败的帧会被记账",
+            "重编码存在代际画质损失；时间轴按推定帧率重写，可能与源不一致；被解码失败的帧内容无法恢复"));
+    } else {
+        AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
+                       "保码流模式不重编码；切换到救内容模式才启用");
+    }
 
     plan.feasible = true;
     outcome.can_execute = true;
