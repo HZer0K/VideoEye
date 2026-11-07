@@ -396,7 +396,7 @@ struct DecodeProbe {
     std::string detail;
 };
 
-DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomic<bool>* cancel,
+DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, double seek_seconds, const std::atomic<bool>* cancel,
                         const RepairRunBudget* budget) {
     DecodeProbe probe;
     if (stream_index < 0 || stream_index >= static_cast<int>(fmt->nb_streams)) {
@@ -404,6 +404,20 @@ DecodeProbe ProbeDecode(AVFormatContext* fmt, int stream_index, const std::atomi
         return probe;
     }
     AVStream* stream = fmt->streams[stream_index];
+    // seek_seconds < 0 表示从头读取；否则先跳到指定位置再抽样，避免只看到文件开头。
+    if (seek_seconds >= 0.0) {
+        if (stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+            probe.detail = "跳转失败: 时间基无效";
+            return probe;
+        }
+        const int64_t ts = static_cast<int64_t>(seek_seconds / av_q2d(stream->time_base));
+        if (av_seek_frame(fmt, stream_index, ts, AVSEEK_FLAG_BACKWARD) < 0) {
+            std::ostringstream detail;
+            detail << "跳转到 " << FormatSeconds(seek_seconds) << " s 失败";
+            probe.detail = detail.str();
+            return probe;
+        }
+    }
     const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
     if (!decoder) {
         probe.detail = "未找到对应解码器: " + std::string(avcodec_get_name(stream->codecpar->codec_id));
@@ -919,33 +933,88 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         }
     }
 
-    // ---- 抽样解码 ----
-    Emit(progress, 65, stage::Inspecting(), "抽样解码首段");
+    // ---- 抽样解码（首 / 中 / 尾三点）----
+    // 只看开头会把「索引完好、中段载荷损坏」的文件误判成可完整修复；
+    // 在规划前补中段与尾段抽样，才能提前暴露局部坏区。
+    Emit(progress, 65, stage::Inspecting(), "抽样解码首/中/尾");
     if (fmt && outcome.target_stream_index >= 0) {
-        DecodeProbe probe = ProbeDecode(fmt, outcome.target_stream_index, cancel, budget);
-        if (!probe.ran) {
-            AddCheck(diagnosis, "decode.sample", model::DamageLayer::Decode, model::RepairCheckStatus::NotRun,
-                     probe.detail);
-        } else {
-            model::RepairCheckStatus status = model::RepairCheckStatus::Passed;
-            if (!probe.decoder_opened || probe.frames == 0)
-                status = model::RepairCheckStatus::Failed;
-            else if (probe.errors > 0)
-                status = model::RepairCheckStatus::Inconclusive;
-            AddCheck(diagnosis, "decode.sample", model::DamageLayer::Decode, status, probe.detail);
-            if (status == model::RepairCheckStatus::Failed) {
-                model::DamageFinding finding;
-                finding.code = "decode.sample_failed";
-                finding.detector = kInspector;
-                finding.layer = model::DamageLayer::Decode;
-                finding.severity = model::IssueSeverity::Error;
-                finding.confidence = model::DamageConfidence::Confirmed;
-                finding.location.stream_index = outcome.target_stream_index;
-                finding.location.precision = model::DamagePrecision::Bounded;
-                finding.evidence = probe.detail;
-                finding.limitations.push_back("只覆盖首批样本，不能代表整片可解码");
-                diagnosis.findings.push_back(std::move(finding));
+        struct RegionProbe {
+            std::string label;
+            DecodeProbe probe;
+        };
+        double duration_seconds = fmt->duration > 0 ? static_cast<double>(fmt->duration) / AV_TIME_BASE : 0.0;
+        const AVStream* target_stream = fmt->streams[outcome.target_stream_index];
+        if (duration_seconds <= 0 && target_stream->duration > 0)
+            duration_seconds = static_cast<double>(target_stream->duration) * av_q2d(target_stream->time_base);
+
+        std::vector<RegionProbe> regions;
+        regions.push_back({"首段", ProbeDecode(fmt, outcome.target_stream_index, -1.0, cancel, budget)});
+        if (duration_seconds > 1.0) {
+            regions.push_back(
+                {"中段", ProbeDecode(fmt, outcome.target_stream_index, duration_seconds * 0.5, cancel, budget)});
+            regions.push_back({"尾段", ProbeDecode(fmt, outcome.target_stream_index,
+                                                   std::max(0.0, duration_seconds - 0.5), cancel, budget)});
+        }
+
+        int ran_regions = 0;
+        int passed_regions = 0;
+        int failed_regions = 0;
+        bool region_inconclusive = false;
+        bool region_unavailable = false;
+        std::ostringstream detail;
+        for (const auto& region : regions) {
+            if (!detail.str().empty())
+                detail << "; ";
+            detail << region.label << ": " << region.probe.detail;
+            if (!region.probe.ran) {
+                region_unavailable = true;
+                continue;
             }
+            ++ran_regions;
+            if (!region.probe.decoder_opened || region.probe.frames == 0) {
+                ++failed_regions;
+            } else if (region.probe.errors > 0) {
+                region_inconclusive = true;
+            } else {
+                ++passed_regions;
+            }
+        }
+
+        model::RepairCheckStatus status = model::RepairCheckStatus::NotRun;
+        if (ran_regions > 0) {
+            if (passed_regions == 0 && failed_regions == ran_regions)
+                status = model::RepairCheckStatus::Failed;
+            else if (failed_regions > 0 || region_inconclusive || region_unavailable)
+                status = model::RepairCheckStatus::Inconclusive;
+            else
+                status = model::RepairCheckStatus::Passed;
+        }
+        AddCheck(diagnosis, "decode.sample", model::DamageLayer::Decode, status, detail.str());
+        if (status == model::RepairCheckStatus::Failed) {
+            model::DamageFinding finding;
+            finding.code = "decode.sample_failed";
+            finding.detector = kInspector;
+            finding.layer = model::DamageLayer::Decode;
+            finding.severity = model::IssueSeverity::Error;
+            finding.confidence = model::DamageConfidence::Confirmed;
+            finding.location.stream_index = outcome.target_stream_index;
+            finding.location.precision = model::DamagePrecision::Bounded;
+            finding.evidence = detail.str();
+            finding.limitations.push_back(
+                "首/中/尾三个抽样点均未能解出帧，不能代表整片全部坏掉，但足以阻断按码流直接修复");
+            diagnosis.findings.push_back(std::move(finding));
+        } else if (failed_regions > 0 || region_unavailable) {
+            model::DamageFinding finding;
+            finding.code = "decode.sample_region_failed";
+            finding.detector = kInspector;
+            finding.layer = model::DamageLayer::Decode;
+            finding.severity = model::IssueSeverity::Warning;
+            finding.confidence = model::DamageConfidence::Confirmed;
+            finding.location.stream_index = outcome.target_stream_index;
+            finding.location.precision = model::DamagePrecision::Bounded;
+            finding.evidence = detail.str();
+            finding.limitations.push_back("局部抽样失败不等于整片不可解码，但需要跳段恢复或更保守的完整性结论");
+            diagnosis.findings.push_back(std::move(finding));
         }
     } else if (fmt) {
         AddCheck(diagnosis, "decode.sample", model::DamageLayer::Decode, model::RepairCheckStatus::NotRun,
@@ -983,7 +1052,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     // 也不能把"顶层盒大小之和"当成 bytes_scanned。
     if (!fragment_forensics_applied) {
         coverage.limitations.push_back("样本表检查基于 stsz/stsc/stco 交叉计算，未逐字节读取 mdat");
-        coverage.limitations.push_back("解码检查只覆盖首批样本，未做全片解码");
+        coverage.limitations.push_back("解码检查只覆盖首/中/尾抽样点，未做全片解码");
         coverage.skipped_ranges.push_back("mdat 载荷（未逐字节扫描）");
         coverage.time_scanned_seconds = 0.0;
         coverage.truncated_by_budget = false;

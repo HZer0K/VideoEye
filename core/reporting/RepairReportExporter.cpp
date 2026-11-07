@@ -306,6 +306,11 @@ JsonValue BuildVerification(const model::RepairVerification& verification) {
     object.Set("timeline_comparable", JsonValue(verification.timeline_comparable));
     object.Set("timeline_mismatch", JsonValue(verification.timeline_mismatch));
     object.Set("timeline_checks", BuildStringArray(verification.timeline_checks));
+    object.Set("av_sync_checked", JsonValue(verification.av_sync_checked));
+    object.Set("av_sync_start_delta_seconds", JNum(verification.av_sync_start_delta_seconds));
+    object.Set("av_sync_end_delta_seconds", JNum(verification.av_sync_end_delta_seconds));
+    object.Set("av_sync_drift_seconds", JNum(verification.av_sync_drift_seconds));
+    object.Set("av_sync_status", JText(verification.av_sync_status));
     object.Set("per_track", BuildTrackVerificationArray(verification.per_track));
     object.Set("seek_checks", J64(verification.seek_checks));
     object.Set("seek_passes", J64(verification.seek_passes));
@@ -731,6 +736,11 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                                        "s / 差值=" + FixedSeconds(result.verification.duration_delta_seconds) +
                                        "s / 可比对=" + (result.verification.timeline_comparable ? "yes" : "no") +
                                        " / 偏差超阈值=" + (result.verification.timeline_mismatch ? "yes" : "no"));
+    verification.rows.emplace_back("音画同步",
+                                   "状态=" + result.verification.av_sync_status +
+                                       " / 首端偏移=" + FixedSeconds(result.verification.av_sync_start_delta_seconds) +
+                                       "s / 尾端偏移=" + FixedSeconds(result.verification.av_sync_end_delta_seconds) +
+                                       "s / 漂移=" + FixedSeconds(result.verification.av_sync_drift_seconds) + "s");
     for (const auto& track : result.verification.per_track)
         verification.items.push_back("逐轨 " + track.kind + "#" + std::to_string(track.output_stream_index) + " [" +
                                      model::ToString(track.status) + "] verified=" + (track.verified ? "yes" : "no") +

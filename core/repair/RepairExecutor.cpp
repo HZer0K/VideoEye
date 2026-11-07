@@ -340,6 +340,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     std::vector<int> stream_map(in->nb_streams, -1);
     std::vector<const AVStream*> mapped_streams;
     int first_video_input_index = -1;
+    int first_audio_input_index = -1;
     std::set<int> requested;
     for (int index : request.target_streams)
         requested.insert(index);
@@ -377,6 +378,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         mapped_streams.push_back(stream);
         if (first_video_input_index < 0 && is_video && !attached_pic)
             first_video_input_index = static_cast<int>(i);
+        if (first_audio_input_index < 0 && !is_video && !attached_pic &&
+            stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+            first_audio_input_index = static_cast<int>(i);
     }
     for (int index : requested) {
         if (index < 0 || index >= static_cast<int>(in->nb_streams) || stream_map[static_cast<std::size_t>(index)] < 0)
@@ -474,6 +478,15 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
 
         const auto started = Clock::now();
         const double duration_seconds = in->duration > 0 ? static_cast<double>(in->duration) / AV_TIME_BASE : 0.0;
+        // 容器时长为 0 时退回轨道声明时长；恢复比例需要这个上界，不能用产物时长自证。
+        double source_duration_seconds = duration_seconds;
+        for (const AVStream* stream : mapped_streams) {
+            if (stream->duration > 0) {
+                const double seconds = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
+                source_duration_seconds = std::max(source_duration_seconds, seconds);
+            }
+        }
+        outcome.source_duration_seconds = source_duration_seconds;
         const int64_t max_seconds = request.limits.max_seconds;
         const uint64_t max_bytes = request.limits.max_output_bytes;
         const std::optional<double> salvage_end = plan.salvage_end_seconds;
@@ -736,6 +749,12 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                                   static_cast<std::size_t>(std::max(packet->size, 0)));
                 ++outcome.input_video_packet_count;
             }
+            if (in_index == first_audio_input_index) {
+                outcome.input_audio_payload_hash =
+                    Fnv1a64Update(outcome.input_audio_payload_hash.value_or(Fnv1a64Begin()), packet->data,
+                                  static_cast<std::size_t>(std::max(packet->size, 0)));
+                ++outcome.input_audio_packet_count;
+            }
 
             // ---- S03 时间轴修复：只处理重复 / 回退，缺失只统计不伪造 ----
             int64_t dts = packet->dts;
@@ -853,8 +872,11 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     std::max(outcome.output_end_seconds.value_or(output_seconds), output_seconds);
             }
 
-            if (max_bytes > 0 && outcome.bytes_written >= max_bytes) {
-                outcome.timed_out = true; // 预算意义上的停止
+            if (max_bytes > 0 && outcome.bytes_written > max_bytes) {
+                // 字节上限是「产物大小上限」，不是时间预算超时：已写出的前缀仍然是
+                // 有效产物，交给验证与发布流程，由结果标记 PartiallyRecovered。
+                // 用严格大于判断：恰好等于上限且已到文件尾时不应误报截断。
+                outcome.output_size_capped = true;
                 av_packet_unref(packet);
                 break;
             }
@@ -967,6 +989,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                         std::to_string(outcome.recovered_segments.size()) + " 段组成";
     else if (outcome.read_error)
         remux.detail += "；尾部读取失败后停止";
+    if (outcome.output_size_capped)
+        remux.detail += "；超过输出字节上限，仅保留可播放前缀";
     outcome.executions.push_back(std::move(remux));
 
     if (plan.salvage_end_seconds.has_value()) {

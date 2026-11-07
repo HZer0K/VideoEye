@@ -323,13 +323,100 @@ BuildTargets(const AVFormatContext* fmt, const std::vector<model::RepairTrackVer
     return result;
 }
 
+// 音画同步探测：扫描一遍产物的包时间戳，比较首条视频轨 / 音频轨的展示时间范围。
+// 不做解码，只读 PTS；对 V2 全量验证而言，这次全包扫描的成本相对逐轨解码可以忽略。
+struct AvSyncProbe {
+    int video_index = -1;
+    int audio_index = -1;
+    bool video_seen = false;
+    bool audio_seen = false;
+    double video_min = 0.0;
+    double video_max = 0.0;
+    double audio_min = 0.0;
+    double audio_max = 0.0;
+    bool completed = false;
+    bool read_error = false;
+    bool canceled = false;
+    bool timed_out = false;
+};
+
+AvSyncProbe ProbeAvSync(AVFormatContext* fmt, int video_index, int audio_index, const std::atomic<bool>* cancel,
+                        const RepairRunBudget* budget) {
+    AvSyncProbe probe;
+    probe.video_index = video_index;
+    probe.audio_index = audio_index;
+    if (fmt == nullptr || video_index < 0 || audio_index < 0)
+        return probe;
+
+    AVPacket* packet = av_packet_alloc();
+    if (!packet)
+        return probe;
+
+    // find_stream_info 可能留下探测读取位置；尽可能回到文件头，保证 first PTS 是真正的起点。
+    av_seek_frame(fmt, -1, 0, AVSEEK_FLAG_BACKWARD);
+
+    while (true) {
+        if (CheckStop(cancel, budget)) {
+            probe.canceled = budget == nullptr || budget->Canceled();
+            probe.timed_out = budget != nullptr && !probe.canceled;
+            break;
+        }
+        const int ret = av_read_frame(fmt, packet);
+        if (ret == AVERROR_EOF) {
+            probe.completed = true;
+            break;
+        }
+        if (ret < 0) {
+            probe.read_error = true;
+            break;
+        }
+        const int index = packet->stream_index;
+        if (index != video_index && index != audio_index) {
+            av_packet_unref(packet);
+            continue;
+        }
+        if (packet->pts == AV_NOPTS_VALUE) {
+            av_packet_unref(packet);
+            continue;
+        }
+        const AVStream* stream = fmt->streams[index];
+        if (stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+            av_packet_unref(packet);
+            continue;
+        }
+        const double seconds = static_cast<double>(packet->pts) * av_q2d(stream->time_base);
+        if (index == video_index) {
+            if (!probe.video_seen) {
+                probe.video_seen = true;
+                probe.video_min = probe.video_max = seconds;
+            } else {
+                probe.video_min = std::min(probe.video_min, seconds);
+                probe.video_max = std::max(probe.video_max, seconds);
+            }
+        } else {
+            if (!probe.audio_seen) {
+                probe.audio_seen = true;
+                probe.audio_min = probe.audio_max = seconds;
+            } else {
+                probe.audio_min = std::min(probe.audio_min, seconds);
+                probe.audio_max = std::max(probe.audio_max, seconds);
+            }
+        }
+        av_packet_unref(packet);
+    }
+
+    av_packet_free(&packet);
+    return probe;
+}
+
 } // namespace
 
 RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model::RepairVerificationLevel level,
                                            std::optional<uint64_t> expected_video_hash, const std::atomic<bool>* cancel,
                                            const RepairProgress& progress,
                                            const std::vector<model::RepairTrackVerificationTarget>& targets,
-                                           const RepairRunBudget* budget, double expected_duration_seconds) {
+                                           const RepairRunBudget* budget, double expected_duration_seconds,
+                                           std::optional<uint64_t> expected_audio_hash) {
     RepairVerifyOutcome outcome;
     model::RepairVerification& verification = outcome.verification;
     model::RepairFidelity& fidelity = outcome.fidelity;
@@ -400,6 +487,7 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
 
     const bool full = level == model::RepairVerificationLevel::V2_FullDecode;
     bool first_video_checked = false;
+    bool first_audio_checked = false;
     int seek_stream_index = -1;
     int uncovered_tracks = 0;
     bool timeline_mismatch = false;
@@ -468,9 +556,12 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
                                  model::DamageLayer::Track, model::RepairCheckStatus::Failed, record.detail);
             continue;
         }
-        const bool is_video =
-            track_fmt->streams[target.output_stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
-        const bool hash_this = full && is_video && expected_video_hash.has_value() && !first_video_checked;
+        const AVMediaType media_type = track_fmt->streams[target.output_stream_index]->codecpar->codec_type;
+        const bool is_video = media_type == AVMEDIA_TYPE_VIDEO;
+        const bool is_audio = media_type == AVMEDIA_TYPE_AUDIO;
+        const bool hash_video_this = full && is_video && expected_video_hash.has_value() && !first_video_checked;
+        const bool hash_audio_this = full && is_audio && expected_audio_hash.has_value() && !first_audio_checked;
+        const bool hash_this = hash_video_this || hash_audio_this;
         DecodePass decoded =
             DecodeStream(track_fmt, target.output_stream_index, full ? 0 : 12, hash_this, cancel, budget);
         if (is_video && seek_stream_index < 0)
@@ -541,7 +632,7 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
                                  std::to_string(target.output_stream_index),
                              model::DamageLayer::Decode, status, decoded.detail);
 
-        if (hash_this) {
+        if (hash_video_this) {
             first_video_checked = true;
             const DecodePass& hash_pass = decoded;
             if (hash_pass.payload_hash.has_value() && *hash_pass.payload_hash == *expected_video_hash) {
@@ -559,10 +650,101 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
                                          "）");
             }
         }
+        if (hash_audio_this) {
+            first_audio_checked = true;
+            const DecodePass& hash_pass = decoded;
+            if (hash_pass.payload_hash.has_value() && *hash_pass.payload_hash == *expected_audio_hash) {
+                fidelity.audio = model::RepairFidelityStatus::VerifiedMatch;
+                AddVerificationCheck(verification, "fidelity.audio_payload", model::DamageLayer::Codec,
+                                     model::RepairCheckStatus::Passed,
+                                     "音频包载荷哈希一致: " + std::to_string(*hash_pass.payload_hash));
+            } else {
+                fidelity.audio = model::RepairFidelityStatus::Failed;
+                AddVerificationCheck(verification, "fidelity.audio_payload", model::DamageLayer::Codec,
+                                     model::RepairCheckStatus::Failed,
+                                     "音频包载荷哈希不一致（输入 " + std::to_string(*expected_audio_hash) + " / 产物 " +
+                                         (hash_pass.payload_hash.has_value() ? std::to_string(*hash_pass.payload_hash)
+                                                                             : std::string("unavailable")) +
+                                         "）");
+            }
+        }
     }
     if (!first_video_checked)
         fidelity.video = model::RepairFidelityStatus::NotVerified;
+    if (!first_audio_checked)
+        fidelity.audio = model::RepairFidelityStatus::NotVerified;
     verification.decode_scope = scope.str() + (full ? ", all packets" : ", sampled packets");
+
+    // ---- 音画同步（V2 全包扫描）----
+    // 单轨可解码不代表音画关系还在：跳段恢复 / 单轨抢救 / 时间轴重写都可能让
+    // 音频与视频的展示区间相对错开。这里用首尾 PTS 差值的变化量给出结构化结论。
+    if (full) {
+        int sync_video = -1;
+        int sync_audio = -1;
+        for (const auto& target : effective) {
+            if (target.coverage_gap || !target.required)
+                continue;
+            if (target.kind == "video" && sync_video < 0)
+                sync_video = target.output_stream_index;
+            if (target.kind == "audio" && sync_audio < 0)
+                sync_audio = target.output_stream_index;
+        }
+        if (sync_video >= 0 && sync_audio >= 0) {
+            AvSyncProbe sync = ProbeAvSync(fmt, sync_video, sync_audio, cancel, budget);
+            outcome.canceled = outcome.canceled || sync.canceled;
+            outcome.timed_out = outcome.timed_out || sync.timed_out;
+            if (sync.completed && sync.video_seen && sync.audio_seen) {
+                verification.av_sync_checked = true;
+                verification.av_sync_start_delta_seconds = std::fabs(sync.video_min - sync.audio_min);
+                verification.av_sync_end_delta_seconds = std::fabs(sync.video_max - sync.audio_max);
+                verification.av_sync_drift_seconds =
+                    std::fabs(verification.av_sync_end_delta_seconds - verification.av_sync_start_delta_seconds);
+                constexpr double kDriftToleranceSeconds = 0.5;
+                const bool drift = verification.av_sync_drift_seconds > kDriftToleranceSeconds;
+                verification.av_sync_status = drift ? "drift" : "within_tolerance";
+                std::ostringstream sync_detail;
+                sync_detail << "视频展示区间 [" << FormatSeconds(sync.video_min) << ", "
+                            << FormatSeconds(sync.video_max) << "] s，音频 [" << FormatSeconds(sync.audio_min) << ", "
+                            << FormatSeconds(sync.audio_max) << "] s，首端偏移 "
+                            << FormatSeconds(verification.av_sync_start_delta_seconds) << " s，尾端偏移 "
+                            << FormatSeconds(verification.av_sync_end_delta_seconds) << " s，漂移 "
+                            << FormatSeconds(verification.av_sync_drift_seconds) << " s（容差 "
+                            << FormatSeconds(kDriftToleranceSeconds) << " s）";
+                verification.timeline_checks.push_back("A/V sync: " + sync_detail.str());
+                AddVerificationCheck(verification, "timing.av_sync", model::DamageLayer::Timing,
+                                     drift ? model::RepairCheckStatus::Inconclusive : model::RepairCheckStatus::Passed,
+                                     sync_detail.str());
+                if (drift) {
+                    model::DamageFinding residual;
+                    residual.code = "timing.av_sync_drift";
+                    residual.detector = "repair.verifier";
+                    residual.layer = model::DamageLayer::Timing;
+                    residual.severity = model::IssueSeverity::Warning;
+                    residual.confidence = model::DamageConfidence::Possible;
+                    residual.location.precision = model::DamagePrecision::Bounded;
+                    residual.location.provenance = "output video/audio first-last PTS";
+                    residual.evidence = sync_detail.str();
+                    residual.limitations.push_back(
+                        "只比较展示时间范围，不证明逐帧音画同步；音频编码器 priming 会引入小额固定偏移");
+                    verification.residual_findings.push_back(std::move(residual));
+                }
+            } else if (sync.canceled || sync.timed_out) {
+                verification.av_sync_status = "not_run";
+                AddVerificationCheck(verification, "timing.av_sync", model::DamageLayer::Timing,
+                                     model::RepairCheckStatus::Inconclusive, "音画同步扫描被取消或超出预算");
+            } else {
+                verification.av_sync_status = "not_applicable";
+                std::ostringstream detail;
+                detail << "音画同步无法判定（读取" << (sync.read_error ? "中断" : "未覆盖到流尾") << "）";
+                AddVerificationCheck(verification, "timing.av_sync", model::DamageLayer::Timing,
+                                     model::RepairCheckStatus::NotRun, detail.str());
+            }
+        } else {
+            verification.av_sync_status = "not_applicable";
+            AddVerificationCheck(verification, "timing.av_sync", model::DamageLayer::Timing,
+                                 model::RepairCheckStatus::NotRun, "产物缺少可比较的视频轨或音频轨");
+        }
+    }
 
     // ---- R03：把时长证据从「可读文字」升级为「参与结论的结构化结果」----
     verification.expected_duration_seconds = expected_duration_seconds;
@@ -741,10 +923,12 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
              << ", 状态=" << ToString(verification.status);
     verification.evidence = evidence.str();
 
-    fidelity.audio = model::RepairFidelityStatus::NotVerified;
     fidelity.video_reencoded = false;
     fidelity.audio_reencoded = false;
-    fidelity.limitations.push_back("未做音频载荷哈希比对");
+    if (!first_audio_checked)
+        fidelity.limitations.push_back("未做音频载荷哈希比对");
+    if (!full)
+        fidelity.limitations.push_back("未做 V2 全包音画同步扫描");
     fidelity.limitations.push_back("未做逐帧画质 / 感知保真度评估（需要参考样片）");
     fidelity.limitations.push_back("解码器未设置 CORRUPT / decode_error_flags 的失真无法被本检查发现");
 

@@ -36,14 +36,21 @@ struct RepairExecutionOutcome {
     uint64_t bytes_written = 0;
     bool read_error = false;
     bool salvage_truncated = false;
+    // 达到 max_output_bytes 后主动停写：产物是有效的可播放前缀，不是超时失败。
+    bool output_size_capped = false;
     // 检测到"轨道提前结束"但跳段恢复失败：产物必然缺失中间内容，不能按完整修复上报。
     bool premature_end_unrecovered = false;
 
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;
+    // 源侧声明的可播放时长（容器时长或最长轨道时长），用于恢复比例估算。
+    double source_duration_seconds = 0.0;
 
     std::optional<uint64_t> input_video_payload_hash;
     uint64_t input_video_packet_count = 0;
+    // 第一条音频轨的输入包载荷哈希，用于产物音频载荷一致性核对。
+    std::optional<uint64_t> input_audio_payload_hash;
+    uint64_t input_audio_packet_count = 0;
     int output_video_stream_index = -1;
 
     std::vector<model::RepairActionExecution> executions;

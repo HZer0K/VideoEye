@@ -9,8 +9,6 @@ const char* ToString(RepairMode value) {
         return "preserve_bitstream";
     case RepairMode::RecoverContent:
         return "recover_content";
-    case RepairMode::PlaybackCompatibility:
-        return "playback_compatibility";
     }
     return "unknown";
 }

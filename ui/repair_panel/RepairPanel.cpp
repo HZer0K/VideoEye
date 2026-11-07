@@ -177,7 +177,6 @@ void RepairPanel::BuildUi() {
     mode_combo_->addItem(QStringLiteral("保码流（推荐）"), static_cast<int>(model::RepairMode::PreserveBitstream));
     mode_combo_->addItem(QStringLiteral("救内容（M1 仍按保码流执行）"),
                          static_cast<int>(model::RepairMode::RecoverContent));
-    mode_combo_->addItem(QStringLiteral("播放兼容"), static_cast<int>(model::RepairMode::PlaybackCompatibility));
     grid->addWidget(mode_combo_, row, 1);
 
     auto* level_row = new QHBoxLayout();

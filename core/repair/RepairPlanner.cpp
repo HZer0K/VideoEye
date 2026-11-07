@@ -98,6 +98,8 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     plan.plan_id = "plan-" + FormatLocalRunId();
     plan.mode = request.mode;
     plan.expected_output_extension = "mp4";
+    if (request.limits.user_confirmed_exceed && request.limits.max_seconds > 0)
+        plan.global_preconditions.push_back("用户已确认可超出时间预算，本次修复不设硬超时");
 
     // moov 缺失分两种形态：
     // 1) fMP4 媒体分片序列缺初始化段（styp/moof/mdat）：初始化段是独立传输的，

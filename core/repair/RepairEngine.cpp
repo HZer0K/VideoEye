@@ -102,7 +102,10 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.fidelity.perceptual_fidelity = "unknown_without_reference";
 
     // R10：一次修复只有一个共享截止时间，从入口一直贯穿到发布提交。
-    const RepairRunBudget budget(cancel, request.limits.max_seconds);
+    // max_seconds 是「提示阈值」而非绝对上限：用户已确认可超出时，不再设置硬超时。
+    const bool overrun_confirmed = request.limits.user_confirmed_exceed && request.limits.max_seconds > 0;
+    const int64_t budget_seconds = overrun_confirmed ? 0 : request.limits.max_seconds;
+    const RepairRunBudget budget(cancel, budget_seconds);
     result.input_check_method = "size+mtime+内容摘要（方法在发布前复核时回填）";
 
     // ---- 0. 请求预检 + 产物路径解析 + 独占预留（R01）----
@@ -265,9 +268,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         }
     }
     Emit(progress, 89, stage::Verifying(), "开始验证产物");
-    RepairVerifyOutcome verified = RepairVerifier::Verify(paths.part_path, request.verification_level, expected_hash,
-                                                          cancel, progress, execution.verification_targets, &budget,
-                                                          inspect.source_evidence.estimated_duration_seconds);
+    RepairVerifyOutcome verified = RepairVerifier::Verify(
+        paths.part_path, request.verification_level, expected_hash, cancel, progress, execution.verification_targets,
+        &budget, inspect.source_evidence.estimated_duration_seconds, execution.input_audio_payload_hash);
     result.verification = verified.verification;
     result.fidelity.video = verified.fidelity.video;
     result.fidelity.audio = verified.fidelity.audio;
@@ -289,7 +292,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     const bool track_dropped = !planning.plan.dropped_input_streams.empty();
     const bool content_lost = execution.read_error || execution.salvage_truncated ||
                               execution.premature_end_unrecovered || planning.plan.salvage_end_seconds.has_value() ||
-                              segment_split || track_dropped;
+                              segment_split || track_dropped || execution.output_size_capped;
     const bool inconclusive = verified.verification.status == model::RepairCheckStatus::Inconclusive ||
                               verified.verification.decode_errors > 0 || verified.verification.corrupt_frames > 0 ||
                               verified.verification.error_recovery_frames > 0;
@@ -376,6 +379,67 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     else
         fidelity.content_completeness = "complete_for_selected_checks";
 
+    if (execution.output_size_capped) {
+        fidelity.limitations.push_back("产物超过配置的输出字节上限（" +
+                                       std::to_string(request.limits.max_output_bytes) +
+                                       " 字节），仅保留可播放前缀；上限之后的源内容未写入");
+        model::DamageFinding finding;
+        finding.code = "output.size_capped";
+        finding.detector = "repair.engine";
+        finding.layer = model::DamageLayer::Container;
+        finding.severity = model::IssueSeverity::Warning;
+        finding.confidence = model::DamageConfidence::Confirmed;
+        finding.location.precision = model::DamagePrecision::Bounded;
+        finding.location.provenance = "max_output_bytes vs av_interleaved_write_frame bytes";
+        finding.evidence = "写入 " + std::to_string(execution.bytes_written) + " 字节后超过上限 " +
+                           std::to_string(request.limits.max_output_bytes) + " 字节，产物已截断发布";
+        finding.limitations.push_back("字节上限按输出包累计大小判定，实际产物可能略超上限；只保证前缀可播放");
+        result.residual_findings.push_back(std::move(finding));
+    }
+
+    // 恢复比例：优先用逐轨样本守恒（参考初始化段有声明样本数），否则用有效区间时长覆盖率。
+    // 没有源侧基线时保持 nullopt，不能用产物时长自证 100%。
+    {
+        std::optional<double> recovery_ratio;
+        bool sample_based = false;
+        double expected_total = 0.0;
+        double written_total = 0.0;
+        for (const auto& record : result.track_conservation) {
+            if (record.expected_samples == 0)
+                continue;
+            expected_total += static_cast<double>(record.expected_samples);
+            written_total += static_cast<double>(std::min(record.packets_written, record.expected_samples));
+        }
+        if (expected_total > 0.0) {
+            recovery_ratio = written_total / expected_total;
+            sample_based = true;
+        } else {
+            double source_duration = execution.source_duration_seconds;
+            source_duration = std::max(source_duration, inspect.source_evidence.estimated_duration_seconds);
+            if (source_duration > 0.0) {
+                double covered = 0.0;
+                if (!execution.recovered_segments.empty()) {
+                    for (const auto& segment : execution.recovered_segments)
+                        covered += std::max(0.0, segment.input_end_seconds - segment.input_start_seconds);
+                } else if (execution.output_start_seconds.has_value() && execution.output_end_seconds.has_value()) {
+                    covered = std::max(0.0, *execution.output_end_seconds - *execution.output_start_seconds);
+                }
+                if (covered > 0.0)
+                    recovery_ratio = covered / source_duration;
+                if (recovery_ratio.has_value())
+                    fidelity.limitations.push_back(
+                        "恢复比例按有效区间时长占源声明时长的比例估算，不是逐帧 / 逐字节比对");
+            }
+        }
+        if (recovery_ratio.has_value()) {
+            fidelity.original_content_recovery_ratio = std::min(1.0, std::max(0.0, *recovery_ratio));
+            if (sample_based)
+                fidelity.limitations.push_back("恢复比例按参考初始化段声明的逐轨样本数估算，不是逐字节比对");
+        } else {
+            fidelity.limitations.push_back("缺少源侧时长或样本基线，未给出恢复比例");
+        }
+    }
+
     if (!content_lost)
         fidelity.limitations.push_back("未与原始完整内容比对（输入本身已是损坏文件）");
     if (execution.premature_end_unrecovered)
@@ -426,6 +490,11 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     if (!verified.verification.timeline_checks.empty()) {
         for (const auto& line : verified.verification.timeline_checks)
             fidelity.limitations.push_back("时间轴实测: " + line);
+    }
+    if (verified.verification.av_sync_status == "drift") {
+        fidelity.limitations.push_back("音画首尾时间戳漂移 " +
+                                       FormatSeconds(verified.verification.av_sync_drift_seconds) +
+                                       " s，超过容差；只比较展示时间范围，不证明逐帧音画同步");
     }
 
     model::RepairBusinessStatus status = model::RepairBusinessStatus::Repaired;

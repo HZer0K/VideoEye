@@ -25,9 +25,8 @@ namespace model {
 
 // ---- 修复目标模式 ----
 enum class RepairMode {
-    PreserveBitstream,     // 保码流：只修封装 / 索引 / 时间轴，不改动编解码数据
-    RecoverContent,        // 救内容：允许转码或重建，优先保住可感知内容
-    PlaybackCompatibility, // 播放兼容：为指定播放器 / 分发场景做封装或编码调整
+    PreserveBitstream, // 保码流：只修封装 / 索引 / 时间轴，不改动编解码数据
+    RecoverContent,    // 救内容：允许转码或重建，优先保住可感知内容
 };
 
 // ---- 损坏区间的时间轴处理策略 ----
@@ -482,6 +481,15 @@ struct RepairVerification {
     double duration_delta_seconds = 0.0;
     bool timeline_comparable = false; // 两侧都有实测值才叫「比对过」
     bool timeline_mismatch = false;   // 偏差超阈值，必须拉低结论
+
+    // 音画同步：比较首条视频轨与首条音频轨的展示时间范围。
+    // start/end delta 是两端绝对偏移；drift 是两端偏移的变化量，才是真正随时间累积的漂移。
+    bool av_sync_checked = false;
+    double av_sync_start_delta_seconds = 0.0;
+    double av_sync_end_delta_seconds = 0.0;
+    double av_sync_drift_seconds = 0.0;
+    // not_run / not_applicable / within_tolerance / drift
+    std::string av_sync_status = "not_run";
 
     std::vector<DamageFinding> residual_findings;
     std::string evidence;

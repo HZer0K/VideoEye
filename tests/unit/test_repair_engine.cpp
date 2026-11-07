@@ -37,6 +37,8 @@
 #include "core/reporting/RepairReportExporter.h"
 #include "tests/support/TestMediaFactory.h"
 
+bool HasResidualFinding(const videoeye::model::RepairResult& result, const std::string& code);
+
 namespace {
 
 using namespace videoeye;
@@ -83,6 +85,14 @@ bool HasFinding(const RepairResult& result, const std::string& code) {
             return true;
     }
     return false;
+}
+
+std::string CheckDetail(const RepairResult& result, const std::string& name) {
+    for (const auto& check : result.diagnosis.checks) {
+        if (check.name == name)
+            return check.detail;
+    }
+    return {};
 }
 
 RepairRequest MakeRequest(const std::string& source, const std::string& output_dir,
@@ -194,11 +204,21 @@ TEST(RepairEngine, IntactMp4IsRemuxedAndVerified) {
     EXPECT_GT(result.verification.decoded_frames, 0u);
     EXPECT_EQ(result.verification.seek_passes, result.verification.seek_checks);
     EXPECT_EQ(result.fidelity.video, RepairFidelityStatus::VerifiedMatch);
+    EXPECT_EQ(result.fidelity.audio, RepairFidelityStatus::VerifiedMatch);
     EXPECT_FALSE(result.fidelity.video_reencoded);
     EXPECT_FALSE(result.fidelity.timeline_modified);
     EXPECT_EQ(result.fidelity.timeline_status, "unchanged")
         << "没有借用任何外部解码参数 / 时基时，时间轴结论才可以是 unchanged";
     EXPECT_EQ(result.fidelity.content_completeness, "complete_for_selected_checks");
+    EXPECT_TRUE(result.verification.av_sync_checked);
+    EXPECT_EQ(result.verification.av_sync_status, "within_tolerance");
+    ASSERT_TRUE(result.fidelity.original_content_recovery_ratio.has_value());
+    EXPECT_NEAR(*result.fidelity.original_content_recovery_ratio, 1.0, 0.05);
+    // 诊断不再只看开头：完整媒体应完成首/中/尾三个抽样点。
+    const std::string decode_detail = CheckDetail(result, "decode.sample");
+    EXPECT_NE(decode_detail.find("首段"), std::string::npos) << decode_detail;
+    EXPECT_NE(decode_detail.find("中段"), std::string::npos) << decode_detail;
+    EXPECT_NE(decode_detail.find("尾段"), std::string::npos) << decode_detail;
 
     ASSERT_FALSE(result.executions.empty());
     EXPECT_EQ(result.executions.front().action, RepairAction::S01_Remux);
@@ -260,11 +280,36 @@ TEST(RepairEngine, TruncatedTailIsSalvagedAsPartial) {
     EXPECT_TRUE(result.verification.status == RepairCheckStatus::Passed ||
                 result.verification.status == RepairCheckStatus::Inconclusive);
     EXPECT_GT(result.verification.decoded_frames, 0u);
+    ASSERT_TRUE(result.fidelity.original_content_recovery_ratio.has_value());
+    EXPECT_LT(*result.fidelity.original_content_recovery_ratio, 1.0) << "尾部被截断时恢复比例不能报 100%";
 
     const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
     EXPECT_TRUE(probe.opened);
     EXPECT_GT(probe.frame_count, 0);
     EXPECT_LT(probe.duration_seconds, media.duration_seconds + 0.05);
+}
+
+TEST(RepairEngine, OutputByteCapPublishesPlayablePrefix) {
+    const std::string dir = MakeTempDir("cap");
+    const auto media = videoeye_test::CreateTestMedia(dir, "cap_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.limits.max_output_bytes = std::max<uint64_t>(FileSize(media.path) / 3, 4 * 1024);
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+
+    EXPECT_TRUE(result.output_published) << "summary=" << result.summary << " error=" << result.error;
+    EXPECT_TRUE(std::filesystem::exists(result.output_path));
+    EXPECT_GT(FileSize(result.output_path), 0u);
+    EXPECT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered) << "summary=" << result.summary;
+    EXPECT_EQ(result.fidelity.content_completeness, "partial");
+    EXPECT_TRUE(HasResidualFinding(result, "output.size_capped"));
+    ASSERT_TRUE(result.fidelity.original_content_recovery_ratio.has_value());
+    EXPECT_LT(*result.fidelity.original_content_recovery_ratio, 1.0);
+
+    const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
+    EXPECT_TRUE(probe.opened) << probe.error;
+    EXPECT_GT(probe.frame_count, 0);
 }
 
 TEST(RepairEngine, MissingMoovIsReportedAsNeedsReference) {
