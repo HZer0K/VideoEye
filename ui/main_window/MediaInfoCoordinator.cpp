@@ -1,8 +1,8 @@
 #include "ui/main_window/MediaInfoCoordinator.h"
 
 #include "infrastructure/logging/ScopedTimer.h"
-// MediaInfoAnalyzer 不碰 Qt；它只在本翻译单元的解析任务体 / PCM 同步分支里当局部
-// 变量用，每次需要跨 Qt 边界传数据的地方都是 std::string。
+// MediaInfoAnalyzer 不碰 Qt；它只在本翻译单元的解析任务体里当局部变量用，
+// 每次需要跨 Qt 边界传数据的地方都是 std::string。
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 
 #include <QMetaObject>
@@ -23,17 +23,6 @@ MediaInfoCoordinator::~MediaInfoCoordinator() {
     generation_.fetch_add(1);
     tasks_.CancelAll();
     tasks_.WaitForAll(3000);
-}
-
-QString MediaInfoCoordinator::DescribeRawPcm(const QString& source, const QString& demuxer_name, int sample_rate,
-                                             int channels) {
-    videoeye::MediaInfoAnalyzer mi;
-    // 只有这一个调用点需要跨 Qt 边界：MediaInfoAnalyzer 已经不碰 Qt。
-    mi.SetRawPcmHints(demuxer_name.toStdString(), sample_rate, channels);
-    if (mi.Open(source.toStdString())) {
-        return QString::fromStdString(mi.GetCompleteInfo());
-    }
-    return tr("(无法解析 PCM 媒体信息)");
 }
 
 void MediaInfoCoordinator::StartAsync(const QString& source) {

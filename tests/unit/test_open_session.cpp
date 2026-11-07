@@ -14,8 +14,10 @@
 namespace {
 
 using videoeye::ui::ArmOpenTicket;
+using videoeye::ui::ArmPcmOpenTicket;
 using videoeye::ui::ClassifyOpenTarget;
 using videoeye::ui::ClearOpenTicket;
+using videoeye::ui::IsAmbiguousRawSuffix;
 using videoeye::ui::IsOpenTicketArmed;
 using videoeye::ui::OpenTargetKind;
 using videoeye::ui::OpenTicket;
@@ -41,6 +43,15 @@ TEST(OpenSessionTests, ClassificationIsCaseInsensitive) {
 
 TEST(OpenSessionTests, PcmSuffixRoutesToPcm) {
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("audio.pcm")), OpenTargetKind::Pcm);
+}
+
+// `.raw` 是唯一的内容二义后缀：分类仍落到 RawImage（历史口径），但入口必须再问一次。
+TEST(OpenSessionTests, OnlyRawSuffixIsAmbiguous) {
+    EXPECT_TRUE(IsAmbiguousRawSuffix(QString::fromUtf8("a.raw")));
+    EXPECT_TRUE(IsAmbiguousRawSuffix(QString::fromUtf8("a.RAW")));
+    EXPECT_FALSE(IsAmbiguousRawSuffix(QString::fromUtf8("a.pcm")));
+    EXPECT_FALSE(IsAmbiguousRawSuffix(QString::fromUtf8("a.yuv")));
+    EXPECT_FALSE(IsAmbiguousRawSuffix(QString::fromUtf8("/raw.clip/a.mp4")));
 }
 
 TEST(OpenSessionTests, EverythingElseRoutesToAsyncMedia) {
@@ -74,6 +85,31 @@ TEST(OpenSessionTests, ArmAndTakeRoundTrips) {
     ASSERT_TRUE(TakeOpenTicket(ticket, &source, &autoplay));
     EXPECT_EQ(source, QString::fromUtf8("a.mp4"));
     EXPECT_TRUE(autoplay);
+}
+
+// 裸 PCM 的收尾要带用户现场选的参数（标签 / 是否走 PCM 分支都靠它）。
+TEST(OpenSessionTests, PcmTicketRoundTripsItsParameters) {
+    OpenTicket ticket;
+    ArmPcmOpenTicket(ticket, QString::fromUtf8("audio.raw"), true, QString::fromUtf8("s16le"), 48000, 6);
+
+    OpenTicket taken;
+    ASSERT_TRUE(TakeOpenTicket(ticket, &taken));
+    EXPECT_TRUE(taken.IsPcm());
+    EXPECT_EQ(taken.source, QString::fromUtf8("audio.raw"));
+    EXPECT_TRUE(taken.autoplay);
+    EXPECT_EQ(taken.pcm_demuxer, QString::fromUtf8("s16le"));
+    EXPECT_EQ(taken.pcm_sample_rate, 48000);
+    EXPECT_EQ(taken.pcm_channels, 6);
+}
+
+// 普通媒体的票不带 PCM 参数，收尾必须走通用分支。
+TEST(OpenSessionTests, MediaTicketIsNotPcm) {
+    OpenTicket ticket;
+    ArmOpenTicket(ticket, QString::fromUtf8("a.mp4"), false);
+
+    OpenTicket taken;
+    ASSERT_TRUE(TakeOpenTicket(ticket, &taken));
+    EXPECT_FALSE(taken.IsPcm());
 }
 
 // 取走即作废：一次登记只能被消费一次。这是"过期回调"判定的基础 ——

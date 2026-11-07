@@ -8,6 +8,8 @@
 #include "core/player/MediaPlayerFwd.h"
 #include "ui/main_window/macroblock_coordination.h"
 #include "ui/main_window/menu_bar.h"
+// RawOpenChoice（`.raw` 内容二义的选择结果）在 PromptForRawKind 的签名里。
+#include "ui/main_window/open_session.h"
 // 布局预设用 window_layout.h 的那一份（与 PlayerPanel::LayoutPreset 同义），
 // 这样本头不必把整个播放面板拖进来 —— 两处枚举的映射只在 .cpp 里做一次。
 #include "ui/main_window/window_layout.h"
@@ -97,6 +99,8 @@ private:
     // 打开叠加时强制开启（并同步宏块页勾选框），关闭叠加后恢复到用户原先的选择。
     void ApplyMacroblockAnalysisState();
     bool PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels);
+    // `.raw` 内容二义：让用户选择原始像素序列还是裸 PCM 音频。
+    bool PromptForRawKind(const QString& source, RawOpenChoice& choice);
     void UpdateMinimumWindowSize();
 
 protected:

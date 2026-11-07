@@ -89,6 +89,8 @@ public:
     // === 供 MainWindow 调用的业务接口 ===
     void StopPlayback(); // 清理 UI 状态 + player_->Stop()
     void ResetVideoUI();
+    // 按总时长设置进度条范围与可拖动状态：duration<=0（未知）时禁用并给出提示。
+    void UpdateSeekAvailability(int duration_ms);
     bool LoadRawImageFile(const QString& filename);
     void SetRawImageMode(bool on);          // 打开 raw/pcm/媒体时同步模式
     bool IsShowingRawImage() const;         // 委托 RawImageSequence

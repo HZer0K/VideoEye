@@ -165,6 +165,69 @@ TEST_P(PlayerOpenRawPcm, OpensWithSelectedParametersAndReportsMatchingInfo) {
     EXPECT_NE(std::string::npos, text.find(channels_line)) << text;
 }
 
+// 异步版: 裸 PCM 以前在 UI 线程同步打开（大文件整窗卡住）。现在与通用媒体共用
+// Prepare/Commit，终态同样经 OpenFinished 回到 UI。参数仍然必须真的落到 demuxer 上。
+TEST(PlayerOpenAsync, RawPcmAsyncReachesOpenFinishedWithSelection) {
+    AppScope app_scope;
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+
+    const QString path = directory.filePath(QStringLiteral("audio.pcm"));
+    const int sample_count = 4800; // 0.1s @ 48kHz, 2ch, s16le
+    const QByteArray samples(sample_count * 2 * 2, '\0');
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_EQ(samples.size(), file.write(samples));
+    file.close();
+
+    player::MediaPlayer player;
+    int finished = 0;
+    bool last_ok = false;
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player, [&finished, &last_ok](bool ok) {
+        ++finished;
+        last_ok = ok;
+    });
+
+    player.OpenRawPcmAsync(path, QStringLiteral("s16le"), 48000, 2);
+    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000)) << "异步 PCM 打开没有给出终态";
+    EXPECT_TRUE(last_ok) << player.GetLastError().toStdString();
+    EXPECT_NEAR(100, player.GetDuration(), 1);
+    const auto info = player.GetStreamInfo();
+    EXPECT_EQ("2", info.audio.channels) << "异步链路同样要把声道数落到 demuxer 上";
+    EXPECT_EQ("48000", info.audio.sampling_rate);
+}
+
+// ===========================================================================
+// 裸视频 ES 的总时长估算
+//
+// 裸 H.264 没有容器时长（format->duration == AV_NOPTS_VALUE），进度条总量只能靠
+// 有界扫描给出。这里用真实语料钉住"打开后 GetDuration() > 0"——它直接决定进度条
+// 是否可拖动，以及 PlaybackSession::Seek 会不会在入口就被拒绝。
+// ===========================================================================
+TEST(PlayerOpenAsync, BareH264ReportsDraggableDuration) {
+#ifndef VIDEOEYE_CODEC_CORPUS_DIR
+    GTEST_SKIP() << "未定义裸流语料目录";
+#else
+    AppScope app_scope;
+    const QString path = QString::fromUtf8(VIDEOEYE_CODEC_CORPUS_DIR) + QStringLiteral("/real_x264_192x108_hrd.h264");
+    ASSERT_TRUE(QFile::exists(path)) << path.toStdString();
+
+    player::MediaPlayer player;
+    int finished = 0;
+    bool last_ok = false;
+    QObject::connect(&player, &player::MediaPlayer::OpenFinished, &player, [&finished, &last_ok](bool ok) {
+        ++finished;
+        last_ok = ok;
+    });
+
+    player.OpenAsync(path);
+    ASSERT_TRUE(PumpUntil([&] { return finished > 0; }, 10000)) << "裸流打开没有给出终态";
+    ASSERT_TRUE(last_ok) << player.GetLastError().toStdString();
+    EXPECT_GT(player.GetDuration(), 0) << "裸流没有总时长，进度条就不可拖动";
+    EXPECT_FALSE(player.GetStreamInfo().extractor.duration.empty());
+#endif
+}
+
 INSTANTIATE_TEST_SUITE_P(SupportedFormats, PlayerOpenRawPcm,
                          testing::Values(RawPcmCase{"s16le", 2, 48000, 2}, RawPcmCase{"s16be", 2, 44100, 1},
                                          RawPcmCase{"u8", 1, 48000, 2}, RawPcmCase{"s24le", 3, 48000, 6},

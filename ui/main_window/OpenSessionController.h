@@ -46,6 +46,9 @@ public:
         MediaInfoCoordinator* media_info = nullptr;
         // 打开 PCM 前的参数弹窗（demuxer / 采样率 / 声道）。未注入时视为用户取消。
         std::function<bool(QString& /*demuxer*/, int& /*sample_rate*/, int& /*channels*/)> prompt_pcm;
+        // `.raw` 的内容二义（原始像素 / 裸 PCM）：返回 false 表示用户取消。
+        // 未注入时沿用历史默认（按原始像素序列打开）。
+        std::function<bool(const QString& /*source*/, RawOpenChoice& /*choice*/)> prompt_raw_kind;
         // 打开新文件前收掉导出进度框（导出协调器的界面部分）。
         // "终止进行中的导出"归 MediaPlayer::CancelAllExports()，不在这里。
         std::function<void()> hide_export_progress;
@@ -56,8 +59,9 @@ public:
 
     explicit OpenSessionController(const Deps& deps, QObject* parent = nullptr);
 
-    // 打开一个媒体源。返回 false 表示没打开（空路径 / 没播放器 / 取消了 PCM 参数 /
-    // 打开失败），失败原因已经用 StatusMessage 报出去了 —— 调用方只据此决定继续与否。
+    // 打开一个媒体源。返回 false 表示没打开（空路径 / 没播放器 / 用户取消了弹窗 /
+    // 裸图像加载失败），失败原因已经用 StatusMessage 报出去了 —— 调用方只据此决定
+    // 继续与否。异步路径（通用媒体 / 裸 PCM）已受理即返回 true，最终成败走 OpenFinished。
     bool Open(const QString& source, bool autoplay);
 
     // 当前登记的媒体源（导出入口的「当前文件」查询读它）。
@@ -77,9 +81,11 @@ public slots:
     void OnPlayerOpenFinished(bool ok);
 
 private:
-    bool OpenRawImage(const QString& source);
+    bool OpenRawImage(const QString& source, bool autoplay);
     bool OpenPcm(const QString& source, bool autoplay);
     bool OpenMediaAsync(const QString& source, bool autoplay);
+    // 裸 PCM 的异步收尾（标签带参数、不跑视频诊断扫描、失败不重探）。
+    void OnPcmOpenFinished(const OpenTicket& ticket, bool ok);
 
     Deps deps_;
     QString current_media_url_;

@@ -555,6 +555,10 @@ void MainWindow::SetupOpenSession() {
     deps.prompt_pcm = [this](QString& demuxer, int& sample_rate, int& channels) {
         return PromptForPcmSettings(demuxer, sample_rate, channels);
     };
+    // `.raw` 内容二义（原始像素 / 裸 PCM）：同样把对话框留在本窗口。
+    deps.prompt_raw_kind = [this](const QString& source, RawOpenChoice& choice) {
+        return PromptForRawKind(source, choice);
+    };
     deps.hide_export_progress = [this]() { export_coordinator_->HideProgress(); };
     deps.apply_macroblock_state = [this]() { ApplyMacroblockAnalysisState(); };
     open_session_ = new OpenSessionController(deps, this);
@@ -933,6 +937,29 @@ bool MainWindow::OpenMedia(const QString& source, bool autoplay) {
         return false;
     }
     return open_session_->Open(source, autoplay);
+}
+
+bool MainWindow::PromptForRawKind(const QString& source, RawOpenChoice& choice) {
+    QMessageBox box(this);
+    box.setWindowTitle(tr("打开 .raw 文件"));
+    box.setText(tr("无法从扩展名判断该文件的内容类型。"));
+    box.setInformativeText(tr("%1\n\n按原始像素序列打开需要文件确有像素数据；裸 PCM 音频则需再指定采样格式。")
+                               .arg(QFileInfo(source).fileName()));
+    QPushButton* image_button = box.addButton(tr("原始像素序列"), QMessageBox::AcceptRole);
+    QPushButton* pcm_button = box.addButton(tr("裸 PCM 音频"), QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(image_button);
+    box.exec();
+
+    if (box.clickedButton() == pcm_button) {
+        choice = RawOpenChoice::Pcm;
+        return true;
+    }
+    if (box.clickedButton() == image_button) {
+        choice = RawOpenChoice::RawImage;
+        return true;
+    }
+    return false;
 }
 
 bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, int& channels) {

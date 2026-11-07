@@ -470,18 +470,21 @@ void PlayerPanel::OnPlayPause() {
 }
 
 void PlayerPanel::OnPlayerOpenFinished(bool ok) {
-    if (!open_then_play_) {
-        return; // 不是"点播放"触发的打开 (如 OpenMedia 主路径), 不在此续播
-    }
+    const bool continue_play = open_then_play_;
     open_then_play_ = false;
     if (!player_) {
         return;
     }
-    if (!ok) {
-        emit StatusMessage(tr("打开失败: %1").arg(player_->GetLastError()), 0);
-        return;
+    // 打开收尾时把进度条的总量与可用性定下来：时长未知（直播流 / 估算失败的裸流）
+    // 时禁用拖动并给出说明，而不是留一根拖了没反应的滑杆。
+    UpdateSeekAvailability(ok ? player_->GetDuration() : 0);
+    if (continue_play) {
+        if (!ok) {
+            emit StatusMessage(tr("打开失败: %1").arg(player_->GetLastError()), 0);
+            return;
+        }
+        player_->Play();
     }
-    player_->Play();
 }
 
 void PlayerPanel::ResetVideoUI() {
@@ -622,14 +625,30 @@ void PlayerPanel::OnPositionChanged(int position_ms, int duration_ms) {
         return;
     }
 
-    QSignalBlocker blocker(control_bar_->seekSlider());
-    control_bar_->seekSlider()->setRange(0, duration_ms);
-    control_bar_->seekSlider()->setValue(position_ms);
+    UpdateSeekAvailability(duration_ms);
+    {
+        QSignalBlocker blocker(control_bar_->seekSlider());
+        control_bar_->seekSlider()->setValue(position_ms);
+    }
 
-    control_bar_->timeLabel()->setText(
-        QString("%1 / %2").arg(theme::font::formatTime(position_ms)).arg(theme::font::formatTime(duration_ms)));
+    // 总时长未知时明确显示"未知"，不用 00:00:00 冒充（会让人以为文件是空的）。
+    const QString total = duration_ms > 0 ? theme::font::formatTime(duration_ms) : tr("--:--:--");
+    control_bar_->timeLabel()->setText(QString("%1 / %2").arg(theme::font::formatTime(position_ms), total));
 
     UpdateTimecodeLabel(position_ms);
+}
+
+void PlayerPanel::UpdateSeekAvailability(int duration_ms) {
+    if (!control_bar_)
+        return;
+    const int duration = std::max(0, duration_ms);
+    const bool seekable = duration > 0;
+    {
+        QSignalBlocker blocker(control_bar_->seekSlider());
+        control_bar_->seekSlider()->setRange(0, duration);
+    }
+    control_bar_->seekSlider()->setEnabled(seekable);
+    control_bar_->seekSlider()->setToolTip(seekable ? QString() : tr("当前媒体没有可用的时长信息，无法拖动定位"));
 }
 
 void PlayerPanel::SetStartTimecode(const QString& timecode, double fps) {

@@ -1,5 +1,6 @@
 #include "core/player/StreamInfoExtractor.h"
 #include <QFileInfo>
+
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -11,7 +12,10 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/time.h>
 }
+
+#include "core/player/BareStreamUtils.h"
 
 namespace videoeye {
 namespace player {
@@ -252,6 +256,99 @@ std::string FormatMasteringDisplayPrimaries(const AVMasteringDisplayMetadata& md
     return oss.str();
 }
 
+// --- 裸视频 ES 的总时长估算 ---
+//
+// 裸 ES 的 format->duration / bit_rate / nb_frames 全是 N/A，没有可换算的头部
+// 信息。这里用**有界扫描**给出一个可拖动的总时长：
+//   * 从头读包，按 packet->duration（缺失时用帧率换算）累加媒体时间；
+//   * 扫到 EOF 就是精确值；
+//   * 没扫完就按"已读字节覆盖的媒体时长"外推全文件（变码率下是估算）。
+// 扫描独立开一个上下文（不动播放用的那个），上限 4 MiB / 4000 包 / 500ms，
+// 在打开链路的后台线程上执行。
+int64_t EstimateBareVideoDurationMs(const QString& url, const AVFormatContext* source, int video_stream_index) {
+    if (!source || video_stream_index < 0 || !bare_stream::IsBareVideoEs(source))
+        return 0;
+    const QFileInfo fi(url);
+    if (!fi.exists() || !fi.isFile() || fi.size() <= 0)
+        return 0;
+
+    constexpr int64_t kMaxScanBytes = 4 * 1024 * 1024;
+    constexpr int kMaxScanPackets = 4000;
+    constexpr int64_t kMaxScanDurationUs = 500 * 1000;
+
+    AVFormatContext* scan_ctx = nullptr;
+    AVDictionary* options = nullptr;
+    // 探测别把整个文件读一遍：裸流只需要 SPS 里的帧率与流参数。
+    av_dict_set(&options, "probesize", "1048576", 0);
+    av_dict_set(&options, "analyzeduration", "2000000", 0);
+    const int open_ret = avformat_open_input(&scan_ctx, url.toUtf8().constData(), source->iformat, &options);
+    av_dict_free(&options);
+    if (open_ret < 0)
+        return 0;
+    if (avformat_find_stream_info(scan_ctx, nullptr) < 0) {
+        avformat_close_input(&scan_ctx);
+        return 0;
+    }
+
+    int stream_index = av_find_best_stream(scan_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (stream_index < 0)
+        stream_index = video_stream_index;
+    if (stream_index < 0 || stream_index >= static_cast<int>(scan_ctx->nb_streams)) {
+        avformat_close_input(&scan_ctx);
+        return 0;
+    }
+    const AVStream* stream = scan_ctx->streams[stream_index];
+    if (!stream || stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+        avformat_close_input(&scan_ctx);
+        return 0;
+    }
+    const AVRational time_base = stream->time_base;
+
+    // find_stream_info 已经读过一小段；回到文件头再扫，否则开头那段媒体时间会漏掉。
+    if (scan_ctx->pb)
+        avio_seek(scan_ctx->pb, 0, SEEK_SET);
+    avformat_flush(scan_ctx);
+
+    AVPacket* packet = av_packet_alloc();
+    if (!packet) {
+        avformat_close_input(&scan_ctx);
+        return 0;
+    }
+
+    int64_t media_ticks = 0;
+    int64_t scanned_bytes = 0;
+    int scanned_packets = 0;
+    bool reached_eof = false;
+    const int64_t begin_us = av_gettime_relative();
+
+    while (scanned_packets < kMaxScanPackets && scanned_bytes < kMaxScanBytes &&
+           av_gettime_relative() - begin_us < kMaxScanDurationUs) {
+        const int ret = av_read_frame(scan_ctx, packet);
+        if (ret < 0) {
+            reached_eof = (ret == AVERROR_EOF);
+            break;
+        }
+        if (packet->stream_index == stream_index) {
+            const int64_t step = (packet->duration > 0) ? packet->duration : bare_stream::FrameDurationTicks(stream);
+            if (step > 0) {
+                media_ticks += step;
+                ++scanned_packets;
+            }
+        }
+        scanned_bytes += packet->size;
+        av_packet_unref(packet);
+    }
+
+    av_packet_free(&packet);
+    avformat_close_input(&scan_ctx);
+    if (scanned_packets <= 0 || media_ticks <= 0)
+        return 0;
+
+    const double media_seconds = static_cast<double>(media_ticks) * av_q2d(time_base);
+    return static_cast<int64_t>(
+        bare_stream::EstimateDurationMsFromScan(media_seconds, scanned_bytes, fi.size(), reached_eof));
+}
+
 std::string FormatMasteringDisplayLuminance(const AVMasteringDisplayMetadata& md) {
     if (!md.has_luminance)
         return {};
@@ -331,6 +428,13 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
 
     info.filename = url.toStdString();
     int64_t duration_ms = DurationMsFromFormat(format_ctx);
+    // 裸视频 ES 没有容器时长：有界扫描给出"可拖动"的总量（扫到 EOF 为精确值，
+    // 否则按已读字节外推）。放在 PCM 之前：两者的判定条件不重叠。
+    bool duration_estimated = false;
+    if (duration_ms <= 0 && video_stream_index >= 0) {
+        duration_ms = EstimateBareVideoDurationMs(url, format_ctx, video_stream_index);
+        duration_estimated = duration_ms > 0;
+    }
     if (duration_ms <= 0 && audio_stream_index >= 0 && format_ctx->streams && format_ctx->streams[audio_stream_index]) {
         duration_ms = EstimateRawPcmDurationMs(url, format_ctx->streams[audio_stream_index]->codecpar);
     }
@@ -368,6 +472,10 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         }
     }
     info.extractor.duration = FormatDurationMs(duration_ms);
+    // 估算值要标明：用户在媒体信息/首页看到的是"大概多长"，不是容器声明的精确时长。
+    if (duration_estimated && !info.extractor.duration.empty()) {
+        info.extractor.duration += "（估算）";
+    }
     info.extractor.overall_bit_rate = FormatBitrate(format_ctx->bit_rate);
     info.extractor.writing_application = GetMetadata(format_ctx->metadata, "encoder");
     {

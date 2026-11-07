@@ -94,8 +94,14 @@ struct MediaPlayer::Impl {
     // 组装 Prepare 的输入（读当前音量 / 解码开关，并带上本次尝试的取消状态）。
     OpenPrepareParams MakeOpenParams(const QString& url, const AVInputFormat* input_format,
                                      AVDictionary* input_options);
+    // 裸 PCM 的变体：选项在 Prepare 的后台线程里构造。
+    OpenPrepareParams MakeOpenParams(const QString& url, const RawPcmOpenSpec& raw_pcm);
     // 同步打开: 换媒体复位 + Prepare + Commit 全在调用线程完成（兼容旧调用与测试）。
     bool OpenInternal(const QString& url, const AVInputFormat* input_format, AVDictionary* input_options);
+    // 裸 PCM 的同步变体（测试与旧调用）。
+    bool OpenInternal(const QString& url, const RawPcmOpenSpec& raw_pcm);
+    // 异步打开（通用媒体 / 裸 PCM 共用）: UI 线程只做复位，Prepare 派到后台。
+    void StartAsyncOpen(const QString& url, const RawPcmOpenSpec& raw_pcm);
     // 让当前尝试（打开期后台线程，或已提交会话的播放期阻塞读）立刻退出。
     void RequestCancel();
 
@@ -305,21 +311,11 @@ bool MediaPlayer::Open(const QString& url) {
 }
 
 bool MediaPlayer::OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels) {
-    const AVInputFormat* input_format = av_find_input_format(demuxer_name.toUtf8().constData());
-    if (!input_format) {
-        impl_->last_open_error_ = QString("不支持的 PCM 采样格式: %1").arg(demuxer_name);
-        emit OpenFailed(impl_->last_open_error_);
-        return false;
-    }
-    AVDictionary* input_options = nullptr;
-    av_dict_set(&input_options, "sample_rate", QByteArray::number(sample_rate).constData(), 0);
-    // 声道走 ch_layout（FFmpeg 8 的 pcm demuxer 不再认 "channels", 传了静默忽略）。
-    // 与 MediaInfoAnalyzer 共用同一个构造函数, 免得两边各写一份再漂移。
-    const std::string ch_layout = ffmpeg_io::ChannelLayoutOption(channels);
-    if (!ch_layout.empty()) {
-        av_dict_set(&input_options, "ch_layout", ch_layout.c_str(), 0);
-    }
-    return impl_->OpenInternal(url, input_format, input_options);
+    return impl_->OpenInternal(url, RawPcmOpenSpec{demuxer_name, sample_rate, channels});
+}
+
+void MediaPlayer::OpenRawPcmAsync(const QString& url, const QString& demuxer_name, int sample_rate, int channels) {
+    impl_->StartAsyncOpen(url, RawPcmOpenSpec{demuxer_name, sample_rate, channels});
 }
 
 // --- Impl: 打开链路 / 播放收尾 / 分析开关分派 ---
@@ -373,6 +369,12 @@ OpenPrepareParams MediaPlayer::Impl::MakeOpenParams(const QString& url, const AV
     return params;
 }
 
+OpenPrepareParams MediaPlayer::Impl::MakeOpenParams(const QString& url, const RawPcmOpenSpec& raw_pcm) {
+    OpenPrepareParams params = MakeOpenParams(url, nullptr, nullptr);
+    params.raw_pcm = raw_pcm;
+    return params;
+}
+
 bool MediaPlayer::Impl::CommitOpen(const QString& url, OpenResult&& result) {
     model::StreamInfo info;
     QString error;
@@ -397,6 +399,14 @@ bool MediaPlayer::Impl::OpenInternal(const QString& url, const AVInputFormat* in
     // 同步路径: 换媒体复位 + Prepare/Commit 都在**调用线程**上完成（兼容旧调用与测试）。
     BeginMediaSwitch(url);
     const OpenPrepareParams params = MakeOpenParams(url, input_format, input_options);
+    OpenResult result = OpenController::Prepare(params);
+    return CommitOpen(url, std::move(result));
+}
+
+bool MediaPlayer::Impl::OpenInternal(const QString& url, const RawPcmOpenSpec& raw_pcm) {
+    LOG_INFO("OpenInternal(同步, 裸 PCM): " + url.toStdString());
+    BeginMediaSwitch(url);
+    const OpenPrepareParams params = MakeOpenParams(url, raw_pcm);
     OpenResult result = OpenController::Prepare(params);
     return CommitOpen(url, std::move(result));
 }
@@ -516,19 +526,23 @@ void MediaPlayer::Impl::SetMacroblockAnalysisEnabled(bool enable) {
 }
 
 void MediaPlayer::OpenAsync(const QString& url) {
+    impl_->StartAsyncOpen(url, RawPcmOpenSpec{});
+}
+
+void MediaPlayer::Impl::StartAsyncOpen(const QString& url, const RawPcmOpenSpec& raw_pcm) {
     LOG_INFO("OpenAsync ENTER: " + url.toStdString());
     // UI 线程只做换媒体复位；耗时的打开/探测丢到后台线程。
-    impl_->BeginMediaSwitch(url);
-    OpenPrepareParams params = impl_->MakeOpenParams(url, nullptr, nullptr);
+    BeginMediaSwitch(url);
+    OpenPrepareParams params = MakeOpenParams(url, raw_pcm);
     const std::string url_copy = url.toStdString();
 
-    QPointer<MediaPlayer> self = this;
+    QPointer<MediaPlayer> self = facade_;
     // 用 RunBlockingIoWithResult: 任务体要走 FFmpeg 的 avformat_open_input / find_stream_info，
     // 网络源/异常设备上即使装了中断回调也可能不响应，关闭时不能 join 到底（超预算放弃）。
     // 代价是必须遵守 BlockingIo 生命周期约定: 任务体只按值捕获依赖，不持有裸引用 ——
     // 这里只捕获 QPointer self + 按值/共享指针的 params，且 Prepare 是 static 的，不碰本对象。
-    impl_->task_manager_.RunBlockingIoWithResult(
-        Impl::kSlotOpen, [self, url_copy, params](task::TaskId id, task::CancelToken token) -> task::TaskState {
+    task_manager_.RunBlockingIoWithResult(
+        kSlotOpen, [self, url_copy, params](task::TaskId id, task::CancelToken token) -> task::TaskState {
             if (!self)
                 return task::TaskState::Canceled;
 

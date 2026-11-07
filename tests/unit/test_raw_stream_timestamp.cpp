@@ -30,6 +30,7 @@ namespace {
 using videoeye::player::PacketTimestampSeconds;
 using videoeye::player::PlaybackClock;
 using videoeye::player::RawStreamTimestampFiller;
+namespace bare_stream = videoeye::player::bare_stream;
 
 constexpr std::int64_t kNoPts = AV_NOPTS_VALUE;
 constexpr std::int64_t kFrameDuration = 48000; // 1/1200000 时基 → 40ms/帧
@@ -196,6 +197,74 @@ TEST(RawStreamTimestampFillerTest, ResetRestartsAtZero) {
     AVPacket after_reset = MakePacket(0, kNoPts, kNoPts, kFrameDuration);
     EXPECT_TRUE(filler.Fill(&after_reset));
     EXPECT_EQ(after_reset.pts, 0);
+}
+
+// --- 裸流判定 / 时长估算 / 按字节定位的口径 ---
+//
+// 这三件事共同决定"进度条能不能拖"：判定错了会把有索引的容器也拖进兜底路径，
+// 换算错了会拖到完全无关的位置。
+
+TEST(BareStreamUtilsTest, RecognizesBareVideoEsDemuxerNames) {
+    EXPECT_TRUE(bare_stream::IsBareVideoEsFormatName("h264"));
+    EXPECT_TRUE(bare_stream::IsBareVideoEsFormatName("hevc"));
+    EXPECT_FALSE(bare_stream::IsBareVideoEsFormatName("mp4"));
+    EXPECT_FALSE(bare_stream::IsBareVideoEsFormatName("matroska,webm"));
+    EXPECT_FALSE(bare_stream::IsBareVideoEsFormatName(nullptr));
+}
+
+TEST(BareStreamUtilsTest, BareVideoEsRequiresMissingContainerDuration) {
+    AVFormatContext* format = MakeFormatContext();
+    ASSERT_NE(format, nullptr);
+    AVInputFormat fake = {};
+    fake.name = "h264";
+    format->iformat = &fake;
+
+    format->duration = AV_NOPTS_VALUE;
+    EXPECT_TRUE(bare_stream::IsBareVideoEs(format));
+
+    // 有容器时长的同名 demuxer 不该进兜底路径（正常 av_seek_frame 就能定位）。
+    format->duration = 5 * AV_TIME_BASE;
+    EXPECT_FALSE(bare_stream::IsBareVideoEs(format));
+
+    format->iformat = nullptr;
+    avformat_free_context(format);
+}
+
+TEST(BareStreamUtilsTest, ByteSeekOffsetIsProportionalAndClamped) {
+    constexpr std::int64_t kSize = 1000;
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(kSize, 0, 10000), 0);
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(kSize, 5000, 10000), 499);
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(kSize, 10000, 10000), 999);
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(kSize, 20000, 10000), 999);
+    // 总时长未知就无法按比例换算 —— 调用方必须放弃，而不是拖到 0 字节。
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(kSize, 5000, 0), 0);
+    EXPECT_EQ(bare_stream::ComputeByteSeekOffset(0, 5000, 10000), 0);
+}
+
+TEST(BareStreamUtilsTest, DurationFromScanIsExactAtEofAndExtrapolatedOtherwise) {
+    // 扫到 EOF：已扫媒体时长就是全片时长。
+    EXPECT_EQ(bare_stream::EstimateDurationMsFromScan(2.0, 400, 400, true), 2000);
+    // 只扫了一半：按字节比例外推。
+    EXPECT_EQ(bare_stream::EstimateDurationMsFromScan(2.0, 500, 1000, false), 4000);
+    // 没有可用数据：返回 0（UI 据此禁用拖动），不编一个数字。
+    EXPECT_EQ(bare_stream::EstimateDurationMsFromScan(0.0, 500, 1000, false), 0);
+    EXPECT_EQ(bare_stream::EstimateDurationMsFromScan(2.0, 0, 1000, false), 0);
+}
+
+TEST(RawStreamTimestampFillerTest, RebaseContinuesFromTargetPosition) {
+    RawStreamTimestampFiller filler;
+    for (int i = 0; i < 2; ++i) {
+        AVPacket packet = MakePacket(0, kNoPts, kNoPts, kFrameDuration);
+        ASSERT_TRUE(filler.Fill(&packet));
+    }
+
+    // 按字节定位到 10 秒：合成时间轴必须从目标位置继续，而不是又从 0 累加。
+    constexpr std::int64_t kTargetTicks = 10 * 1200000; // 10s @ 1/1200000
+    filler.Rebase(0, kTargetTicks);
+    AVPacket after_seek = MakePacket(0, kNoPts, kNoPts, kFrameDuration);
+    ASSERT_TRUE(filler.Fill(&after_seek));
+    EXPECT_EQ(after_seek.pts, kTargetTicks);
+    EXPECT_FALSE(filler.HasRealTimestamps(0));
 }
 
 // 反向守护：不经过合成器的裸流包，时间戳确实是 NaN —— 证明"快放"是真实缺陷，

@@ -11,6 +11,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include "core/player/BareStreamUtils.h"
+
 namespace videoeye {
 namespace player {
 
@@ -131,8 +133,9 @@ public:
         if (state.saw_real_timestamp)
             return false;
 
-        const std::int64_t step =
-            (packet->duration > 0) ? packet->duration : FrameDurationTicks(format_ctx, packet->stream_index);
+        const std::int64_t step = (packet->duration > 0)
+                                      ? packet->duration
+                                      : bare_stream::FrameDurationTicks(format_ctx, packet->stream_index);
         if (step <= 0)
             return false;
 
@@ -152,36 +155,18 @@ public:
         return it != states_.end() && it->second.saw_real_timestamp;
     }
 
-private:
-    // 一帧在流时基下占多少 tick。
-    //
-    // 优先 avg_frame_rate（容器/探测给出的平均值，裸 ES 也能拿到），回退 r_frame_rate
-    // （码流里最"紧凑"的帧率，恒帧率素材上两者相等）。两者都不可用时返回 0，表示
-    // **无法**推出步长 —— 调用方据此放弃合成，而不是拿一个猜测值凑节奏。
-    //
-    // 换算：一帧秒数 = fps.den / fps.num；tick 数 = 一帧秒数 / av_q2d(time_base)。
-    // 例：h264 demuxer 给 time_base=1/1200000、fps=25 → 48000 tick = 40ms，与
-    // packet->duration 那条路径的实测值完全一致。
-    static std::int64_t FrameDurationTicks(const AVFormatContext* format_ctx, int stream_index) {
-        if (!format_ctx || stream_index < 0 || stream_index >= static_cast<int>(format_ctx->nb_streams))
-            return 0;
-        const AVStream* stream = format_ctx->streams[stream_index];
-        if (!stream || stream->time_base.den == 0 || stream->time_base.num == 0)
-            return 0;
-
-        AVRational fps = stream->avg_frame_rate;
-        if (fps.num <= 0 || fps.den <= 0)
-            fps = stream->r_frame_rate;
-        if (fps.num <= 0 || fps.den <= 0)
-            return 0;
-
-        const double seconds_per_frame = static_cast<double>(fps.den) / static_cast<double>(fps.num);
-        const double ticks = seconds_per_frame / av_q2d(stream->time_base);
-        if (!std::isfinite(ticks) || ticks < 1.0)
-            return 0;
-        return static_cast<std::int64_t>(std::llround(ticks));
+    // 定位后把合成时间轴的累加起点挪到目标位置。
+    // 裸流按字节定位后，新读到的包依旧没有 pts/dts；不重定基点的话合成值又从 0
+    // 开始，画面/进度条会从目标时间"弹回"片头。只有纯合成流会走这条路径。
+    void Rebase(int stream_index, std::int64_t next_ts) {
+        if (stream_index < 0)
+            return;
+        StreamState& state = states_[stream_index];
+        state.next_ts = next_ts;
+        state.saw_real_timestamp = false;
     }
 
+private:
     struct StreamState {
         std::int64_t next_ts = 0;
         bool saw_real_timestamp = false;

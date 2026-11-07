@@ -18,8 +18,8 @@ bool OpenSessionController::Open(const QString& source, bool autoplay) {
         return false;
     }
 
-    // 任何一次新打开都先作废上一次异步打开的收尾回调：只有真正走 OpenAsync 的路径
-    // 会在下面重新登记。这样裸图像 / PCM 这类同步分支期间若有旧的异步结果迟到，
+    // 任何一次新打开都先作废上一次异步打开的收尾回调：只有真正走异步的路径
+    // 会在下面重新登记。这样裸图像这类同步分支期间若有旧的异步结果迟到，
     // OnPlayerOpenFinished 会因"没有待收尾登记"而直接忽略。
     ClearOpenTicket(ticket_);
 
@@ -37,7 +37,7 @@ bool OpenSessionController::Open(const QString& source, bool autoplay) {
 
     switch (ClassifyOpenTarget(source)) {
     case OpenTargetKind::RawImage:
-        return OpenRawImage(source);
+        return OpenRawImage(source, autoplay);
     case OpenTargetKind::Pcm:
         return OpenPcm(source, autoplay);
     case OpenTargetKind::Media:
@@ -46,9 +46,23 @@ bool OpenSessionController::Open(const QString& source, bool autoplay) {
     return OpenMediaAsync(source, autoplay);
 }
 
-bool OpenSessionController::OpenRawImage(const QString& source) {
+bool OpenSessionController::OpenRawImage(const QString& source, bool autoplay) {
     if (!deps_.player_panel)
         return false;
+
+    // `.raw` 看不出内容类型：以前一律按原始像素序列打开，裸 PCM 音频用户只能
+    // 自己改后缀。这里先问一次；用户选 PCM 就转到真正的 PCM 路径（参数弹窗 +
+    // 异步打开）。弹窗是 UI 交互，注入进来；没注入时保持历史默认。
+    if (IsAmbiguousRawSuffix(source) && deps_.prompt_raw_kind) {
+        RawOpenChoice choice = RawOpenChoice::RawImage;
+        if (!deps_.prompt_raw_kind(source, choice)) {
+            emit StatusMessage(tr("已取消打开: %1").arg(source));
+            return false;
+        }
+        if (choice == RawOpenChoice::Pcm) {
+            return OpenPcm(source, autoplay);
+        }
+    }
 
     // 裸图像不走 player_->Open()，拿不到打开链路里那次统一的导出取消 ——
     // 这里显式补上，否则旧媒体的抽帧 / 转码导出会继续在后台跑。
@@ -64,14 +78,9 @@ bool OpenSessionController::OpenRawImage(const QString& source) {
         deps_.ffmpeg_panel->SetCurrentFile(QString());
 
     if (!deps_.player_panel->LoadRawImageFile(source)) {
-        // .raw 一律按原始像素序列分流，最常见的误用是把它当裸 PCM 音频。
-        // 给一条能直接照做的提示，否则用户只会看到"打开失败"而不知道改后缀。
-        if (source.endsWith(QLatin1String(".raw"), Qt::CaseInsensitive)) {
-            emit StatusMessage(
-                tr("打开失败: %1（.raw 按原始像素序列打开；若是裸 PCM 音频，请把后缀改成 .pcm）").arg(source));
-        } else {
-            emit StatusMessage(tr("打开失败: %1").arg(source));
-        }
+        // 裸图像按像素序列加载失败：最常见的两类原因是文件本身不是像素数据，
+        // 或分辨率/像素格式选错了。这里只报事实，内容二义的 .raw 已经在入口问过。
+        emit StatusMessage(tr("打开失败: %1（按原始像素序列加载失败，请检查分辨率与像素格式）").arg(source));
         // 打开失败时播放面板已被清空，首页必须同步回到"未打开文件"，
         // 不能继续显示上一个文件的摘要与分析结论。
         if (deps_.overview_page) {
@@ -108,41 +117,22 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
 
     deps_.player_panel->SetRawImageMode(false);
     deps_.player_panel->SetCurrentSource(source);
-    if (!deps_.player->OpenRawPcm(source, demuxer_name, sample_rate, channels)) {
-        emit StatusMessage(tr("打开 PCM 失败: %1").arg(source));
-        // 打开失败：播放面板已经指向这个失败的 PCM，首页与分析面板不能继续挂着
-        // 上一个媒体文件的摘要/扫描结论（PCM 失败不会触发任何分析扫描去刷新它们）。
-        if (deps_.analysis_panel)
-            deps_.analysis_panel->SetCurrentVideoPath(QString());
-        if (deps_.ffmpeg_panel)
-            deps_.ffmpeg_panel->SetCurrentFile(QString());
-        if (deps_.overview_page) {
-            deps_.overview_page->ClearFileSummary();
-            deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
-        }
-        return false;
-    }
-
-    emit StatusMessage(tr("已打开 PCM: %1").arg(source));
-    emit CurrentMediaLabelChanged(
-        tr("%1 [PCM %2, %3 Hz, %4 ch]").arg(source, demuxer_name).arg(sample_rate).arg(channels));
-
     current_media_url_ = source;
     deps_.analysis_panel->SetCurrentVideoPath(source);
     if (deps_.ffmpeg_panel) {
         deps_.ffmpeg_panel->SetCurrentFile(source);
     }
-    if (deps_.overview_page) {
-        deps_.overview_page->SetOpenedFileWithoutSummary(source);
-        // 媒体信息解析 PCM（裸流无法自动探测，需带上用户选择的格式参数）
-        if (deps_.media_info) {
-            deps_.overview_page->SetMediaInfoText(
-                deps_.media_info->DescribeRawPcm(source, demuxer_name, sample_rate, channels));
-        }
-    }
 
-    if (autoplay) {
-        deps_.player->Play();
+    // 裸 PCM 的打开/探测同样要读文件（时长按文件大小估算），以前在 UI 线程同步做，
+    // 大文件上整窗会卡住。这里复用与通用媒体相同的事务式异步打开，收尾见
+    // OnPlayerOpenFinished 的 PCM 分支。
+    ArmPcmOpenTicket(ticket_, source, autoplay, demuxer_name, sample_rate, channels);
+    deps_.player->OpenRawPcmAsync(source, demuxer_name, sample_rate, channels);
+
+    // 媒体信息不再单独探测：打开链路在后台探测时已带上这批 PCM 参数，并顺带把
+    // 同一个上下文格式化成文本，提交成功后经 MediaInfoTextReady 贴进首页。
+    if (deps_.overview_page) {
+        deps_.overview_page->SetMediaInfoText(tr("(正在解析媒体信息…)"));
     }
     return true;
 }
@@ -187,16 +177,26 @@ bool OpenSessionController::OpenMediaAsync(const QString& source, bool autoplay)
 }
 
 void OpenSessionController::OnPlayerOpenFinished(bool ok) {
-    QString source;
-    bool autoplay = false;
+    OpenTicket finished;
     // 过期 / 无关的回调（对应请求已被后续打开取代，或这次打开根本没走异步）
     // 直接忽略：TakeOpenTicket 取不到登记就说明没有人在等它。
-    if (!TakeOpenTicket(ticket_, &source, &autoplay)) {
+    if (!TakeOpenTicket(ticket_, &finished)) {
         return;
     }
     if (!deps_.player) {
         return;
     }
+
+    // 裸 PCM 的收尾与通用媒体不同：标签要带用户现场选的参数，也没有视频诊断扫描
+    // / 容器结构可跑。失败时更不能退回媒体信息协调器重探 —— 它不知道 PCM 参数，
+    // 重开只会再次落到 FFmpeg 的默认猜测上。
+    if (finished.IsPcm()) {
+        OnPcmOpenFinished(finished, ok);
+        return;
+    }
+
+    const QString& source = finished.source;
+    const bool autoplay = finished.autoplay;
 
     if (ok) {
         emit StatusMessage(tr("已打开: %1").arg(source));
@@ -237,6 +237,39 @@ void OpenSessionController::OnPlayerOpenFinished(bool ok) {
         if (deps_.media_info) {
             deps_.media_info->StartAsync(source);
         }
+    }
+}
+
+void OpenSessionController::OnPcmOpenFinished(const OpenTicket& ticket, bool ok) {
+    const QString& source = ticket.source;
+    if (ok) {
+        emit StatusMessage(tr("已打开 PCM: %1").arg(source));
+        emit CurrentMediaLabelChanged(tr("%1 [PCM %2, %3 Hz, %4 ch]")
+                                          .arg(source, ticket.pcm_demuxer)
+                                          .arg(ticket.pcm_sample_rate)
+                                          .arg(ticket.pcm_channels));
+        // 首页只登记文件名：PCM 没有可摘要的 StreamInfo，媒体信息文本由打开链路
+        // 的首次探测经 MediaInfoTextReady 写入（不再二次打开）。
+        if (deps_.overview_page) {
+            deps_.overview_page->SetOpenedFileWithoutSummary(source);
+        }
+        if (ticket.autoplay) {
+            deps_.player->Play();
+        }
+        return;
+    }
+
+    // 失败：PCM 没有"分析模式"可言（无容器结构；重探不知道 PCM 参数，只会得到
+    // 又一次错误的猜测）。与旧的同步路径一致，清空下游面板即可。
+    emit StatusMessage(tr("打开 PCM 失败: %1 | %2").arg(source, deps_.player->GetLastError()), 0);
+    emit CurrentMediaLabelChanged(tr("%1 (无法播放)").arg(source));
+    if (deps_.analysis_panel)
+        deps_.analysis_panel->SetCurrentVideoPath(QString());
+    if (deps_.ffmpeg_panel)
+        deps_.ffmpeg_panel->SetCurrentFile(QString());
+    if (deps_.overview_page) {
+        deps_.overview_page->ClearFileSummary();
+        deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
     }
 }
 

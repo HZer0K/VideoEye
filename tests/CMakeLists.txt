@@ -1274,6 +1274,9 @@ target_link_libraries(test_player_open_async PRIVATE
     VideoEyeInfrastructure
     videoeye_test_media_factory
     Qt6::Core Qt6::Gui)
+# 裸流总时长估算用例用真实 H.264 语料（无容器时长，正是需要扫描估算的输入）。
+target_compile_definitions(test_player_open_async PRIVATE
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
 # BlockingTcpEndpoint.h 走 winsock，Windows 上需要显式 ws2_32。
 if(WIN32)
     target_link_libraries(test_player_open_async PRIVATE ws2_32)

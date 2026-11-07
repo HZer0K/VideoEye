@@ -12,9 +12,11 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libavutil/time.h>
 #include <libswscale/swscale.h>
 }
 
+#include "core/player/BareStreamUtils.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -22,6 +24,56 @@ namespace player {
 
 namespace {
 using SteadyClock = std::chrono::steady_clock;
+
+// 裸视频 ES 的定位兜底：按总时长把目标时间换算成字节偏移，直接移动 AVIO。
+// 偏移是估算的（变码率有误差），所以再向后续找一小段，尽量落在关键帧上 ——
+// 落在 GOP 中间时解码器要等下一个 IDR 才出画面。
+bool TryByteSeek(AVFormatContext* format_ctx, int video_stream_index, int64_t target_ms, int64_t duration_ms) {
+    if (!format_ctx || !format_ctx->pb || duration_ms <= 0 || video_stream_index < 0)
+        return false;
+    if (!bare_stream::IsBareVideoEs(format_ctx))
+        return false;
+    const int64_t file_size = avio_size(format_ctx->pb);
+    if (file_size <= 0)
+        return false;
+
+    const int64_t offset = bare_stream::ComputeByteSeekOffset(file_size, target_ms, duration_ms);
+    if (avio_seek(format_ctx->pb, offset, SEEK_SET) < 0)
+        return false;
+    avformat_flush(format_ctx);
+
+    // 有界向后续找同步包：2 MiB / 300 包 / 100ms 封顶，找不到就按原偏移解码。
+    constexpr int64_t kMaxScanBytes = 2 * 1024 * 1024;
+    constexpr int kMaxScanPackets = 300;
+    constexpr int64_t kMaxScanUs = 100 * 1000;
+    AVPacket* probe = av_packet_alloc();
+    if (probe) {
+        int64_t sync_pos = offset;
+        int64_t scanned = 0;
+        int packets = 0;
+        const int64_t begin_us = av_gettime_relative();
+        while (scanned < kMaxScanBytes && packets < kMaxScanPackets && av_gettime_relative() - begin_us < kMaxScanUs) {
+            const int64_t packet_pos = avio_tell(format_ctx->pb);
+            if (av_read_frame(format_ctx, probe) < 0)
+                break;
+            const bool is_video_key =
+                probe->stream_index == video_stream_index && (probe->flags & AV_PKT_FLAG_KEY) != 0;
+            scanned += probe->size;
+            ++packets;
+            av_packet_unref(probe);
+            if (is_video_key && packet_pos >= 0) {
+                sync_pos = packet_pos;
+                break;
+            }
+        }
+        av_packet_free(&probe);
+        if (avio_seek(format_ctx->pb, sync_pos, SEEK_SET) < 0)
+            return false;
+    }
+    avformat_flush(format_ctx);
+    return true;
+}
+
 } // namespace
 
 PlaybackSession::PlaybackSession(QObject* parent) : QObject(parent) {
@@ -263,16 +315,33 @@ void PlaybackSession::DecodeThread() {
             const std::int64_t timestamp = static_cast<std::int64_t>(target_ms) * 1000LL;
             const int flags = AVSEEK_FLAG_BACKWARD;
             const int ret = av_seek_frame(format_ctx_, -1, timestamp, flags);
+            bool byte_seek_used = false;
             if (ret < 0) {
-                drop_until_sec_.store(-1.0);
-                emit Error(QStringLiteral("定位失败：该流不支持随机访问（可能缺少索引或为直播流）"));
-                return true;
+                // 裸视频 ES 没有索引，av_seek_frame 必然失败；按估算总时长把目标时间
+                // 换算成字节偏移兜底（总时长不可用时才真的不支持拖动）。
+                byte_seek_used =
+                    TryByteSeek(format_ctx_, video_stream_index_, static_cast<int64_t>(target_ms), duration_ms_);
+                if (!byte_seek_used) {
+                    drop_until_sec_.store(-1.0);
+                    emit Error(QStringLiteral("定位失败：该流不支持随机访问（可能缺少索引或为直播流）"));
+                    return true;
+                }
             }
 
             if (video_decoder_)
                 video_decoder_->Flush();
             if (audio_decoder_)
                 audio_decoder_->Flush();
+
+            // 按字节定位后新读到的包仍然没有 pts/dts，合成时间轴必须从目标位置继续，
+            // 否则画面/进度条会从片头重新累加（"拖到 90 秒又跳回 0"）。
+            if (byte_seek_used && video_stream_index_ >= 0 &&
+                video_stream_index_ < static_cast<int>(format_ctx_->nb_streams)) {
+                const AVRational time_base = format_ctx_->streams[video_stream_index_]->time_base;
+                raw_ts_filler.Rebase(video_stream_index_,
+                                     bare_stream::MsToStreamTicks(static_cast<std::int64_t>(target_ms), time_base));
+                current_packet_ts_sec = target_ms / 1000.0;
+            }
 
             // 定位后重置流统计: 统计语义是"自上次打开/定位起的当前片段", 而非全片累计。
             // 放在 seek 成功 + 解码器 flush 之后, 保证旧位置的残留包不会被计入新片段。

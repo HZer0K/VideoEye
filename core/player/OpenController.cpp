@@ -1,5 +1,6 @@
 #include "core/player/OpenController.h"
 
+#include <QByteArray>
 #include <QFileInfo>
 
 #include <cstdint>
@@ -18,6 +19,7 @@ extern "C" {
 }
 
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h" // FormatFromContext（复用本次探测）
+#include "core/ffmpeg_io/AvOptions.h"                      // ChannelLayoutOption（裸 PCM 声道选项）
 #include "core/media/probe/FileProbe.h"
 #include "core/player/AudioOutput.h"
 #include "core/player/Decoders.h"
@@ -265,7 +267,11 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
 
     // 探测可信度复核（只提示、不阻断）：无容器头的裸音频很容易被 FFmpeg 猜成
     // 某个 pcm_*/adpcm_* 编码，打开与播放都"成功"但出来是噪声。
-    EvaluateProbeTrust(params.url, fmt, result.video_stream_index, audio_index, result);
+    // 用户显式选了裸 PCM 参数时跳过：扩展名可能仍是 .raw（由打开对话框确认），
+    // 拿扩展名去对照 demuxer 白名单只会报一条用户已经确认过的误报。
+    if (params.raw_pcm.demuxer.isEmpty()) {
+        EvaluateProbeTrust(params.url, fmt, result.video_stream_index, audio_index, result);
+    }
 
     LOG_INFO("Open success (Prepare): " + url_str);
     result.ok = true;
@@ -298,7 +304,25 @@ bool OpenController::OpenAndProbe(const OpenPrepareParams& params, OpenResult& r
     ffmpeg_io::AttachInterrupt(fmt, params.attempt->interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     AVDictionary* open_options = params.input_options;
-    int ret = avformat_open_input(&fmt, url_str.c_str(), params.input_format, open_options ? &open_options : nullptr);
+    const AVInputFormat* input_format = params.input_format;
+    if (!params.raw_pcm.demuxer.isEmpty()) {
+        // 裸 PCM 没有可探测的头：采样格式/采样率/声道全部由用户在打开时指定。
+        // 选项必须在正确的位置构造并交给 avformat_open_input，否则 FFmpeg 会按
+        // 自己的默认值（单声道 / 44.1kHz）解码，时长也跟着算错。
+        input_format = av_find_input_format(params.raw_pcm.demuxer.toUtf8().constData());
+        if (!input_format) {
+            result.error = QStringLiteral("不支持的 PCM 采样格式: %1").arg(params.raw_pcm.demuxer);
+            if (open_options)
+                av_dict_free(&open_options);
+            return false;
+        }
+        av_dict_set(&open_options, "sample_rate", QByteArray::number(params.raw_pcm.sample_rate).constData(), 0);
+        const std::string ch_layout = ffmpeg_io::ChannelLayoutOption(params.raw_pcm.channels);
+        if (!ch_layout.empty()) {
+            av_dict_set(&open_options, "ch_layout", ch_layout.c_str(), 0);
+        }
+    }
+    int ret = avformat_open_input(&fmt, url_str.c_str(), input_format, open_options ? &open_options : nullptr);
     // 探测到的上下文立刻交给 result 拥有: 之后的每一步失败都由 result 负责释放。
     result.format_ctx = fmt;
     if (open_options)

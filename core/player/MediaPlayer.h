@@ -50,7 +50,11 @@ public:
     // 后台线程（TaskKind::BlockingIo），完成后排回 UI 线程一次性提交进播放会话。
     // 结果经 OpenFinished(bool) 通知；过期结果（期间又开了新文件）会被丢弃且不发信号。
     void OpenAsync(const QString& url);
+    // OpenRawPcm(): 同步打开裸 PCM（兼容旧调用与测试）。
     bool OpenRawPcm(const QString& url, const QString& demuxer_name, int sample_rate, int channels);
+    // OpenRawPcmAsync(): 裸 PCM 的异步版本。参数在 UI 线程收集，耗时的
+    // avformat 打开/探测与通用媒体一样走后台 Prepare；结果经 OpenFinished(bool) 通知。
+    void OpenRawPcmAsync(const QString& url, const QString& demuxer_name, int sample_rate, int channels);
     void Play();
     void Pause();
     void Stop();

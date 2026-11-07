@@ -94,11 +94,23 @@ struct OpenAttempt {
     OpenAttempt& operator=(const OpenAttempt&) = delete;
 };
 
+// 用户显式指定的裸 PCM 参数。demuxer 为空表示"这次不是裸 PCM 打开"。
+//
+// 选项（sample_rate / ch_layout）在 Prepare 的后台线程里构造，而不是在 UI 线程
+// 先建一个 AVDictionary 再传进来 —— 后者一旦任务被取消/丢弃就会泄漏，且
+// "哪个入口负责建/释放"会随调用方漂移。
+struct RawPcmOpenSpec {
+    QString demuxer;
+    int sample_rate = 0;
+    int channels = 0;
+};
+
 // Prepare()（可在后台线程执行）所需的全部输入。
 struct OpenPrepareParams {
     QString url;
     const AVInputFormat* input_format = nullptr; // 借用; 通常为 nullptr
     AVDictionary* input_options = nullptr;       // 借用并移交所有权(由 Prepare 释放)
+    RawPcmOpenSpec raw_pcm;                      // 非空 demuxer = 用户显式选的裸 PCM
     int volume_percent = 100;
     bool prefer_hw_decoding = false;      // 是否允许硬件解码
     bool macroblock_analysis = false;     // 宏块分析启用时强制软件解码
