@@ -316,8 +316,24 @@ bool FlvStructureAnalyzer::Analyze(const std::string& file_path, model::Containe
         const int64_t tag_end = data_start + static_cast<int64_t>(data_size) + 4;
 
         // 声明的 tag 长度越过文件末尾 = 文件截断（下载/录制中断）。
+        // 仍需把该 tag 记入结构树，便于结构页直接看到"声明长度越界"，
+        // 但不能按声明长度读取载荷，否则会越界。
         if (tag_end > file.Size()) {
             ++diag.truncated_tags;
+            if (options.build_tree) {
+                model::ContainerElement tag;
+                tag.offset = data_start - 11;
+                tag.size = file.Size() - tag.offset;
+                tag.depth = 1;
+                const std::string type_name = (tag_type == 8)    ? "Audio"
+                                              : (tag_type == 9)  ? "Video"
+                                              : (tag_type == 18) ? "Script"
+                                                                 : "Unknown";
+                tag.name = type_name + " Tag (truncated)";
+                tag.type = type_name;
+                tag.value = StrCat("ts=%1 声明 size=%2 越界（实际剩余 %3）", timestamp, data_size, tag.size - 11);
+                root.children.push_back(tag);
+            }
             break;
         }
 
