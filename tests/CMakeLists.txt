@@ -2535,6 +2535,46 @@ target_link_libraries(test_repair_safety PRIVATE
 add_test(NAME RepairSafetyTests COMMAND test_repair_safety)
 
 # =================================================
+# 测试：主窗口端到端冒烟（第四批，Qt offscreen）
+#
+# 打开会话的异步链路在纯口径用例里已拆开测过，但没有任何用例把真实的 MainWindow
+# 接起来跑一遍 —— "状态栏没从『就绪』切走""首页没登记文件""取消后扫描条停在『取消中』"
+# 这类断点全发生在 QWidget 之间的事件流里，不崩不报错，只是界面看起来没反应。
+#
+# 用例：真实 MP4 → 已打开 / 首页摘要 / 媒体信息解析完成；
+#       不存在的文件 → 「无法播放 (已进入分析模式)」+ 分析模式登记；
+#       本地 HLS 清单 → 预算内收敛（不挂在 avformat 探测上）；
+#       任务条「取消扫描」→ 真实接线取消后回到空闲、条隐藏、取消标记清除。
+#
+# 打开的真实样本来自 tests/corpus（VIDEOEYE_CORPUS_DIR）；offscreen 下不演奏、
+# 不比对像素，只看公开可观察面。链 VideoEyeUi 的完整静态依赖（与
+# test_analysis_page_layout 同款），否则 MainWindow 里的控件实现在链接期找不到。
+# =================================================
+videoeye_add_test(test_main_window_e2e unit/test_main_window_e2e.cpp)
+target_compile_definitions(test_main_window_e2e PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus"
+)
+target_link_libraries(test_main_window_e2e PRIVATE
+    VideoEyeUi
+    VideoEyeUiTheme
+    VideoEyeQtAdapters
+    VideoEyeReportingPanel
+    VideoEyePlayback
+    VideoEyeExporter
+    VideoEyeReporting
+    VideoEyeQc
+    VideoEyeFfmpegTools
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME MainWindowE2ETests COMMAND test_main_window_e2e)
+set_tests_properties(MainWindowE2ETests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 300)
+
+# =================================================
 # 全局兜底超时（必须留在本文件最末尾）
 #
 # 以前只有 CorpusRobustnessTests 显式设了 TIMEOUT 300（它的解析器历史上失去过
