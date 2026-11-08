@@ -23,12 +23,15 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QPushButton>
+#include <QSettings>
 #include <QStatusBar>
+#include <QTemporaryDir>
 #include <QTextEdit>
 #include <QThread>
 
@@ -40,6 +43,7 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/ScanTaskBar.h"
+#include "ui/player/PlayerPanel.h"
 
 #include "HttpTestServer.h"
 
@@ -100,6 +104,29 @@ bool PumpUntil(const std::function<bool()>& predicate, int timeout_ms) {
     }
     QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     return true;
+}
+
+// 配置持久化用例的干净 QSettings：
+//   * MainWindow 启动会读 ui/playerLayoutPreset / ui/playerAreaVisible，不隔离就会
+//     读到开发机上的真实配置，断言随环境漂移；
+//   * 每个用例换一个子目录，避开 QSettings 的进程内文件缓存；
+//   * 强制 IniFormat —— Windows 默认 NativeFormat 写注册表，setPath 对它无效。
+void ResetSettingsForTest() {
+    static QTemporaryDir root;
+    ASSERT_TRUE(root.isValid()) << "无法创建临时设置目录";
+    static int counter = 0;
+    const QString dir = root.path() + QStringLiteral("/case-") + QString::number(++counter);
+    ASSERT_TRUE(QDir().mkpath(dir)) << dir.toStdString();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir);
+    QCoreApplication::setOrganizationName(QStringLiteral("VideoEyeTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("MainWindowE2E"));
+    QSettings settings;
+    settings.clear();
+}
+
+int PresetValue(PlayerPanel::LayoutPreset preset) {
+    return static_cast<int>(preset);
 }
 
 // 每个用例都要的四个观察点：首页、分析面板、扫描任务条、应用栏媒体路径标签。
@@ -310,6 +337,137 @@ TEST(MainWindowE2E, HttpNotFoundShowsAnalysisModeHint) {
     EXPECT_TRUE(obs.overview->HasFile()) << "分析模式没有登记 URL";
     EXPECT_TRUE(obs.media_path->FullText().contains(QStringLiteral("无法播放")))
         << "应用栏没有标记无法播放: " << obs.media_path->FullText().toStdString();
+}
+
+// ----------------------------------------------------------------------------
+// 配置持久化：PlayerPanel 把布局预设与显隐写进 QSettings，启动时由 MainWindow
+// 恢复。这条链路此前零覆盖 —— 键名写错、存了不读、自动布局顶掉用户选择，
+// 都只会表现为"下次打开又变回默认"，没有崩溃也没有日志。
+// ----------------------------------------------------------------------------
+
+// 启动恢复布局预设：QSettings 里存过「并排」，首帧显示后必须落到该预设。
+TEST(MainWindowE2E, RestoresLayoutPresetFromSettings) {
+    EnsureApp();
+    ResetSettingsForTest();
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("ui/playerLayoutPreset"), PresetValue(PlayerPanel::LayoutPreset::SideBySide));
+    }
+
+    MainWindow window;
+    window.show();
+    QApplication::processEvents();
+
+    PlayerPanel* panel = window.findChild<PlayerPanel*>();
+    ASSERT_NE(panel, nullptr) << "主窗口里找不到 PlayerPanel";
+    EXPECT_EQ(PresetValue(panel->layoutPreset()), PresetValue(PlayerPanel::LayoutPreset::SideBySide))
+        << "启动没有恢复持久化的「并排」预设";
+}
+
+// 启动恢复显隐：存过「收起」，主窗口构造后播放区必须已经隐藏
+// （不是等用户再点一次 F9）。
+TEST(MainWindowE2E, RestoresCollapsedPlayerAreaFromSettings) {
+    EnsureApp();
+    ResetSettingsForTest();
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("ui/playerAreaVisible"), false);
+    }
+
+    MainWindow window;
+    window.show();
+    QApplication::processEvents();
+
+    PlayerPanel* panel = window.findChild<PlayerPanel*>();
+    ASSERT_NE(panel, nullptr) << "主窗口里找不到 PlayerPanel";
+    EXPECT_FALSE(panel->IsPlayerAreaVisible()) << "启动没有恢复「播放区已收起」";
+    EXPECT_FALSE(panel->isVisible()) << "恢复为收起后播放区仍然可见";
+}
+
+// 用户收起播放区后必须落盘，且重启后仍然是收起态。
+TEST(MainWindowE2E, UserCollapseChoicePersistsAcrossRestart) {
+    EnsureApp();
+    ResetSettingsForTest();
+    {
+        MainWindow window;
+        window.show();
+        QApplication::processEvents();
+        PlayerPanel* panel = window.findChild<PlayerPanel*>();
+        ASSERT_NE(panel, nullptr) << "主窗口里找不到 PlayerPanel";
+        ASSERT_TRUE(panel->IsPlayerAreaVisible()) << "空配置下播放区默认应为展开";
+        panel->SetPlayerAreaVisible(false); // 用户点收起，persist 默认 true
+    }
+    {
+        QSettings settings;
+        EXPECT_FALSE(settings.value(QStringLiteral("ui/playerAreaVisible")).toBool()) << "收起状态没有落盘";
+    }
+
+    MainWindow restarted;
+    restarted.show();
+    QApplication::processEvents();
+    PlayerPanel* panel = restarted.findChild<PlayerPanel*>();
+    ASSERT_NE(panel, nullptr) << "重启窗口里找不到 PlayerPanel";
+    EXPECT_FALSE(panel->IsPlayerAreaVisible()) << "重启后没有恢复收起状态";
+}
+
+// 用户显式选布局后必须落盘，重启后回到同一预设。
+TEST(MainWindowE2E, UserLayoutChoicePersistsAcrossRestart) {
+    EnsureApp();
+    ResetSettingsForTest();
+    {
+        MainWindow window;
+        window.show();
+        QApplication::processEvents();
+        PlayerPanel* panel = window.findChild<PlayerPanel*>();
+        ASSERT_NE(panel, nullptr) << "主窗口里找不到 PlayerPanel";
+        panel->ApplyLayoutPreset(PlayerPanel::LayoutPreset::SideBySide);
+    }
+    {
+        QSettings settings;
+        EXPECT_EQ(settings.value(QStringLiteral("ui/playerLayoutPreset")).toInt(),
+                  PresetValue(PlayerPanel::LayoutPreset::SideBySide))
+            << "用户选择的布局没有落盘";
+    }
+
+    MainWindow restarted;
+    restarted.show();
+    QApplication::processEvents();
+    PlayerPanel* panel = restarted.findChild<PlayerPanel*>();
+    ASSERT_NE(panel, nullptr) << "重启窗口里找不到 PlayerPanel";
+    EXPECT_EQ(PresetValue(panel->layoutPreset()), PresetValue(PlayerPanel::LayoutPreset::SideBySide))
+        << "重启后没有恢复用户选择的布局";
+}
+
+// 换页时的自动分配（persist=false）只能改运行时，不能覆盖用户存下的选择：
+// 这是 PlayerPanel::ApplyLayoutPreset 注释里明确承诺的契约。
+TEST(MainWindowE2E, AutomaticLayoutKeepsUserPresetChoice) {
+    EnsureApp();
+    ResetSettingsForTest();
+    {
+        MainWindow window;
+        window.show();
+        QApplication::processEvents();
+        PlayerPanel* panel = window.findChild<PlayerPanel*>();
+        ASSERT_NE(panel, nullptr) << "主窗口里找不到 PlayerPanel";
+        panel->ApplyLayoutPreset(PlayerPanel::LayoutPreset::SideBySide); // 用户显式选择
+        panel->ApplyLayoutPreset(PlayerPanel::LayoutPreset::Monitor, /*persist=*/false);
+        EXPECT_EQ(PresetValue(panel->layoutPreset()), PresetValue(PlayerPanel::LayoutPreset::Monitor))
+            << "自动分配没有在本次运行内生效";
+    }
+    {
+        QSettings settings;
+        EXPECT_EQ(settings.value(QStringLiteral("ui/playerLayoutPreset")).toInt(),
+                  PresetValue(PlayerPanel::LayoutPreset::SideBySide))
+            << "persist=false 覆盖了用户显式选择";
+    }
+
+    MainWindow restarted;
+    restarted.show();
+    QApplication::processEvents();
+    PlayerPanel* panel = restarted.findChild<PlayerPanel*>();
+    ASSERT_NE(panel, nullptr) << "重启窗口里找不到 PlayerPanel";
+    EXPECT_EQ(PresetValue(panel->layoutPreset()), PresetValue(PlayerPanel::LayoutPreset::SideBySide))
+        << "重启后被自动分配顶成了默认";
 }
 
 } // namespace
