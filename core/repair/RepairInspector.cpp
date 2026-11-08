@@ -10,6 +10,7 @@
 #include <sstream>
 #include <vector>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/media/probe/FileProbe.h"
@@ -521,8 +522,10 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     Emit(progress, 2, stage::Inspecting(), "读取文件身份");
 
     std::error_code ec;
-    if (!std::filesystem::exists(request.source_path, ec) ||
-        !std::filesystem::is_regular_file(request.source_path, ec)) {
+    // request.source_path 是 UTF-8。exists(utf8 std::string) 在 Windows 上返回 false
+    // **且 ec 为空**，中文路径的源文件会被判成"不存在"——修复入口直接拒绝。
+    const std::filesystem::path source_native = ToNativePath(request.source_path);
+    if (!std::filesystem::exists(source_native, ec) || !std::filesystem::is_regular_file(source_native, ec)) {
         diagnosis.input = SnapshotFile(request.source_path);
         diagnosis.summary = "输入文件不存在或不是普通文件";
         diagnosis.blocking_reasons.push_back("输入文件不存在或不是普通文件");

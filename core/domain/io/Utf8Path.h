@@ -16,6 +16,17 @@
 // 调用方炸掉。转换失败时先退回原样构造（等于改动前的行为）；若原样构造也失败（例如
 // Windows 上非法字节无法映射到当前 ANSI 代码页），则返回空路径，由后续 open/stat 走
 // 正常的"路径不可用"失败分支，仍然不抛异常。
+//
+// ⚠️ 两个方向都要走这里，漏一个方向等于没修（2026-11 实测，MSVC + 代码页 936）：
+//   * `exists(utf8_std_string)` 静默返回 **false 且 ec 为空** —— 调用方会当成
+//     "文件不存在"，而不是"路径编码错了"；
+//   * `file_size(utf8_std_string)` 恒失败（ec = path not found），即使这个
+//     std::string 是刚从 `path().u8string()` 取出来的；
+//   * `path().string()` 对中文名给出 **GBK 字节**（下游按 UTF-8 用即打不开），
+//     对代码页表示不了的字符（如 emoji）**直接抛 system_error** —— 在遍历目录时
+//     抛异常就等于崩。
+// 所以：`std::string` ↔ `std::filesystem::path` 的互转只认下面两个函数，
+// 不要写 `std::filesystem::path(some_std_string)` 或 `some_path.string()`。
 
 #include <filesystem>
 #include <string>
@@ -37,6 +48,17 @@ inline std::filesystem::path ToNativePath(const std::string& utf8_path) {
             return std::filesystem::path();
         }
     }
+}
+
+// ToNativePath 的反向：把原生路径转回 UTF-8，供 downstream（FFmpeg / JSON / 日志 /
+// 结果表的 path 列）使用。必须是 u8string()，不能是 string()。
+inline std::string ToUtf8String(const std::filesystem::path& path) {
+#if defined(__cpp_lib_char8_t)
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+#else
+    return path.u8string();
+#endif
 }
 
 } // namespace videoeye

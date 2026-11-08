@@ -30,8 +30,16 @@ std::string OutputExtension(const model::RepairRequest& request) {
 }
 
 std::filesystem::path ParentDirectory(const std::string& path) {
-    const auto parent = std::filesystem::path(path).parent_path();
+    const auto parent = ToNativePath(path).parent_path();
     return parent.empty() ? std::filesystem::path(".") : parent;
+}
+
+// `dir / some_std_string` 会隐式构造 path(std::string)，在 MSVC 的 C locale 下对
+// **任何非 ASCII 字节直接抛 system_error**（"No mapping for the Unicode character..."）。
+// 中文文件名 / 中文目录名一走到这里就是未捕获异常 —— 修复入口直接崩，而不是报错。
+// 所以拼接一律经过 ToNativePath，绝不把裸 std::string 交给 operator/。
+std::filesystem::path JoinUtf8(const std::filesystem::path& dir, const std::string& utf8_name) {
+    return dir / ToNativePath(utf8_name);
 }
 
 bool Exists(const std::string& path) {
@@ -42,12 +50,12 @@ bool Exists(const std::string& path) {
 // 报告与最终产物共享 stem，但扩展名不同；用 path::stem 而不是在整条路径串上
 // find_last_of('.')，否则目录名里带点会把报告写到错误的位置。
 void FillReportPaths(const std::string& final_path, RepairOutputPaths* paths) {
-    const std::filesystem::path fp(final_path);
+    const std::filesystem::path fp = ToNativePath(final_path);
     const std::filesystem::path dir = fp.parent_path();
     const std::string stem = fp.stem().u8string();
-    paths->report_json_path = (dir / (stem + ".repair.json")).u8string();
-    paths->report_text_path = (dir / (stem + ".repair.txt")).u8string();
-    paths->report_html_path = (dir / (stem + ".repair.html")).u8string();
+    paths->report_json_path = JoinUtf8(dir, stem + ".repair.json").u8string();
+    paths->report_text_path = JoinUtf8(dir, stem + ".repair.txt").u8string();
+    paths->report_html_path = JoinUtf8(dir, stem + ".repair.html").u8string();
 }
 
 std::vector<std::string> AllArtifacts(const RepairOutputPaths& paths) {
@@ -98,9 +106,8 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
         return paths;
     }
 
-    std::filesystem::path directory = request.output_directory.empty()
-                                          ? ParentDirectory(request.source_path)
-                                          : std::filesystem::path(request.output_directory);
+    std::filesystem::path directory = request.output_directory.empty() ? ParentDirectory(request.source_path)
+                                                                       : ToNativePath(request.output_directory);
     std::error_code ec;
     if (!std::filesystem::exists(ToNativePath(directory.u8string()), ec)) {
         std::filesystem::create_directories(ToNativePath(directory.u8string()), ec);
@@ -129,8 +136,8 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
 
     if (!request.output_path.empty()) {
         std::string final_path = request.output_path;
-        if (!std::filesystem::path(final_path).is_absolute())
-            final_path = (directory / final_path).u8string();
+        if (!ToNativePath(final_path).is_absolute())
+            final_path = JoinUtf8(directory, final_path).u8string();
         if (Exists(final_path)) {
             paths.error = "目标文件已存在，拒绝覆盖: " + final_path;
             return paths;
@@ -150,7 +157,7 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
     for (int suffix = 0; suffix < 100; ++suffix) {
         const std::string unique = run_id + (suffix == 0 ? std::string() : "-" + std::to_string(suffix));
         const std::string name = stem + ".repaired." + unique + "." + paths.extension;
-        RepairOutputPaths candidate = build((directory / name).u8string());
+        RepairOutputPaths candidate = build(JoinUtf8(directory, name).u8string());
         if (Exists(candidate.final_path))
             continue;
         // 自动命名下任何冲突都应该换个后缀重试，而不是把一次遗留的 .part
@@ -304,11 +311,11 @@ void RepairOutputWriter::Discard(const std::string& path) {
 }
 
 std::string RepairOutputWriter::PartialPath(const std::string& final_path) {
-    const std::filesystem::path fp(final_path);
+    const std::filesystem::path fp = ToNativePath(final_path);
     const std::filesystem::path dir = fp.parent_path();
     const std::string stem = fp.stem().u8string();
     const std::string ext = fp.extension().u8string();
-    return (dir / (stem + ".partial" + ext)).u8string();
+    return JoinUtf8(dir, stem + ".partial" + ext).u8string();
 }
 
 } // namespace repair

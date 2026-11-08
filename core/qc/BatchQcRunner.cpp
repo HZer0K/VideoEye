@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 
+#include "core/domain/io/Utf8Path.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -85,10 +86,18 @@ std::vector<BatchQcItem> BatchQcRunner::Discover(const std::string& root, bool r
     std::vector<BatchQcItem> items;
     std::error_code ec;
 
+    // root 是 UTF-8 std::string（来自 UI 的目录框）。直接喂 std::filesystem 会被按
+    // 当前 ANSI 代码页解释 —— 中文目录下 is_regular_file 与 directory_iterator 全部
+    // 静默失败，返回空列表，用户看到的是"这个目录里什么文件都没有"。
+    const std::filesystem::path root_native = ToNativePath(root);
+
     auto visit = [&items, &extensions](const std::filesystem::directory_entry& entry, std::error_code& error) {
         if (!entry.is_regular_file(error))
             return;
-        const std::string path = entry.path().string();
+        // 必须 u8string()：path().string() 在 Windows 上把宽字符转回 ANSI，中文名会变成
+        // GBK 字节（下游按 UTF-8 打开必失败），代码页表示不了的字符（emoji 等）直接抛
+        // 异常 —— 遍历目录时抛就是崩。
+        const std::string path = ToUtf8String(entry.path());
         if (!ExtensionMatches(path, extensions))
             return;
         BatchQcItem item;
@@ -98,16 +107,16 @@ std::vector<BatchQcItem> BatchQcRunner::Discover(const std::string& root, bool r
         items.push_back(std::move(item));
     };
 
-    if (std::filesystem::is_regular_file(root, ec) && !ec) {
-        visit(std::filesystem::directory_entry(root, ec), ec);
+    if (std::filesystem::is_regular_file(root_native, ec) && !ec) {
+        visit(std::filesystem::directory_entry(root_native, ec), ec);
     } else if (recursive) {
-        for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+        for (std::filesystem::recursive_directory_iterator it(root_native, ec), end; it != end; it.increment(ec)) {
             if (ec)
                 break;
             visit(*it, ec);
         }
     } else {
-        for (std::filesystem::directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
+        for (std::filesystem::directory_iterator it(root_native, ec), end; it != end; it.increment(ec)) {
             if (ec)
                 break;
             visit(*it, ec);

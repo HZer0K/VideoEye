@@ -112,7 +112,9 @@ std::string PathAliasKey(const std::string& path) {
     if (path.empty())
         return {};
     std::error_code ec;
-    std::filesystem::path p = std::filesystem::path(path);
+    // 必须是 ToNativePath：path(std::string) 在 C locale 下对非 ASCII 字节抛
+    // system_error，中文路径的"别名判定"会直接炸掉调用方。
+    std::filesystem::path p = ToNativePath(path);
     if (!p.is_absolute()) {
         const std::filesystem::path abs = std::filesystem::absolute(p, ec);
         if (!ec)

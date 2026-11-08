@@ -11,6 +11,7 @@
 #include <system_error>
 #include <vector>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/qc/QcAnalyzeRequest.h"
 #include "core/qc/QcProfile.h"
 #include "core/qc/QcReportFormat.h"
@@ -70,8 +71,11 @@ inline bool IsContainedUnder(const std::filesystem::path& dir, const std::filesy
 inline std::filesystem::path ReportBasePath(const std::string& out_dir, const std::string& root,
                                             const std::string& file_path) {
     std::error_code ec;
-    const auto abs_file = std::filesystem::weakly_canonical(std::filesystem::path(file_path), ec);
-    const auto abs_root = std::filesystem::weakly_canonical(std::filesystem::path(root), ec);
+    // 三个入参都是 UTF-8。直接 std::filesystem::path(std::string) 会按 ANSI 解释，
+    // 中文导出目录下 weakly_canonical 失败 → 退回只取文件名 → 子目录结构丢失，
+    // 后续 create_directories 也会失败。
+    const auto abs_file = std::filesystem::weakly_canonical(ToNativePath(file_path), ec);
+    const auto abs_root = std::filesystem::weakly_canonical(ToNativePath(root), ec);
     std::filesystem::path rel;
     if (!ec && !abs_root.empty()) {
         const auto candidate = std::filesystem::relative(abs_file, abs_root, ec);
@@ -79,9 +83,9 @@ inline std::filesystem::path ReportBasePath(const std::string& out_dir, const st
             rel = candidate;
     }
     if (rel.empty())
-        rel = std::filesystem::path(file_path).filename();
+        rel = ToNativePath(file_path).filename();
 
-    const std::filesystem::path out(out_dir);
+    const std::filesystem::path out = ToNativePath(out_dir);
     const std::filesystem::path parent = out / rel.parent_path();
     // 链接目录一律拒绝，退回"铺平到 out_dir"：宁可少保留一层子目录，
     // 也不能把报告写到导出目录之外。
@@ -108,14 +112,16 @@ inline void ApplyExportPaths(qc::QcRunResult& result, const std::string& out_dir
     const auto fmts = formats.empty() ? std::vector<qc::QcReportFormat>{qc::QcReportFormat::Json} : formats;
     bool any_fail = false;
     for (const auto format : fmts) {
-        const std::string target = base.string() + qc::QcReportExtension(format);
+        // base 是原生 path，转回 UTF-8 才能交给导出器（内部 ToNativePath 再转一次）。
+        // 用 path::string() 会得到 ANSI 字节，中文目录 + 中文文件名下写不出去。
+        const std::string target = ToUtf8String(base) + qc::QcReportExtension(format);
         const bool ok = (format == qc::QcReportFormat::Pdf)
                             ? reporting::QcReportExporter::ExportPdf(target, bundle).ok
                             : reporting::QcReportExporter::Export(target, bundle, format);
         if (!ok)
             any_fail = true;
     }
-    result.output_path = base.string() + qc::QcReportExtension(fmts.front());
+    result.output_path = ToUtf8String(base) + qc::QcReportExtension(fmts.front());
     result.export_failed = any_fail;
 }
 

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <sstream>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairInspector.h"
@@ -210,7 +211,9 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
                 result.output_published = true;
                 result.output_container = paths.extension;
                 std::error_code partial_ec;
-                const uint64_t partial_size = std::filesystem::file_size(partial_path, partial_ec);
+                // UTF-8 路径必须先转原生：file_size(utf8 std::string) 在 Windows 上恒失败
+                // （ec = path not found），产物大小会被记成 0。
+                const uint64_t partial_size = std::filesystem::file_size(ToNativePath(partial_path), partial_ec);
                 result.artifacts.push_back(
                     model::RepairArtifact{"output_partial", partial_path, output_mime,
                                           "bytes [0, " + std::to_string(partial_ec ? 0 : partial_size) + ")"});
@@ -386,7 +389,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.output_published = true;
     result.output_container = paths.extension;
     std::error_code size_ec;
-    const uint64_t output_size = std::filesystem::file_size(paths.final_path, size_ec);
+    const uint64_t output_size = std::filesystem::file_size(ToNativePath(paths.final_path), size_ec);
     const std::string output_mime = paths.extension == "mkv"  ? "video/x-matroska"
                                     : paths.extension == "ts" ? "video/mp2t"
                                                               : "video/mp4";

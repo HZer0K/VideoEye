@@ -538,6 +538,27 @@ target_link_libraries(test_format_detector_truth PRIVATE VideoEyeAnalysis)
 add_test(NAME FormatDetectorTruthTests COMMAND test_format_detector_truth)
 
 # ============================================================
+# 中文（UTF-8）路径的写入侧 / 遍历侧守护
+#
+# 读取侧已由 test_parser_review_regressions.cpp::UnicodeFiles 覆盖；这里补的是
+# 写入与目录遍历：批量扫描、报告落盘（5 种格式）、批量导出路径、修复输入身份。
+# MSVC 下 exists()/file_size() 直传 UTF-8 std::string 会**静默失败**（ec 为空），
+# path().string() 对 emoji 名还会抛异常 —— 这三条都是用户可见故障，见文件头注释。
+# ============================================================
+videoeye_add_test(test_unicode_path_io
+    unit/test_unicode_path_io.cpp
+)
+target_link_libraries(test_unicode_path_io PRIVATE
+    VideoEyeQc
+    VideoEyeReporting
+    VideoEyeRepair
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory
+)
+add_test(NAME UnicodePathIoTests COMMAND test_unicode_path_io)
+
+# ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
 #
 # TaskManager 本身只依赖 stdlib; 链 VideoEyeInfrastructure 而不是手写清单,

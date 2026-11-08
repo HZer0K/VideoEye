@@ -132,6 +132,43 @@ API 有两条硬约束（写在 `FfmpegInterrupt.h` 顶部）：回调必须在 
 配套约定：取消令牌在**线程启动之前**注入 worker，worker 内部只读写、不重置取消状态，
 否则"启动前立即取消"会被吃掉。
 
+### 3.2 路径编码：内部一律 UTF-8，只在 IO 边界转原生路径
+
+全仓内部（`core/` / `ui/` / `infrastructure/`）的路径一律按 **UTF-8 `std::string`**
+传递：Qt 的 `QString::toStdString()` 给的就是 UTF-8，FFmpeg 要的也是 UTF-8，清单与
+命令行参数同样是 UTF-8。唯一的转换点是 `core/domain/io/Utf8Path.h`：
+
+| 方向 | 函数 |
+|------|------|
+| UTF-8 `std::string` → `std::filesystem::path` | `ToNativePath()`（`u8path` + 软回退，不抛） |
+| `std::filesystem::path` → UTF-8 `std::string` | `ToUtf8String()`（内部 `u8string()`） |
+
+**不要写 `std::filesystem::path(some_std_string)`，也不要写 `some_path.string()`。**
+MSVC 上这两种写法都会把 UTF-8 字节按当前 locale 解释，2026-11 实测（代码页 936）
+三种失败形态**都不报编码错误**：
+
+| 写法 | 实测结果 |
+|------|---------|
+| `exists(utf8_std_string)` | 返回 `false`，且 `ec` 为空 —— 被当成"文件不存在" |
+| `file_size(utf8_std_string)` | 恒失败（`ec = path not found`），哪怕该 string 刚由 `u8string()` 取出 |
+| `path(utf8_std_string)` | 在 C locale 下对**任何非 ASCII 字节抛 `system_error`**（"No mapping for the Unicode character…"），未捕获即崩 |
+| `path().string()` | 中文名给出 GBK 字节（下游按 UTF-8 用即打不开）；代码页表示不了的字符（emoji）直接抛 |
+
+用户侧的表现依次是：中文目录批量扫描"一个文件都没有"、修复报"输入文件不存在"、
+产物大小 0 或产物写进一个乱码目录、扫描到表情符号文件名时进程退出。
+
+同一个坑还有一个变体：**`path / std::string` 会隐式构造 `path(std::string)`**，
+所以拼接也要走 `ToNativePath`（`RepairOutputWriter.cpp` 里的 `JoinUtf8`）。
+2026-11 一次性清掉的历史漏网：`BatchQcRunner::Discover`、
+`RepairInspector` 的输入 stat、`RepairEngine` 的产物大小、
+`RepairOutputWriter`（`Resolve` / `FillReportPaths` / `PartialPath` / `ParentDirectory`）、
+`RepairUtils::PathAliasKey`、`report_path.h`、`report_export.h`。
+
+守护：`tests/unit/test_unicode_path_io.cpp`（中文目录批量发现、5 种报告格式落盘、
+批量导出保留子目录、修复产物大小与文件名、非法 UTF-8 不抛）；读取侧另有
+`test_parser_review_regressions.cpp::UnicodeFiles`。测试工厂
+`TestMediaFactory` 自身没有做转换，造中文路径样本要先在英文目录生成再 rename。
+
 ## 4. 结果类型与执行者的分离
 
 分析器产出结果，结果自己不带任何进行分析的能力：

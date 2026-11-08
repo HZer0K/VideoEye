@@ -18,6 +18,7 @@
 #include <QObject> // tr 的翻译上下文（与 batch_result_model.h 一致）
 #include <QString>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/qc/BatchQcRunner.h"
 
 namespace videoeye {
@@ -29,7 +30,9 @@ namespace ui {
 // 可能不同，报告自己认的是 report.file_path；它为空（没跑出结果）才退回当前文件。
 inline std::string SingleExportBaseName(const std::string& report_file_path, const std::string& fallback_path) {
     const std::string& chosen = report_file_path.empty() ? fallback_path : report_file_path;
-    return std::filesystem::path(chosen).stem().string();
+    // stem() 走原生路径，再 u8string() 取 UTF-8：path(std::string) 会在 C locale 下
+    // 抛异常，path::string() 会把中文名压成 GBK 字节（下游当 UTF-8 用就写坏文件名）。
+    return ToUtf8String(ToNativePath(chosen).stem());
 }
 
 // 批量汇总导出前的 summary 重算。
