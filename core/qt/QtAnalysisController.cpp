@@ -1,5 +1,6 @@
 #include "core/qt/QtAnalysisController.h"
 
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <string>
@@ -287,7 +288,16 @@ void QtAnalysisController::Shutdown() {
 
     if (worker_.joinable()) {
         if (body_returned) {
+            // 线程体返回了，但**析构路径不跑事件循环**：worker 线程投递的
+            // WorkerExited 是队列连接，可能永远没机会被处理，OnWorkerExited 里
+            // 那次终态归还也就不会发生。以前这里直接 return，slot 会停在 Running，
+            // 随后 TaskManager 析构的 WaitForAll(5000) 白等满 5 秒 —— 用户看到的
+            // 就是"关窗口卡 5 秒"。这里补还一次：EndHandle 幂等（id + 终态一次性），
+            // 正常已经还过的路径重复调用不会产生第二次终态。
+            const task::TaskState terminal = worker_box_ ? worker_box_->terminal : task::TaskState::Canceled;
             ReapWorker(); // 线程体已返回，收句柄
+            if (handle.valid())
+                SettleTask(handle, terminal);
             return;
         }
         // 预算耗尽。任务在 TaskManager 里登记的是 BlockingIo（见 StartAnalysis），

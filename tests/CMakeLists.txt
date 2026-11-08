@@ -1263,6 +1263,27 @@ endif()
 add_test(NAME QtAnalysisControllerLifecycleTests COMMAND test_qt_analysis_controller)
 
 # =================================================
+# 测试 38b: QtAnalysisController 并发取消压力（第三批）
+# 说明: 38 只覆盖「一次一个动作」的生命周期；这里压连点取消、取消排队请求、
+#       快速开始/取消循环、飞行中析构宿主。共同断言是「终态只还一次」与
+#       「收敛必须回到空闲」，对应界面停在“取消中”/关窗口卡住这两类现场。
+# =================================================
+videoeye_add_test(test_controller_cancel_stress
+    unit/test_controller_cancel_stress.cpp
+)
+target_link_libraries(test_controller_cancel_stress PRIVATE
+    VideoEyeQtAdapters
+    VideoEyeAnalysis
+    VideoEyeDomain
+    Qt6::Core)
+# 与 38 一样用 BlockingTcpEndpoint.h 起本地监听端口，Windows 需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_controller_cancel_stress PRIVATE ws2_32)
+endif()
+add_test(NAME ControllerCancelStressTests COMMAND test_controller_cancel_stress)
+set_tests_properties(ControllerCancelStressTests PROPERTIES TIMEOUT 300)
+
+# =================================================
 # 测试 39：FFmpeg 阻塞 IO 的中断/超时工具（复查 P1-3）
 # 说明: core/ffmpeg_io 是叶子模块, 只依赖 FFmpeg 公共头 —— 分析/播放/导出共用它
 #       把阻塞中的 avformat_* 踢出来。这里锁定它的判定语义(取消/超时/关闭超时)。
