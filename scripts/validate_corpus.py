@@ -21,8 +21,13 @@
      truth_* 真值不一致），见 scripts/corpus_semantic_gate.py
   8. 负样本诊断门禁未通过（失败原因不可区分 / 守恒被破坏 / 无事实的成功结论），
      见 scripts/corpus_defect_gate.py；默认开启，--no-defect-gate 可跳过
+  9. 格式探测真值门禁未通过（INDEX.container 与 detected_format 不一致 / 跨大类
+     误判 / 覆盖守护），见 scripts/corpus_format_gate.py；默认开启，
+     --no-format-gate 可跳过
 
 报告项（只打印，不判红）：主容器识别率、与 ffprobe 的抽样交叉校验。
+主容器识别率仍保留打印便于看分布，但**判红交给第 9 条**：以前它只是一行
+print，而且只认 11 种容器，1957 条带真值的样本根本不在视野内。
 注意第 7 条不是抽样交叉校验的升级版而是另一回事：那条只打印 2 个字段的差异，
 这条按 23 个字段逐样本判红、校验真值未漂移，且带覆盖守护防止"没有事实实时也一路绿"。
 ⚠️ 真值来自校验工具输出的 truth_* 列，所以不能用 --no-truth 生成的旧结果表跑语义门禁。
@@ -54,6 +59,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SEMANTIC_GATE = REPO_ROOT / "scripts" / "corpus_semantic_gate.py"
 DEFECT_GATE = REPO_ROOT / "scripts" / "corpus_defect_gate.py"
+FORMAT_GATE = REPO_ROOT / "scripts" / "corpus_format_gate.py"
 
 MANIFEST_FORMATS = {"HLS", "DASH"}
 MANIFEST_ERROR_TOKEN = "清单"
@@ -183,6 +189,27 @@ def run_defect_gate(args, results: Path) -> list[str]:
     return []
 
 
+def run_format_gate(args, results: Path) -> list[str]:
+    """格式探测真值门禁：可用性全绿不代表「认成什么格式」是对的。"""
+    if args.no_format_gate:
+        return []
+    cmd = [
+        sys.executable, str(FORMAT_GATE),
+        "--index", str(args.index),
+        "--results", str(results),
+        "--root", str(args.root),
+        "--whitelist", str(args.format_whitelist),
+    ]
+    print(f"[format] {' '.join(cmd)}", flush=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    print((proc.stdout or "").rstrip(), flush=True)
+    if proc.stderr:
+        print((proc.stderr or "").rstrip(), flush=True)
+    if proc.returncode != 0:
+        return ["格式探测真值门禁未通过（见上方判红明细）"]
+    return []
+
+
 def container_accuracy(rows: list[dict]) -> None:
     matched = 0
     considered = 0
@@ -273,6 +300,11 @@ def main() -> int:
     parser.add_argument("--defect-whitelist",
                         default=str(REPO_ROOT / "tests" / "corpus" / "defect_gate_whitelist.json"),
                         help="负样本门禁的例外白名单 JSON")
+    parser.add_argument("--no-format-gate", action="store_true",
+                        help="跳过格式探测真值门禁（默认开启）")
+    parser.add_argument("--format-whitelist",
+                        default=str(REPO_ROOT / "tests" / "corpus" / "format_gate_whitelist.json"),
+                        help="格式门禁的例外白名单 JSON")
     args = parser.parse_args()
 
     out_path = run_validator(args)
@@ -339,6 +371,7 @@ def main() -> int:
     ffprobe_crosscheck(rows, args.ffprobe_sample, args.ffprobe)
     failures += run_semantic_gate(args, out_path)
     failures += run_defect_gate(args, out_path)
+    failures += run_format_gate(args, out_path)
 
     print(f"\n结果明细: {out_path}")
     if failures:

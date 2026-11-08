@@ -220,6 +220,60 @@ bool LooksLikeAv1ObuStream(const std::string& head) {
     return obu_type >= 1 && obu_type <= 8; // 1=sequence header ... 8=padding
 }
 
+// 「首盒没有 ftyp」时用来确认这确实是一份 ISOBMFF 文件。
+//
+// 只收可能出现在顶层的四字符盒类型，且四个字节都得是可打印 ASCII —— 裸 Annex-B
+// 流恰好以 00 00 00 01 起头，offset 4 是 NAL 头（0x67 / 0x26 之类），过不了这道闸，
+// 所以扩展尺寸盒的判据不会把真正的裸流抢走。
+bool IsIsobmffTopLevelBox(const std::string& type) {
+    if (type.size() != 4) {
+        return false;
+    }
+    for (const char c : type) {
+        if (c < 0x20 || c > 0x7E) {
+            return false;
+        }
+    }
+    static const char* const kTypes[] = {"ftyp", "styp", "moof", "mdat", "moov", "free",
+                                         "skip", "wide", "sidx", "pnot", "uuid", "mfra"};
+    for (const char* candidate : kTypes) {
+        if (type == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 无 ftyp 的 ISOBMFF 到底算 MP4 还是 QuickTime：按扩展名定，无扩展名归 MP4。
+// .qt 不在扩展名表里（老式 QuickTime 专有后缀），所以魔数必须自己认出来。
+ContainerFormat IsobmffFormatForPath(const std::string& path) {
+    const std::string ext = FileExtension(path);
+    return (ext == "mov" || ext == "qt") ? ContainerFormat::MOV : ContainerFormat::MP4;
+}
+
+// 属于别的容器/编码家族的强签名。
+//
+// TS 是全函数唯一的弱魔数（只靠 0x47 周期重复），而 FATE 语料里专门有一批
+// 「把真实 TS 数据嵌进另一个文件」的样本：wav-not-mpegts（RIFF/WAVE 头）、
+// tc217.gif（GIF89a 头）、mpegts-png-prefix（PNG 头）。它们的 0x47 链甚至带
+// 完整 PAT/PMT，PID 序列与真 TS 一模一样 —— 提高同步点门槛或校验 PAT 都压不住，
+// 反而会误伤真 TS。FFmpeg 与用户都按文件头的强签名归类，所以这里明确挡住：
+// 返回 Unknown 交给扩展名兜底 / FFmpeg 通用回退，绝不谎报 MPEG-TS。
+// AVI / AMV 已在前面判过，走到这里的 RIFF 只可能是 WAVE 等无专用解析器的变体。
+bool HasForeignStrongSignature(const std::string& head) {
+    if (head.size() < 8) {
+        return false;
+    }
+    if (head.compare(0, 4, "RIFF") == 0 || head.compare(0, 4, "GIF8") == 0 || head.compare(0, 4, "%PDF") == 0 ||
+        head.compare(0, 3, "ID3") == 0) {
+        return true;
+    }
+    if (head.compare(0, 8, std::string("\x89PNG\r\n\x1a\n", 8)) == 0) {
+        return true;
+    }
+    return ByteAt(head, 0) == 0xFF && ByteAt(head, 1) == 0xD8 && ByteAt(head, 2) == 0xFF; // JPEG
+}
+
 } // namespace
 
 model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_path) {
@@ -229,6 +283,9 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     }
 
     std::string header = file.Read(1024);
+    // 盒大小是否合法得跟真实文件长度比，光看头部 1 KiB 会把"声明 4 GB 的 20 字节文件"
+    // 也当成合法容器。Size() 是打开时缓存的，不产生额外 I/O。
+    const int64_t file_size = file.Size();
     file.Close();
 
     if (header.size() < 4) {
@@ -270,6 +327,35 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
         }
     }
 
+    // 首盒没有 ftyp 的两种合法 ISOBMFF 形态，必须排在"裸流"之前：
+    //
+    //  a) 64 位扩展尺寸（size 字段 == 1，offset 8 起 8 字节才是真实大小）。
+    //     extended_atom_size_probe 的首盒是 `00 00 00 01 mdat ...`，旧代码认不出盒
+    //     结构，反而把它当成 Annex-B 四字节起始码，从 mdat 载荷里读到 00 00 01 B3
+    //     就报 Raw ES —— 一份 MP4 被分发给裸流分析器。
+    //  b) 老式 QuickTime 直接以 mdat / moov / wide 起头，压根没有 ftyp 盒。
+    //     cass_schi.qt 因此落回扩展名兜底，而 .qt 不在扩展名表里 → Unknown。
+    //
+    // 两处都要求「盒类型是已知顶层四字符 + 声明大小与真实文件长度自洽」，
+    // 否则随机字节里的 00 00 00 01 会被当成容器。
+    if (header.size() >= 16) {
+        const uint32_t size32 = ReadU32Be(header, 0);
+        const std::string type = header.substr(4, 4);
+        if (size32 == 1 && IsIsobmffTopLevelBox(type)) {
+            const uint32_t large_hi = ReadU32Be(header, 8);
+            const uint32_t large_lo = ReadU32Be(header, 12);
+            if (large_hi == 0 && large_lo >= 16 && static_cast<int64_t>(large_lo) <= file_size) {
+                return IsobmffFormatForPath(file_path);
+            }
+        }
+        // size == 0（延伸到文件尾）不在这里判：没有长度可自证，交给扩展名兜底。
+        if (size32 >= 8 && static_cast<int64_t>(size32) <= file_size &&
+            (type == "mdat" || type == "moov" || type == "wide" || type == "free" || type == "skip" ||
+             type == "pnot")) {
+            return IsobmffFormatForPath(file_path);
+        }
+    }
+
     // EBML (MKV/WebM): \x1A\x45\xDF\xA3
     if (ByteAt(header, 0) == 0x1A && ByteAt(header, 1) == 0x45 && ByteAt(header, 2) == 0xDF &&
         ByteAt(header, 3) == 0xA3) {
@@ -287,9 +373,14 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
         return model::ContainerFormat::MKV;
     }
 
-    // AVI: "RIFF" + 4 bytes size + "AVI "
-    if (header.size() >= 12 && header.compare(0, 4, "RIFF") == 0 && header.compare(8, 4, "AVI ") == 0) {
-        return model::ContainerFormat::AVI;
+    // AVI: "RIFF" + 4 bytes size + "AVI "。AMV 是同一套 RIFF/AVI 派生的变体，
+    // 只把 form type 换成 "AMV "；以前漏了它，.amv 样本魔数 Unknown、扩展名表里
+    // 也没有 .amv，于是明明是 AVI 家族却报不支持。
+    if (header.size() >= 12 && header.compare(0, 4, "RIFF") == 0) {
+        const std::string form = header.substr(8, 4);
+        if (form == "AVI " || form == "AMV ") {
+            return model::ContainerFormat::AVI;
+        }
     }
 
     // FLV: "FLV"
@@ -371,6 +462,11 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
     // 又会把它分给按 188 步长解析的 TS 分析器，最后报"未找到同步字节"。
     //
     // 这是全函数里唯一的弱魔数（判据只是单字节重复），必须排在所有多字节签名之后。
+    // 连「没有专用解析器、只能回 Unknown」的强签名也要排在它前面：见
+    // HasForeignStrongSignature 的说明，否则嵌了 TS 数据的 WAV/GIF/PNG 会被抢走。
+    if (HasForeignStrongSignature(header)) {
+        return model::ContainerFormat::Unknown;
+    }
     {
         static const int kPacketSizes[] = {188, 192, 204};
         for (const int ps : kPacketSizes) {

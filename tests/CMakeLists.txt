@@ -209,6 +209,10 @@ if(VIDEOEYE_PYTHON_EXE)
     # 白名单失效 / 分组覆盖缺失都要精确判红。同样不需要外部语料，PR 流程可跑。
     add_test(NAME CorpusDefectGateSelfTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_corpus_defect_gate.py)
+    # 格式探测真值门禁的判别力自测：硬组错判 / 软组跨大类 / 阈值空转 /
+    # 真值列被抄错 / 白名单失效 / 宏观守护被逐行判红淹没，都要精确判红。
+    add_test(NAME CorpusFormatGateSelfTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_corpus_format_gate.py)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -240,7 +244,8 @@ if(VIDEOEYE_PYTHON_EXE)
     set_tests_properties(CorpusGeneratorCheck RealCorpusCheck
                          TestSummaryReadmeCheck TestSummarySelfTests
                          CorpusSemanticGateSelfTests
-                         CorpusDefectGateSelfTests PROPERTIES
+                         CorpusDefectGateSelfTests
+                         CorpusFormatGateSelfTests PROPERTIES
         ENVIRONMENT "PYTHONIOENCODING=utf-8;PYTHONUTF8=1")
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
@@ -518,6 +523,19 @@ target_link_libraries(test_container_failure_kind PRIVATE
     VideoEyeInfrastructure
 )
 add_test(NAME ContainerFailureKindTests COMMAND test_container_failure_kind)
+
+# ============================================================
+# 格式探测真值守护（离线门禁 scripts/corpus_format_gate.py 的 PR 侧对应物）
+#
+# 合成字节钉死四类修复：ISOBMFF 64 位扩展尺寸首盒、无 ftyp 的老式 QuickTime、
+# RIFF/AMV 变体、WAV/GIF/PNG 等强签名优先于 TS 弱魔数。每类都带反向守护，
+# 并留一条「真 TS + PAT 仍被认出」防止修复把正常格式一起拒掉。
+# ============================================================
+videoeye_add_test(test_format_detector_truth
+    unit/test_format_detector_truth.cpp
+)
+target_link_libraries(test_format_detector_truth PRIVATE VideoEyeAnalysis)
+add_test(NAME FormatDetectorTruthTests COMMAND test_format_detector_truth)
 
 # ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃

@@ -16,17 +16,18 @@
 | 格式 | 魔数判据 | 解析器 |
 |------|---------|--------|
 | MP4 / MOV | `ftyp`（+ brand 区分 MOV） | `Mp4BoxAnalyzer` + `Mp4SampleTableAnalyzer` |
+| ISOBMFF（无 `ftyp`） | 首盒为已知顶层盒且**声明长度与文件长度自洽**：64 位扩展尺寸（`size==1` + 8 字节大长度）或老式 QuickTime 直接以 `mdat`/`moov`/`wide` 起头 | 同上 |
 | fMP4 分片 | 首盒 `styp` / `moof` | 同上（没有 `moov` 时按分片展示） |
 | MKV / WebM | EBML `1A 45 DF A3`（DocType 区分） | `EbmlAnalyzer` |
-| AVI | `RIFF....AVI ` | `AviStructureAnalyzer` |
+| AVI | `RIFF....AVI ` **或 `RIFF....AMV `** | `AviStructureAnalyzer` |
 | FLV | `FLV` | `FlvStructureAnalyzer` |
-| MPEG-TS | `0x47` 等步长重复（**188 / 192 / 204 三种步长都试**） | `TsStructureAnalyzer` |
+| MPEG-TS | `0x47` 等步长重复（**188 / 192 / 204 三种步长都试**），**且文件头没有其它格式的强签名** | `TsStructureAnalyzer` |
 | ASF / WMV | `30 26 B2 75 8E 66 CF 11` | `AsfStructureAnalyzer` |
 | OGG | `OggS` | `OggStructureAnalyzer` |
 | MPEG-PS | `00 00 01 BA`（Pack Header） | `MpegPsStructureAnalyzer` |
 | MXF | `06 0E 2B 34`（Partition Pack UL） | `MxfStructureAnalyzer` |
 | 裸流 | `00 00 00 01` / `00 00 01` + 合理的 NAL 头 + 第二个起始码 | 走 FFmpeg（无结构树） |
-| HLS / DASH | **只能靠扩展名**（`.m3u8` / `.mpd` 是纯文本） | `HlsManifestAnalyzer` / `DashManifestAnalyzer` |
+| HLS / DASH | 文本嗅探：首行 `#EXTM3U`（允许 BOM/空行）／前 1 KiB 出现 `<MPD`；扩展名（`.m3u8` / `.mpd`）兜底 | `HlsManifestAnalyzer` / `DashManifestAnalyzer` |
 
 2026-10 补的三条检测细节：
 
@@ -36,6 +37,32 @@
 - 扩展名表以前没有 `mpg` / `vob` / `mxf`，PS 与 MXF 文件只能落到"未知格式"再被
   FFmpeg 兜底；裸流（`.h264` / `.h265` / `.av1` …）同理。现在三种都能在检测层
   给出格式名，PS / MXF 还会走自己的结构解析器。
+
+2026-11 补的四条（每一条都是**真实样本上实测的误判**，不是假想）：
+
+- **首盒无 `ftyp` 的 ISOBMFF**：`extended_atom_size_probe` 的首盒是
+  `00 00 00 01 mdat`（64 位扩展尺寸），旧代码认不出盒结构，反而把 `00 00 00 01`
+  当成 Annex-B 起始码，从 mdat 载荷里读到 `00 00 01 B3` 就报 **Raw ES**；
+  `cass_schi.qt` 直接以 `mdat` 起头、压根没有 `ftyp`，落回扩展名兜底而 `.qt`
+  又不在类型表里 → **Unknown**。现在的判据要求「盒类型是已知顶层四字符 **且**
+  声明长度与真实文件长度自洽」，避免随机字节里的 `00 00 00 01` 被当成容器。
+- **`RIFF....AMV `**：AMV 是 AVI 同一套 RIFF 结构的变体（只换 form type），
+  以前漏判 → Unknown，而扩展名表里也没有 `.amv`，明明是 AVI 家族却报不支持。
+- **强签名优先于 TS 弱魔数**：TS 只靠「单字节 `0x47` 等步长重复」，188 字节周期
+  意味着**任意 1 KiB 数据有约 0.86% 的概率**凑巧命中。以前 TS 判定排在 RIFF/GIF/
+  PNG/JPEG/PDF/ID3 之前，于是一段 WAV、一张 GIF、乃至带 junk 前缀的裸数据都会被
+  判成 MPEG-TS。现在这些**多字节强签名**先判，命中即返回 `Unknown`，TS 留到末尾。
+  注意这条路对「junk 前缀 + 内部嵌真实 TS」无能为力（`sample_with_junk` 就是），
+  那种情况只能进白名单并写明原因，不能靠提高同步点数量掩盖。
+- **格式探测真值门禁**：`validate_corpus.py::container_accuracy()` 以前只打印
+  识别率、从不判红，而且只认 11 种容器 —— 4429 行里 1957 条带 `container` 真值的
+  样本（image / h264 / hevc / wav / mp3 …）从来没有被任何门禁检查过。现在
+  `scripts/corpus_format_gate.py` 把真值分成**硬组**（有专用解析器，必须精确命中，
+  `Unknown` 单独设上限）与**软组**（走 FFmpeg 通用回退是设计选择，但**不得跨大类
+  误判**），并带覆盖守护：结果表规模、真值列齐全、两组样本量与容器种类、必需
+  容器组都在、INDEX 与结果表 `idx_container` 一致、白名单每条必须被**真实差异**
+  命中。分层的原因很直接：把软组 `Unknown` 也判红等于要求 FormatDetector 认识
+  全世界所有格式，只会逼出「改阈值换绿」的假门禁。
 
 ## 2. 每种格式的深度
 
@@ -260,3 +287,20 @@ ffmpeg 的输出不是字节可复现的，但"换版本产出变成别的容器
 181 个包只数出 180 个，`scan_complete` 却照报"已扫全文件"。手工样本撞不到这条，
 因为它们都能被步长整除。
 - `tests/fuzz/fuzz_container_structure.cpp`：容器结构解析的 libFuzzer 入口（Linux + clang）。
+
+### 6.2 格式探测真值门禁
+
+"结构解析得对不对"和"这个文件被认成了什么格式"是两件事：后者错了，前者再准也是
+在解一个错的容器。这一半由两层守护：
+
+- `tests/unit/test_format_detector_truth.cpp`：手写字节样本钉死上面四条修复
+  （64 位扩展尺寸首盒、老式 QuickTime、RIFF-AMV、强签名压制 TS 弱魔数），
+  每个用例都先断言"旧逻辑会误判成什么"，再断言现在的结果。
+- `scripts/corpus_format_gate.py`：拿 `INDEX.tsv` 的 `container` 当真值，对真实
+  语料逐行比对（硬组精确匹配 + `Unknown` 上限、软组不得跨大类），并带覆盖守护与
+  白名单必须被真实差异命中。`scripts/test_corpus_format_gate.py` 是它自己的 22 例
+  自测（缺列、空表、阈值被架空、白名单失效都会判红），`tests/corpus/format_gate_whitelist.json`
+  记录当前 4 条已知差异及原因。默认由 `validate_corpus.py` 作为第 9 条判据执行。
+
+当前口径：硬组 1674 条识别率 99.46%（9 条差异 = 4 条白名单已知口径 + 5 条真值
+本身模糊的 `Unknown`，上限 20），软组 1957 条不得跨大类。

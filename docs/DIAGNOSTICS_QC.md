@@ -304,3 +304,8 @@ QC 调用时 `max_scan_bytes=0`（扫全文件，Footer / Index Table 才不会�
 判别力由两侧共同守着：`test_container_failure_kind.cpp`（10 例钉死类别、文案、
 键名、复用 result 的清残留）与 `scripts/test_corpus_defect_gate.py`（20 例逐个破坏
 判据并断言精确报错）。两者都注册进 CTest，不需要外部语料即可在 PR 流程跑。
+
+紧随其后的第 9 条判据是**格式探测真值门禁**（`scripts/corpus_format_gate.py`，
+`--no-format-gate` 可跳过）：它管的是"文件被认成什么容器"，与本节"结构解析失败
+原因"是两件事 —— 格式判错时，结构分析再准确也是在解一个错的容器。口径与口径
+来源见 `docs/CONTAINER_STRUCTURE.md §6.2`。

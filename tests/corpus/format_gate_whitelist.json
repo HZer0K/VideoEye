@@ -1,0 +1,8 @@
+{
+  "exceptions": {
+    "normal/mplayerhq/camera-dvr/hikvision/dvr_nvr_ip camera01_20130321162325_20130321162358_576877.mp4": "私有 IMKH 封装，FormatDetector 没有对应魔数，Detect() 按 .mp4 扩展名兜底判 MP4；ffprobe 归为 mpeg。属扩展名兜底的已知口径，不是魔数误判。",
+    "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/ts/sample_with_junk": "文件以 00 01 02 ... 的 junk 前缀起头，内部嵌了一段带完整 PAT/PMT 的真实 TS 数据，TS 弱魔数必然命中；ffprobe 把整体归为 mpeg。强签名守卫对 junk 前缀无能为力，单独列为已知差异。",
+    "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/m3u8/live_low_latency_media_can_skip_dateranges": "HLS 低延迟清单（#EXTM3U），INDEX.container 记的是清单指向的 ts 分片格式；产品判 HLS 更准确。",
+    "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/m3u8/live_low_latency_parts_only": "HLS 低延迟清单（#EXTM3U），INDEX.container 记的是清单指向的 ts 分片格式；产品判 HLS 更准确。"
+  }
+}
