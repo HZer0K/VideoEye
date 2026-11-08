@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
@@ -39,6 +40,21 @@ namespace videoeye {
 namespace player {
 
 using PullFn = std::function<size_t(uint8_t*, size_t)>;
+
+namespace {
+
+// 测试注入的后端工厂。进程内只有测试会设置它，且必须由用例在退出前复位；
+// 生产代码从不碰这里，Open() 仍然走下面的平台分支。
+AudioOutput::BackendFactory& TestBackendFactory() {
+    static AudioOutput::BackendFactory factory;
+    return factory;
+}
+
+} // namespace
+
+void AudioOutput::SetBackendFactoryForTesting(BackendFactory factory) {
+    TestBackendFactory() = std::move(factory);
+}
 
 // Enqueue() 等设备就绪的上限。WASAPI 后端自己的初始化等待是 5 s，超过它说明
 // 打开流程已经卡死或失败，继续等只会把整条解码线程（含视频）一起拖住。
@@ -737,9 +753,13 @@ void AudioOutput::MarkOpenFinished() {
 }
 
 bool AudioOutput::Open(int sample_rate, int channels) {
-    Stop();
-    stopping_.store(false);
+    // ❗ 顺序有讲究: 先把"打开中"亮出来，再走停止流程。StopInternal(false) 不会
+    // 把 open_finished_ 翻回 true —— 否则 OpenAsync 起线程前刚置的 false 会被
+    // 自己内部的 Stop() 推翻，中间那几微秒里 Enqueue() 会判定"打开已有结论"
+    // 而把开头几帧整段丢掉（实测放慢这个窗口后 3/3 复现开局无声）。
     open_finished_.store(false);
+    stopping_.store(false);
+    StopInternal(false);
 
     std::lock_guard<std::mutex> lock(device_mutex_);
     PcmFormat requested;
@@ -748,13 +768,22 @@ bool AudioOutput::Open(int sample_rate, int channels) {
     requested.sample = PcmSampleFormat::S16; // 解码链路（AudioDecoder）恒定产出 S16 交错
 
     auto pull = [this](uint8_t* dst, size_t n) { return Pull(dst, n); };
+    const auto& factory = TestBackendFactory();
+    if (factory) {
+        backend_ = factory(pull);
+        if (!backend_) {
+            MarkOpenFinished();
+            return false;
+        }
+    } else {
 #if defined(VIDEOEYE_AUDIO_WIN)
-    backend_ = std::make_unique<WasapiBackend>(pull);
+        backend_ = std::make_unique<WasapiBackend>(pull);
 #elif defined(VIDEOEYE_AUDIO_MAC)
-    backend_ = std::make_unique<AudioQueueBackend>(pull);
+        backend_ = std::make_unique<AudioQueueBackend>(pull);
 #else
-    backend_ = std::make_unique<AlsaBackend>(pull);
+        backend_ = std::make_unique<AlsaBackend>(pull);
 #endif
+    }
 
     PcmFormat actual = requested;
     {
@@ -913,6 +942,11 @@ void AudioOutput::SetVolume(double volume) {
     volume_.store(volume);
 }
 
+int64_t AudioOutput::GetConverterDelayFrames() const {
+    // 只在音频线程 / 单线程诊断里读；与 GetBufferedMs 一样不持 device_mutex_。
+    return converter_.PendingOutputFrames();
+}
+
 int AudioOutput::GetBufferedMs(int sample_rate, int channels) const {
     std::lock_guard<std::mutex> lock(ring_mutex_);
     if (sample_rate <= 0 || channels <= 0)
@@ -921,6 +955,10 @@ int AudioOutput::GetBufferedMs(int sample_rate, int channels) const {
 }
 
 void AudioOutput::Stop() {
+    StopInternal(true);
+}
+
+void AudioOutput::StopInternal(bool notify_open_waiters) {
     pending_play_.store(false);
     stopping_.store(true);
 
@@ -948,8 +986,10 @@ void AudioOutput::Stop() {
         ring_.clear();
         ring_capacity_ = 0;
     }
-    open_finished_.store(true); // 让还在等设备就绪的 Enqueue() 立刻放弃，别白等
-    ring_cv_.notify_all();      // 唤醒可能在 Enqueue 中阻塞的解码线程
+    // 主动停止才宣布"打开流程已有结论"；Open() 内部的重置不算（见 Open 处说明）。
+    if (notify_open_waiters)
+        open_finished_.store(true);
+    ring_cv_.notify_all(); // 唤醒可能在 Enqueue 中阻塞的解码线程
 }
 
 } // namespace player

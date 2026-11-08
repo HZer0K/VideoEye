@@ -67,6 +67,14 @@ public:
         virtual void Close() = 0; // 停止线程并释放设备
     };
 
+    // 仅供测试：把平台后端换成假后端，这样「设备实际格式回退」「连续声卡回调」
+    // 这些路径才不需要真声卡、也不依赖离屏环境里有没有音频设备。
+    // 传入空 factory 即恢复平台后端；调用方负责在退出前复位（RAII）。
+    // 生产代码不设置它，Open() 走的仍是原平台分支。
+    using PullFn = std::function<size_t(uint8_t*, size_t)>;
+    using BackendFactory = std::function<std::unique_ptr<Backend>(PullFn)>;
+    static void SetBackendFactoryForTesting(BackendFactory factory);
+
     AudioOutput();
     ~AudioOutput();
 
@@ -98,11 +106,21 @@ public:
     /// 当前已缓冲的毫秒数（诊断用）
     int GetBufferedMs(int sample_rate, int channels) const;
 
+    /// 重采样器内部还压着多少源帧（诊断 / 长稳守护用；直通时恒 0）。
+    /// 稳态只应有滤波器固有长度；随回调次数一路涨即代表喂入量算错了。
+    int64_t GetConverterDelayFrames() const;
+
     bool IsOpen() const {
         return opened_.load();
     }
 
 private:
+    // Stop() 的内部实现。notify_open_waiters 只在**用户主动停止**时为 true：
+    // Open() 为了重置设备会走一遍停止流程，但那不代表"本次打开已有结论"，
+    // 若此时把 open_finished_ 翻成 true，正在等设备就绪的 Enqueue() 会误判
+    // 并丢掉开头几帧音频（异步打开期的开局无声竞态）。
+    void StopInternal(bool notify_open_waiters);
+
     // 由平台音频线程调用：从环形缓冲取数据，不足时补静音
     size_t Pull(uint8_t* dst, size_t max_bytes);
 

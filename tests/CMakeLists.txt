@@ -205,6 +205,10 @@ if(VIDEOEYE_PYTHON_EXE)
     # 都要能精确判红，恢复后复跑绿。不需要语料、不需要 ffprobe，PR 流程可跑。
     add_test(NAME CorpusSemanticGateSelfTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_corpus_semantic_gate.py)
+    # 负样本诊断门禁的判别力自测：缺列 / 空类别 / 守恒破坏 / 类别塌缩成一种 /
+    # 白名单失效 / 分组覆盖缺失都要精确判红。同样不需要外部语料，PR 流程可跑。
+    add_test(NAME CorpusDefectGateSelfTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_corpus_defect_gate.py)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -235,7 +239,8 @@ if(VIDEOEYE_PYTHON_EXE)
     # corpus），所以只补编码、不动 WORKING_DIRECTORY。
     set_tests_properties(CorpusGeneratorCheck RealCorpusCheck
                          TestSummaryReadmeCheck TestSummarySelfTests
-                         CorpusSemanticGateSelfTests PROPERTIES
+                         CorpusSemanticGateSelfTests
+                         CorpusDefectGateSelfTests PROPERTIES
         ENVIRONMENT "PYTHONIOENCODING=utf-8;PYTHONUTF8=1")
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
@@ -496,6 +501,25 @@ add_test(NAME AnalysisResourceStabilityTests COMMAND test_analysis_resource_stab
 set_tests_properties(AnalysisResourceStabilityTests PROPERTIES TIMEOUT 300)
 
 # ============================================================
+# 测试 4b-2: 结构分析失败原因的语义守护（负样本诊断门禁的 C++ 侧）
+#
+# 以前 FFmpeg 回退把零字节 / 路径错 / 格式不支持全压成一句「FFmpeg 无法打开文件」，
+# 离线门禁 scripts/corpus_defect_gate.py 无法区分。这里钉死结构化类别、文案、
+# 守恒契约与稳定 ASCII 键名；Python 侧另有 20 项门禁判别力自测。
+# ============================================================
+videoeye_add_test(test_container_failure_kind
+    unit/test_container_failure_kind.cpp
+)
+target_compile_definitions(test_container_failure_kind PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus"
+)
+target_link_libraries(test_container_failure_kind PRIVATE
+    VideoEyeAnalysis
+    VideoEyeInfrastructure
+)
+add_test(NAME ContainerFailureKindTests COMMAND test_container_failure_kind)
+
+# ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
 #
 # TaskManager 本身只依赖 stdlib; 链 VideoEyeInfrastructure 而不是手写清单,
@@ -559,6 +583,20 @@ target_link_libraries(test_s16_converter PRIVATE
     VideoEyePlayback
 )
 add_test(NAME S16ConverterTests COMMAND test_s16_converter)
+
+# =================================================
+# 测试 4d：音频设备层长稳 / 格式回退（假后端，不需要声卡）
+#   说明: 转换器单测只钉住「该喂多少帧」的算术，事故发生在 AudioOutput::PullConverted
+#       这条真实链路上（每轮多喂 → swr 内部 FIFO 一路涨 → 声音越来越滞后）。
+#       注入假后端后由用例主动发起声卡回调，覆盖: 设备 mix format 回退矩阵 /
+#       2000 次连续回调的内部延迟上界与喂入-产出守恒 / 异步打开期不丢音 /
+#       非法设备格式与空后端失败路径 / Stop 后重开。
+# =================================================
+videoeye_add_test(test_audio_output_stability unit/test_audio_output_stability.cpp)
+target_link_libraries(test_audio_output_stability PRIVATE
+    VideoEyePlayback
+)
+add_test(NAME AudioOutputStabilityTests COMMAND test_audio_output_stability)
 
 # ============================================================
 # 测试 4b: AnalysisSession (依赖 FFmpeg) —— 评审 Phase 3 抽取的分析会话类

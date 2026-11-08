@@ -263,3 +263,44 @@ QC 调用时 `max_scan_bytes=0`（扫全文件，Footer / Index Table 才不会�
 
 `utils::ReportExporter::ExportQcReport(path, report)` 按扩展名自动分派：
 `.html`（总览 + 问题清单 + 规则快照）/ `.json`（含规则快照，便于 CI 回归对比）/ `.csv`（Excel）/ `.txt`。
+
+## 7. 失败原因分类与负样本门禁
+
+「打不开」不是一个结论。`QcRunner::IsAnalyzableFile` 早就把路径为空 / 不存在 /
+目录 / 文件为空分开了，但 `ContainerStructureAnalyzer` 是另一条独立入口（结构页与
+离线语料校验），以前它的 FFmpeg 回退把**所有**打开失败都压成一句
+「FFmpeg 无法打开文件」——零字节素材、写错的路径、非媒体 XML 在界面上长得一样。
+
+现在分类逻辑只有一个事实源：`core/domain/io/MediaInputPreflight.h`（domain 叶子，
+`core/qc` 与 `core/analysis` 都能单向依赖）。`ContainerStructureResult` 末尾追加
+`failure_kind` 枚举，稳定 ASCII 键由 `ContainerFailureKindName()` 给出：
+
+| 键 | 含义 |
+|----|------|
+| `none` | 成功（守恒：仅在 `valid == true` 时出现） |
+| `empty_path` / `not_found` / `is_directory` / `empty_file` | 输入预检的文件级事实 |
+| `allocation_failed` / `open_failed` / `stream_info_failed` | FFmpeg 回退的三个阶段 |
+| `cancelled` / `parse_failed` | 用户取消 / 未显式分类的解析失败 |
+
+守恒契约由 `FailureKindFinalizer`（RAII，覆盖 `Analyze` 三十多个返回点）保证：
+成功强制 `None`，失败且没人显式分类才落 `ParseFailed`，**绝不从 `error_message`
+反推类别**；文本只负责给人看，机器口径只认枚举。`open_failed` 还会附 `av_strerror`
+的具体原因，不再只剩笼统一句。
+
+离线门禁 `scripts/corpus_defect_gate.py` 消费 `media_corpus_validate` 表尾追加的
+`struct_failure_kind` 列，由 `scripts/validate_corpus.py` 默认作为第 8 条判据执行
+（`--no-defect-gate` 可跳过）。它**不把 INDEX 的 `defect_heuristic` 当成「必须失败」的
+硬真值** —— 那个标注本身是启发式的（`corrupt-structure` 30 条里 15 条 parse=ok，
+`decode-artifact` 39 条容器本来就正常），硬套只会制造假红。钉的是结构性不变量：
+
+- 守恒（成功 `None` / 失败非 `None` 且错误说明非空）、类别多样性 ≥ 3 且必须有
+  `empty_file`（直接杀死「所有失败压成一句」的回归）；
+- 零字节必须归 `empty_file`；非媒体文件不得归成文件级错误（反向守护）；
+- 报「结构有效」的损坏/畸形样本必须有取证事实，不能是「无事实的成功结论」；
+- 健康参考样本不得被判失败（假阳性守护）；
+- 覆盖守护：缺列 / 空表 / 分组缺失 / 标注样本 < 100 / 白名单失效一律判红。
+  白名单只豁免分组语义判据，不豁免守恒、多样性与覆盖守护。
+
+判别力由两侧共同守着：`test_container_failure_kind.cpp`（10 例钉死类别、文案、
+键名、复用 result 的清残留）与 `scripts/test_corpus_defect_gate.py`（20 例逐个破坏
+判据并断言精确报错）。两者都注册进 CTest，不需要外部语料即可在 PR 流程跑。

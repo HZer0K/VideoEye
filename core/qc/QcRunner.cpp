@@ -13,6 +13,7 @@
 
 #include "core/analysis/orchestration/AnalysisEngine.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/domain/io/MediaInputPreflight.h"
 #include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
 
@@ -46,26 +47,11 @@ bool IsNetworkUri(const std::string& uri) {
 }
 
 bool IsAnalyzableFile(const std::string& path, std::string& reason) {
-    std::error_code ec;
-    if (path.empty()) {
-        reason = "路径为空";
-        return false;
-    }
-    const auto status = std::filesystem::status(path, ec);
-    if (ec || !std::filesystem::exists(status)) {
-        reason = "文件不存在: " + path;
-        return false;
-    }
-    if (std::filesystem::is_directory(status)) {
-        reason = "路径是目录，单文件分析请给出具体文件: " + path;
-        return false;
-    }
-    const auto size = std::filesystem::file_size(path, ec);
-    if (!ec && size == 0) {
-        reason = "文件为空: " + path;
-        return false;
-    }
-    return true;
+    // 分类逻辑下沉到 core/domain/io：结构分析那条独立入口用的是同一个预检，
+    // 两边不再各写一份（以前结构页把所有失败都压成「FFmpeg 无法打开文件」）。
+    const auto preflight = PreflightLocalFile(path);
+    reason = preflight.reason;
+    return preflight.ok();
 }
 
 bool IsAnalyzableInput(const MediaInput& input, std::string& reason) {

@@ -301,8 +301,9 @@ std::string JoinStreams(const std::vector<videoeye::model::ContainerStreamInfo>&
 }
 
 struct Record {
-    std::string line; // 前三段 + 扩展 mi_*；truth_* 由第二阶段追加
+    std::string line; // 前三段 + 扩展 mi_*；truth_* 与失败类别由第二阶段追加
     std::string path;
+    std::string failure_kind; // ContainerFailureKind 的稳定 ASCII 键
     bool need_truth = false;
     long long elapsed_ms = 0;
 };
@@ -396,6 +397,7 @@ void ProcessOne(const IndexRow& row, long long timeout_ms, bool truth_enabled, s
     Record record;
     record.line = fields;
     record.path = row.path;
+    record.failure_kind = videoeye::model::ContainerFailureKindName(structure.failure_kind);
     record.need_truth = truth_enabled && media_ok;
     record.elapsed_ms = elapsed;
     out.push_back(std::move(record));
@@ -437,6 +439,8 @@ void CollectTruth(std::vector<Record>& records, long long timeout_ms, int jobs, 
                     add(value);
                 add(truth.ok ? "1" : "0");
                 add(version);
+                // 表尾追加：旧列顺序一字不动（切片 2 定的兼容约定）。
+                add(record.failure_kind);
                 record.line += tail;
                 Progress("done", record.path);
             }
@@ -555,7 +559,7 @@ int main(int argc, char** argv) {
         out << "mi_" << name << "\t";
     for (const auto& name : corpus_fields::FieldNames())
         out << "truth_" << name << "\t";
-    out << "truth_ok\ttruth_avformat_version\n";
+    out << "truth_ok\ttruth_avformat_version\tstruct_failure_kind\n";
     for (const auto& record : merged)
         out << record.line << "\n";
     out.close();

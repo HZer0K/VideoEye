@@ -15,6 +15,7 @@
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
+#include "core/domain/io/MediaInputPreflight.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h" // 共享 FFmpeg 中断回调
 #include "infrastructure/concurrency/Cancellation.h"
 #include "infrastructure/logging/Logger.h"
@@ -65,10 +66,33 @@ std::string Format(const char* fmt, double v) {
 // 被取消），否则界面会把一份被中断的分析当成成功结果签收。
 bool MarkCancelled(model::ContainerStructureResult& result) {
     result.valid = false;
+    result.failure_kind = model::ContainerFailureKind::Cancelled;
     if (result.error_message.empty())
         result.error_message = "已取消";
     return false;
 }
+
+// 失败类别守恒守卫：Analyze 有三十多个返回点，逐个设类别一定会漏。
+// 用 RAII 在**任意**返回路径上统一收口：
+//   * 成功 -> 强制 None（专用解析器可能留下上一次的残留类别）；
+//   * 失败且没人显式分类 -> ParseFailed（"未分类的解析失败"是一个明确事实，
+//     不从 error_message 反推，文本只负责给人看）。
+// 显式分类的出口（预检 / 分配 / 打开 / 流信息 / 取消）在各自位置写死，
+// 守卫不会覆盖它们。
+struct FailureKindFinalizer {
+    model::ContainerStructureResult& result;
+    ~FailureKindFinalizer() {
+        if (result.valid) {
+            result.failure_kind = model::ContainerFailureKind::None;
+            return;
+        }
+        if (result.failure_kind == model::ContainerFailureKind::None) {
+            result.failure_kind = model::ContainerFailureKind::ParseFailed;
+            if (result.error_message.empty())
+                result.error_message = "容器结构解析失败";
+        }
+    }
+};
 
 // MP4 stsd 采样描述 fourcc → 可读编码名。
 // 覆盖 AV1 (av01) / VP9 (vp09) 及常见 H.264/HEVC/AAC 等，
@@ -123,11 +147,25 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
                                          std::shared_ptr<std::atomic<bool>> cancel, const StageCallback& on_stage) {
     VE_PERF("ContainerStructureAnalyzer::Analyze");
     result.file_path = file_path;
+    // 守恒守卫必须覆盖所有返回点；同时清掉调用方复用同一个 result 时的残留类别。
+    FailureKindFinalizer finalize{result};
+    result.failure_kind = model::ContainerFailureKind::None;
     LOG_INFO("ContainerStructureAnalyzer::Analyze ENTER: " + file_path);
 
     // 已经被取消（如关闭流程触发 CancelAll）就别再启动重型解析，避免关闭挂死
     if (cancel && cancel->load(std::memory_order_acquire)) {
         return MarkCancelled(result);
+    }
+
+    // 0. 输入预检（唯一事实源：core/domain/io/MediaInputPreflight.h）
+    //    必须在任何解析器之前：零字节 / 不存在的路径 / 目录若直接丢给 FFmpeg，
+    //    拿到的只有一句「FFmpeg 无法打开文件」，用户分不清是素材坏了还是路径写错了。
+    const auto preflight = PreflightLocalFile(file_path);
+    if (!preflight.ok()) {
+        result.valid = false;
+        result.error_message = preflight.reason;
+        result.failure_kind = model::ContainerFailureFromPreflight(preflight.kind);
+        return false;
     }
 
     // 1. 检测格式
@@ -703,6 +741,7 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const std::string& file_path,
         result.format = model::ContainerFormat::FFmpeg_Generic;
         result.format_name = "Generic";
         result.error_message = "无法分配解封装上下文";
+        result.failure_kind = model::ContainerFailureKind::AllocationFailed;
         result.valid = false;
         return false;
     }
@@ -715,10 +754,15 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const std::string& file_path,
 
     int ret = avformat_open_input(&fmt_ctx, file_path.c_str(), nullptr, nullptr);
     if (ret < 0) {
+        // 保留 FFmpeg 的实际错误码：纯文本 XML、加密流、被截断的头各有不同的
+        // av_strerror 说明，一律压成「无法打开文件」等于把诊断信息扔掉。
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(ret, errbuf, sizeof(errbuf));
         avformat_close_input(&fmt_ctx);
         result.format = model::ContainerFormat::FFmpeg_Generic;
         result.format_name = "Generic";
-        result.error_message = "FFmpeg 无法打开文件";
+        result.error_message = std::string("FFmpeg 无法打开文件: ") + errbuf;
+        result.failure_kind = model::ContainerFailureKind::OpenFailed;
         result.valid = false;
         return false;
     }
@@ -727,8 +771,11 @@ bool ContainerStructureAnalyzer::AnalyzeWithFFmpeg(const std::string& file_path,
     interrupt.deadline_us = av_gettime() + ffmpeg_io::kProbeTimeoutUs;
     ret = avformat_find_stream_info(fmt_ctx, nullptr);
     if (ret < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(ret, errbuf, sizeof(errbuf));
         avformat_close_input(&fmt_ctx);
-        result.error_message = "FFmpeg 无法获取流信息";
+        result.error_message = std::string("FFmpeg 无法获取流信息: ") + errbuf;
+        result.failure_kind = model::ContainerFailureKind::StreamInfoFailed;
         result.valid = false;
         return false;
     }
@@ -836,6 +883,7 @@ ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStrea
     if (!ok) {
         result.valid = false;
         result.error_message = pkg.error_message;
+        result.failure_kind = model::ContainerFailureKind::ParseFailed;
         return StageStatus::kFailed;
     }
 

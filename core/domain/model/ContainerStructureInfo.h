@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "core/domain/io/MediaInputPreflight.h"
 #include "core/domain/model/ContainerDiagnosticsInfo.h"
 #include "core/domain/model/EbmlInfo.h"
 #include "core/domain/model/Mp4BoxInfo.h"
@@ -42,6 +43,72 @@ enum class ContainerFormat {
     DASH,
     FFmpeg_Generic
 };
+
+/// 结构分析「失败原因」的结构化类别。
+///
+/// 以前只有一个 error_message 字符串：零字节、路径写错、格式不支持、被取消、
+/// FFmpeg 打开失败全都落一句「FFmpeg 无法打开文件」。文本能给人看，但机器无法
+/// 用来做结论门禁 —— 「空表/失败到底是哪一种原因」又变成靠猜。
+/// 这里把原因单独落成一个键，与 error_message 分开：文案可以改，键不能改。
+///
+/// ⚠️ 守恒契约（由 test_container_failure_kind 钉死）：
+///   valid == true  -> 必须是 None；
+///   valid == false -> 必须不是 None，且 error_message 非空。
+enum class ContainerFailureKind {
+    None,
+    EmptyPath,
+    NotFound,
+    IsDirectory,
+    EmptyFile,
+    AllocationFailed,
+    OpenFailed,
+    StreamInfoFailed,
+    Cancelled,
+    ParseFailed,
+};
+
+inline const char* ContainerFailureKindName(ContainerFailureKind kind) {
+    switch (kind) {
+    case ContainerFailureKind::None:
+        return "none";
+    case ContainerFailureKind::EmptyPath:
+        return "empty_path";
+    case ContainerFailureKind::NotFound:
+        return "not_found";
+    case ContainerFailureKind::IsDirectory:
+        return "is_directory";
+    case ContainerFailureKind::EmptyFile:
+        return "empty_file";
+    case ContainerFailureKind::AllocationFailed:
+        return "allocation_failed";
+    case ContainerFailureKind::OpenFailed:
+        return "open_failed";
+    case ContainerFailureKind::StreamInfoFailed:
+        return "stream_info_failed";
+    case ContainerFailureKind::Cancelled:
+        return "cancelled";
+    case ContainerFailureKind::ParseFailed:
+        return "parse_failed";
+    }
+    return "unknown";
+}
+
+// 预检失败 -> 结构分析失败类别。两边共用同一套分类，避免各写一份映射后漂移。
+inline ContainerFailureKind ContainerFailureFromPreflight(InputPreflightKind kind) {
+    switch (kind) {
+    case InputPreflightKind::Ok:
+        return ContainerFailureKind::None;
+    case InputPreflightKind::EmptyPath:
+        return ContainerFailureKind::EmptyPath;
+    case InputPreflightKind::NotFound:
+        return ContainerFailureKind::NotFound;
+    case InputPreflightKind::IsDirectory:
+        return ContainerFailureKind::IsDirectory;
+    case InputPreflightKind::EmptyFile:
+        return ContainerFailureKind::EmptyFile;
+    }
+    return ContainerFailureKind::ParseFailed;
+}
 
 /// 通用容器结构树节点
 struct ContainerElement {
@@ -99,6 +166,10 @@ struct ContainerStructureResult {
     // AVI / FLV / ASF / OGG 的容器级体检事实（索引、时间戳、页/EOS、对象大小等）。
     // 结构与 QC 共用同一份数字，全文件扫描时搬进 AnalysisResult::container_diagnostics。
     ContainerDiagnosticsInfo diagnostics;
+
+    // 失败原因的结构化类别（成功时恒 None）。放在末尾：既有调用点大量用聚合初始化，
+    // 追加字段不能打乱前面的位置。
+    ContainerFailureKind failure_kind = ContainerFailureKind::None;
 };
 
 } // namespace model

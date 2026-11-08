@@ -151,6 +151,14 @@ size_t S16Converter::NextFeedFrames(size_t out_frames) {
     return want > 0 ? static_cast<size_t>(want) : 0;
 }
 
+int64_t S16Converter::PendingOutputFrames() const {
+    if (swr_ == nullptr || src_rate_ <= 0)
+        return 0;
+    // 以源采样率为时基，得到的就是"还压着多少源帧"。用输出采样率会得到
+    // 目标帧数，量纲不同，和喂入量对不上就无法做守恒核对。
+    return swr_get_delay(swr_, src_rate_);
+}
+
 void S16Converter::Reset() {
     if (swr_ != nullptr) {
         swr_free(&swr_);
