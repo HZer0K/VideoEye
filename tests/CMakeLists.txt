@@ -2147,6 +2147,8 @@ add_test(NAME WindowLayoutTests COMMAND test_window_layout)
 videoeye_add_test(test_overview_page_layout unit/test_overview_page_layout.cpp)
 target_link_libraries(test_overview_page_layout PRIVATE
     VideoEyeUi
+    # 用例 8 直接取主题 QSS 下 Qt 计算的指示器矩形（只挂在该控件上，不改全局）。
+    VideoEyeUiTheme
     VideoEyeQtAdapters
     # ReportingPanel 独立成库；MainWindow 侧引用它，静库链接按需取成员。
     VideoEyeReportingPanel

@@ -25,6 +25,8 @@
 #include <QLabel>
 #include <QMetaObject>
 #include <QPushButton>
+#include <QStyle>
+#include <QStyleOptionGroupBox>
 #include <QTableWidget>
 #include <QTextEdit>
 
@@ -34,6 +36,7 @@
 
 #include "core/domain/model/FrameData.h"
 #include "ui/main_window/OverviewPage.h"
+#include "ui/theme/AppTheme.h"
 
 using videoeye::model::DiagnosticIssue;
 using videoeye::model::IssueCategory;
@@ -353,4 +356,39 @@ TEST(OverviewPageLayout, OpeningNewFileClearsPreviousAnalysisState) {
     EXPECT_FALSE(has_visible_text(QStringLiteral("旧文件的失败原因")));
     EXPECT_FALSE(has_visible_text(QStringLiteral("扫描失败")));
     EXPECT_TRUE(has_visible_text(QStringLiteral("未分析"))) << "新文件应回到未分析态";
+}
+
+// 8) 可勾选分组框的指示器必须完整落在控件内。
+//    Qt 按「标题内容矩形中心 ± 指示器半高」定位指示器，标题行高取
+//    max(字体行高, 指示器高)。两者相等时中心向下取整，顶边落在 y=-1，
+//    被控件边界裁掉 —— 用户看到的就是"完整媒体信息前面的方框缺了上边"，
+//    而截图上剩下的三条边看起来完全正常，只看渲染结果很容易漏判。
+//    这里直接用页面同一份 QSS 取 Qt 计算出的矩形：它一旦是负的，顶边必然缺失。
+//    QSS 只设在这个临时控件上，不动全局样式，避免影响本文件其它用例。
+TEST(OverviewPageLayout, CheckableGroupBoxIndicatorStaysInsideWidget) {
+    EnsureApp();
+    QGroupBox group(QStringLiteral("完整媒体信息"));
+    group.setStyleSheet(videoeye::ui::theme::getDarkStylesheet());
+    group.setCheckable(true);
+    group.resize(400, 80);
+    group.show();
+    QApplication::processEvents();
+
+    QStyleOptionGroupBox opt;
+    opt.initFrom(&group);
+    opt.text = group.title();
+    opt.textAlignment = group.alignment();
+    opt.subControls = QStyle::SC_GroupBoxFrame | QStyle::SC_GroupBoxLabel | QStyle::SC_GroupBoxCheckBox;
+
+    const QRect box = group.style()->subControlRect(QStyle::CC_GroupBox, &opt, QStyle::SC_GroupBoxCheckBox, &group);
+    EXPECT_GE(box.top(), 0) << "指示器顶边在控件外（被裁掉）: y=" << box.top();
+    EXPECT_GE(box.left(), 0);
+    EXPECT_TRUE(group.rect().contains(box)) << "指示器矩形 " << box.x() << "," << box.y() << " " << box.width() << "x"
+                                            << box.height() << " 越出控件 " << group.width() << "x" << group.height();
+    EXPECT_GT(box.width(), 0);
+    EXPECT_GT(box.height(), 0);
+
+    // 标题文字和指示器共用同一条标题行：文字的矩形也不该从负坐标起画。
+    const QRect label = group.style()->subControlRect(QStyle::CC_GroupBox, &opt, QStyle::SC_GroupBoxLabel, &group);
+    EXPECT_GE(label.top(), 0) << "标题文字顶行被裁: y=" << label.top();
 }
