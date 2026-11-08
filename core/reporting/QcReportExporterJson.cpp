@@ -1,6 +1,7 @@
 #include "core/reporting/QcReportExporter.h"
 
 #include "core/reporting/QcReportExporterInternal.h"
+#include "core/reporting/ReportIntegrityFacts.h"
 
 #include "infrastructure/serialization/Json.h"
 
@@ -752,6 +753,20 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     summary.Set("analysis_elapsed_ms", JNumber(run.elapsed_ms));
     if (!run.error.empty())
         summary.Set("error", JText(run.error));
+
+    // 五个完整性标志分开落。此前 JSON 只有 completed / partial / error 三个，
+    // run.ok 与 run.timed_out 只在 CSV 里出现 —— 同一份结论换个格式就无法
+    // 区分「打开失败」「用户取消」「后台超时」。这里的 error 恒落（空串也是事实），
+    // 便于下游无条件读取；上面的 summary.error 保留历史的条件写法以免破坏消费方。
+    const detail::IntegrityFacts integrity = detail::ReadIntegrityFacts(bundle);
+    JsonValue integrity_obj = JsonValue::MakeObject();
+    integrity_obj.Set("analysis_ok", JsonValue(integrity.analysis_ok));
+    integrity_obj.Set("conclusion_complete", JsonValue(integrity.conclusion_complete));
+    integrity_obj.Set("sampled", JsonValue(integrity.sampled));
+    integrity_obj.Set("timed_out", JsonValue(integrity.timed_out));
+    integrity_obj.Set("error", JText(integrity.error));
+    summary.Set("integrity", integrity_obj);
+
     JsonValue counts = JsonValue::MakeObject();
     counts.Set("critical", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Critical))));
     counts.Set("error", JNumber(static_cast<double>(report.CountBySeverity(model::IssueSeverity::Error))));

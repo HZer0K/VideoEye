@@ -68,7 +68,7 @@ void ReportingPanel::SetupExportController() {
     deps.pick_output_directory = [this]() { return QFileDialog::getExistingDirectory(this, tr("选择报告输出目录")); };
     deps.pick_summary_file = [this]() {
         return QFileDialog::getSaveFileName(this, tr("导出批量汇总"), tr("qc-summary.csv"),
-                                            tr("CSV (*.csv);;JSON (*.json);;HTML (*.html)"));
+                                            tr("CSV (*.csv);;JSON (*.json);;HTML (*.html);;文本 (*.txt);;PDF (*.pdf)"));
     };
     deps.notice = [this](const QString& title, const QString& body) { QMessageBox::information(this, title, body); };
     export_controller_ = new ReportExportController(std::move(deps), this);

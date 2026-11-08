@@ -199,6 +199,12 @@ if(VIDEOEYE_PYTHON_EXE)
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/summarize_tests.py --check-readme)
     add_test(NAME TestSummarySelfTests
              COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_summarize_tests.py)
+    # 结论语义门禁的判别力自测。真值采集（--update-golden）与全量语料 check 都在
+    # 离线侧跑（要外部几 GB 语料树），这里只守「门禁坏了会不会自己发现」：
+    # 单字段改坏 / 白名单无声膨胀 / 结果表缺行 / 字段全空 / INDEX 漂移 / 宽高互换
+    # 都要能精确判红，恢复后复跑绿。不需要语料、不需要 ffprobe，PR 流程可跑。
+    add_test(NAME CorpusSemanticGateSelfTests
+             COMMAND ${VIDEOEYE_PYTHON_EXE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/test_corpus_semantic_gate.py)
     # ⚠️ 这几个脚本测试都靠「VIDEOEYE_ROOT 或当前目录」当仓库根（见各脚本顶部
     # ROOT = os.environ.get("VIDEOEYE_ROOT") or os.getcwd()）。WORKING_DIRECTORY 已经
     # 钉在源码根，但开发者 shell 里万一 export 了一个**过时**的 VIDEOEYE_ROOT（旧 checkout），
@@ -228,7 +234,8 @@ if(VIDEOEYE_PYTHON_EXE)
     # 这几个同样会打印中文，但工作目录各管各的（CorpusGenerator 靠脚本自身路径定位
     # corpus），所以只补编码、不动 WORKING_DIRECTORY。
     set_tests_properties(CorpusGeneratorCheck RealCorpusCheck
-                         TestSummaryReadmeCheck TestSummarySelfTests PROPERTIES
+                         TestSummaryReadmeCheck TestSummarySelfTests
+                         CorpusSemanticGateSelfTests PROPERTIES
         ENVIRONMENT "PYTHONIOENCODING=utf-8;PYTHONUTF8=1")
 else()
     message(STATUS "未找到 python，跳过分层规则测试（CI 与 pre-commit 仍会跑）")
@@ -318,7 +325,8 @@ endfunction()
 # 的编码头，每份都要从头编一次。做成测试专用静态库后只编一遍，链接器按需取成员。
 # ============================================================
 add_library(videoeye_test_media_factory STATIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/support/TestMediaFactory.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/support/TestMediaFactory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/support/MediaSequenceFingerprint.cpp)
 target_include_directories(videoeye_test_media_factory PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${FFMPEG_INCLUDE_DIRS})
@@ -439,6 +447,15 @@ videoeye_add_test(test_mediainfo_format
 )
 target_link_libraries(test_mediainfo_format PRIVATE VideoEyeAnalysis)
 add_test(NAME MediaInfoFormatTests COMMAND test_mediainfo_format)
+
+# 测试 4b-1b: 语料校验器的语义字段抽取（切片 2）
+# 说明: tools/media_corpus_validate 默认不构建（要外部语料树），但它的文本抽取
+#       与 mi_*/truth_* 列顺序必须有 PR 流程跑得起的单测。头文件是纯 std 的，
+#       这里直接 include，不需要 FFmpeg / 语料树。
+videoeye_add_test(test_media_info_fields
+    unit/test_media_info_fields.cpp
+)
+add_test(NAME MediaInfoFieldsTests COMMAND test_media_info_fields)
 
 # ============================================================
 # 测试 4b-2: MediaInfoAnalyzer 清单入口 (P0 回归)
@@ -1203,6 +1220,35 @@ target_link_libraries(test_qc_report_exporter PRIVATE VideoEyeReporting)
 add_test(NAME QcReportExporterTests COMMAND test_qc_report_exporter)
 
 # =================================================
+# 测试 28b：报告五格式交叉一致性
+# 说明: test_qc_report_exporter 的 5 个 TEST_P 实例各导出一种格式、按格式自查，
+#       没有任何跨格式比较语句。这里让同一份 QcExportBundle 落到 5 种格式后
+#       各自解析回结构化事实，逐项比对条目序列 / 级别 / 计数 / 五个完整性标志，
+#       并专测「空报告的 6 种结论态能否两两区分」。
+# =================================================
+videoeye_add_test(test_report_format_consistency
+    unit/test_report_format_consistency.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/PdfVerifier.cpp
+)
+target_link_libraries(test_report_format_consistency PRIVATE VideoEyeReporting)
+add_test(NAME ReportFormatConsistencyTests COMMAND test_report_format_consistency)
+
+# =================================================
+# 测试 28c：报告分派一致性（扩展名 ↔ 实际内容）
+# 说明: Auto 系列曾把 .pdf 对比写成 TXT、把 .txt/.pdf 汇总写成 CSV/HTML，
+#       认不出的扩展名还静默退回 JSON。这里让三个报告家族各导出 5 种扩展名，
+#       用不依赖产品代码的识别器按 BOM / 魔数 / 结构标记判实际格式，
+#       再校验本家族特征串，防止「格式对了但正文串到别的家族」。
+#       另守 ExportReport 便捷入口的五个完整性维度不被压成一个。
+# =================================================
+videoeye_add_test(test_report_dispatch_consistency
+    unit/test_report_dispatch_consistency.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests/support/PdfVerifier.cpp
+)
+target_link_libraries(test_report_dispatch_consistency PRIVATE VideoEyeReporting)
+add_test(NAME ReportDispatchConsistencyTests COMMAND test_report_dispatch_consistency)
+
+# =================================================
 # 测试 30：诊断结果流转（评审 P0 契约）
 # 锁定 AnalysisFacade::SetResult -> result() -> Evaluate 使用同一份结果,
 # 防止 DiagnosticsPage 漏写结果导致报告/评分/问题表全部为空。
@@ -1240,6 +1286,24 @@ target_link_libraries(test_media_exporter PRIVATE
     videoeye_test_media_factory
     Qt6::Core)
 add_test(NAME MediaExporterTests COMMAND test_media_exporter)
+
+# =================================================
+# 导出 round-trip：真实语料 + 序列级取证
+#
+# test_media_exporter 的 18 个用例全在合成小样本上，断言粒度到「帧数 ±1」。
+# 这里用仓内 real_*.mp4 跑 remux / 区间裁剪，逐包载荷序列 + PTS/DTS 间隔 +
+# 逐帧亮度哈希配对。VE_EXPORT_CORPUS_DIR 打开可选的外部语料批量抽样。
+# =================================================
+videoeye_add_test(test_export_roundtrip
+    unit/test_export_roundtrip.cpp
+)
+target_link_libraries(test_export_roundtrip PRIVATE
+    VideoEyeExporter
+    videoeye_test_media_factory
+    Qt6::Core)
+target_compile_definitions(test_export_roundtrip PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
+add_test(NAME ExportRoundtripTests COMMAND test_export_roundtrip)
 
 # =================================================
 # 测试 38：QtAnalysisController 线程句柄回收（复查 P1-1）

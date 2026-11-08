@@ -327,22 +327,11 @@ private:
 // PDF
 // ===========================================================================
 
-QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path, const QcExportBundle& bundle) {
-    QcPdfExportResult result;
+namespace detail {
 
-    // 正文只有一处来源：纯文本版。
-    //
-    // 此前 PDF 自己另排一套（英文抬头 + 问题清单 + 主轨响度三项），于是
-    // 「证据与覆盖」「参数变化时间线」「帧级显示顺序」「音频 QC（逐轨）」
-    // 「MPEG-TS 传输层」这五节在 PDF 里一个字都没有。同一份 QC 结论换个格式
-    // 导出就丢掉全部覆盖说明 —— 而 PDF 恰恰是最常用于交付与存档的格式，
-    // 于是"问题清单里没问题"与"这个维度根本没跑"在存档件上又长得一样了，
-    // 正是 DimensionStatus 这套结构要消灭的那种虚假结论。
-    //
-    // 复用之后两端在结构上不可能再漂移：文本报告加一节，PDF 自动就有。
-    // 代价是 PDF 少了英文抬头与分隔线排版，换来的是结论一致 —— 值得。
+QcPdfExportResult WriteTextAsPdf(const std::string& path, const std::string& text) {
+    QcPdfExportResult result;
     MiniPdfWriter writer;
-    const std::string text = BuildText(bundle);
     std::size_t begin = 0;
     while (true) {
         const std::size_t end = text.find('\n', begin);
@@ -364,6 +353,31 @@ QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path, const QcE
     // 由写入器自己报告：它逐字符走过全部文本，知道哪些字真的没画出来。
     result.text_loss = writer.HasLoss();
     return result;
+}
+
+} // namespace detail
+
+QcPdfExportResult QcReportExporter::ExportPdf(const std::string& path, const QcExportBundle& bundle) {
+    // 正文只有一处来源：纯文本版。
+    //
+    // 此前 PDF 自己另排一套（英文抬头 + 问题清单 + 主轨响度三项），于是
+    // 「证据与覆盖」「参数变化时间线」「帧级显示顺序」「音频 QC（逐轨）」
+    // 「MPEG-TS 传输层」这五节在 PDF 里一个字都没有。同一份 QC 结论换个格式
+    // 导出就丢掉全部覆盖说明 —— 而 PDF 恰恰是最常用于交付与存档的格式，
+    // 于是"问题清单里没问题"与"这个维度根本没跑"在存档件上又长得一样了，
+    // 正是 DimensionStatus 这套结构要消灭的那种虚假结论。
+    //
+    // 复用之后两端在结构上不可能再漂移：文本报告加一节，PDF 自动就有。
+    // 代价是 PDF 少了英文抬头与分隔线排版，换来的是结论一致 —— 值得。
+    return detail::WriteTextAsPdf(path, BuildText(bundle));
+}
+
+QcPdfExportResult QcReportExporter::ExportComparisonPdf(const std::string& path, const qc::QcComparison& comparison) {
+    return detail::WriteTextAsPdf(path, BuildComparisonText(comparison));
+}
+
+QcPdfExportResult QcReportExporter::ExportBatchSummaryPdf(const std::string& path, const QcBatchSummaryInput& input) {
+    return detail::WriteTextAsPdf(path, BuildBatchSummaryText(input));
 }
 
 } // namespace reporting

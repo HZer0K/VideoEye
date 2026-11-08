@@ -47,6 +47,24 @@ TEST(MediaInfoFormatTest, NullContextReturnsEmptyText) {
     EXPECT_TRUE(videoeye::MediaInfoAnalyzer::FormatFromContext(nullptr, "x.mp4").empty());
 }
 
+// 真实语料语义门禁（scripts/corpus_semantic_gate.py）抓到的回归：
+// FormatDuration 只在「不到 1 分钟」时输出 ms，65.79 s 被写成 "1 min 5 s"，
+// 于是 UI 与导出的时长比真实值少近 1 秒。三种容器（act/brstm/cak）同时命中。
+TEST(MediaInfoFormatTest, DurationKeepsMillisecondsBeyondOneMinute) {
+    AVFormatContextGuard format;
+    ASSERT_NE(format.get(), nullptr);
+    format.get()->duration = static_cast<int64_t>(65.79 * AV_TIME_BASE);
+
+    const std::string text = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "long.mp4");
+    EXPECT_TRUE(Contains(text, "Duration                   : 1 min 5 s 790 ms"));
+    EXPECT_FALSE(Contains(text, "Duration                   : 1 min 5 s\n"));
+
+    // 整秒不能多出 " 0 ms"，否则文本又多一种无谓的形态。
+    format.get()->duration = static_cast<int64_t>(65 * AV_TIME_BASE);
+    const std::string exact = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "long.mp4");
+    EXPECT_TRUE(Contains(exact, "Duration                   : 1 min 5 s\n"));
+}
+
 TEST(MediaInfoFormatTest, FormatsGeneralAndStreamSectionsFromContext) {
     AVFormatContextGuard format;
     ASSERT_NE(format.get(), nullptr);

@@ -1,6 +1,7 @@
 #include "core/reporting/QcReportExporter.h"
 
 #include "core/reporting/QcReportExporterInternal.h"
+#include "core/reporting/ReportIntegrityFacts.h"
 
 #include <sstream>
 
@@ -27,6 +28,9 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
     out << "生成时间: " << report.generated_at << "\n";
     out << "分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms\n";
     out << "评分: " << Fixed(report.score, 1) << " / 100 (" << report.verdict << ")\n";
+    // 五个完整性标志分开落（PDF 正文直接复用 BuildText，所以自动同源）。
+    // 下面的「注意 / 错误」是给人的解释性文案，不能替代这行可解析的事实。
+    out << detail::IntegrityLineText(detail::ReadIntegrityFacts(bundle)) << "\n";
     if (report.partial)
         out << "注意: 本次为抽样扫描（命中包数上限），结果仅覆盖部分数据，结论仅供参考\n";
     else if (!report.completed)
@@ -428,6 +432,44 @@ std::string QcReportExporter::BuildComparisonText(const qc::QcComparison& compar
 
 bool QcReportExporter::ExportComparisonText(const std::string& path, const qc::QcComparison& comparison) {
     return WriteUtf8File(path, BuildComparisonText(comparison));
+}
+
+// ===========================================================================
+// 批量汇总（纯文本）
+//
+// 与 BuildComparisonText 同理：批量汇总的 PDF 直接复用这里的正文，
+// 所以 TXT 与 PDF 不可能出现「同一个汇总两个版本」。
+// ===========================================================================
+
+std::string QcReportExporter::BuildBatchSummaryText(const QcBatchSummaryInput& input) {
+    std::ostringstream out;
+    out << "========================================\n  VideoEye 批量 QC 汇总\n"
+        << "========================================\n";
+    out << "目录: " << input.root << "\n";
+    out << "模板: " << input.profile_name << " (" << input.profile_id << ")\n";
+    out << "完成: " << input.succeeded << " / 失败: " << input.failed << " / 超时: " << input.timed_out
+        << " / 取消: " << input.cancelled << " / 跳过: " << input.skipped << "\n";
+    out << "耗时: " << Fixed(input.elapsed_ms, 0) << " ms\n";
+    out << "结论完整: " << (input.completed ? "是" : "否") << "\n";
+    out << "问题计数: 致命 " << input.critical_count << " / 错误 " << input.error_count << " / 警告 "
+        << input.warning_count << " / 提示 " << input.info_count << "\n";
+
+    out << "\n[文件清单] 共 " << input.rows.size() << " 个\n";
+    for (const auto& row : input.rows) {
+        out << "文件: " << row.path << "\n";
+        out << "  状态: " << row.status << " | 评分: " << Fixed(row.score, 1) << " | 结论: " << row.verdict << "\n";
+        out << "  致命: " << row.critical_count << " 错误: " << row.error_count << " 警告: " << row.warning_count
+            << " 提示: " << row.info_count << " | 耗时: " << Fixed(row.elapsed_ms, 0) << " ms\n";
+        if (!row.output_path.empty())
+            out << "  输出: " << row.output_path << "\n";
+        if (!row.error.empty())
+            out << "  错误: " << detail::SingleLine(row.error) << "\n";
+    }
+    return out.str();
+}
+
+bool QcReportExporter::ExportBatchSummaryText(const std::string& path, const QcBatchSummaryInput& input) {
+    return WriteUtf8File(path, BuildBatchSummaryText(input));
 }
 
 } // namespace reporting

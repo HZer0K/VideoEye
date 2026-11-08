@@ -1,0 +1,3688 @@
+{
+  "_comment": "由 scripts/corpus_semantic_gate.py --update-golden 生成。真值来自 tools/media_corpus_validate 用同版本 libavformat 独立直读的 truth_* 列，不是 VideoEye 媒体信息文本自证；更新需人工 review 差异后再提交。切片 2 起真值与产品同为 8.1.3，原 ffprobe 6.1 的 7 条版本噪音白名单已清空。",
+  "fields": [
+    "audio_bitrate_bps",
+    "audio_codec",
+    "bit_depth",
+    "channels",
+    "color_primaries",
+    "color_space",
+    "color_transfer",
+    "duration_s",
+    "format",
+    "frame_count",
+    "frame_rate",
+    "height",
+    "overall_bitrate_bps",
+    "pix_fmt",
+    "rotation",
+    "sample_fmt",
+    "sample_rate",
+    "stream_count",
+    "video_bitrate_bps",
+    "video_codec",
+    "video_level",
+    "video_profile",
+    "width"
+  ],
+  "known_differences": [],
+  "sample_seed": 20261108,
+  "samples": [
+    {
+      "expected": {
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "smpte170m",
+        "color_space": "smpte170m",
+        "color_transfer": "bt709",
+        "duration_s": 47.509,
+        "format": "matroska,webm",
+        "frame_rate": 24.0,
+        "height": 576,
+        "overall_bitrate_bps": 3560212.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "h264",
+        "video_level": 31,
+        "video_profile": "Main",
+        "width": 1024
+      },
+      "path": "abnormal/matroska-test-files/test_files/test2.mkv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 172001.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "smpte170m",
+        "color_space": "smpte170m",
+        "color_transfer": "bt709",
+        "duration_s": 49.064,
+        "format": "matroska,webm",
+        "frame_rate": 24.0,
+        "height": 576,
+        "overall_bitrate_bps": 3434122.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "h264",
+        "video_level": 31,
+        "video_profile": "Main",
+        "width": 1024
+      },
+      "path": "abnormal/matroska-test-files/test_files/test3.mkv"
+    },
+    {
+      "expected": {
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "smpte170m",
+        "color_space": "smpte170m",
+        "color_transfer": "bt709",
+        "duration_s": 46.665,
+        "format": "matroska,webm",
+        "frame_rate": 24.0,
+        "height": 576,
+        "overall_bitrate_bps": 5445236.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 11,
+        "video_codec": "h264",
+        "video_level": 31,
+        "video_profile": "Main",
+        "width": 1024
+      },
+      "path": "abnormal/matroska-test-files/test_files/test5.mkv"
+    },
+    {
+      "expected": {
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "smpte170m",
+        "color_space": "smpte170m",
+        "color_transfer": "bt709",
+        "duration_s": 37.043,
+        "format": "matroska,webm",
+        "frame_rate": 24.0,
+        "height": 576,
+        "overall_bitrate_bps": 4718520.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "h264",
+        "video_level": 31,
+        "video_profile": "Main",
+        "width": 1024
+      },
+      "path": "abnormal/matroska-test-files/test_files/test7.mkv"
+    },
+    {
+      "expected": {
+        "color_space": "smpte170m",
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 1.0,
+        "height": 1,
+        "pix_fmt": "yuv444p",
+        "stream_count": 2,
+        "video_codec": "av1",
+        "video_profile": "High",
+        "width": 1
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/1x1-black-alpha-50pct-premultiplied.avif"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "iec61966-2-1",
+        "duration_s": 1.92,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 1.0,
+        "height": 480,
+        "overall_bitrate_bps": 44812.0,
+        "pix_fmt": "gray",
+        "stream_count": 4,
+        "video_codec": "av1",
+        "video_level": 4,
+        "video_profile": "Main",
+        "width": 640
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/alpha_video_avif_major_avis_compatible.avif"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "iec61966-2-1",
+        "duration_s": 1.92,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 1.0,
+        "height": 480,
+        "overall_bitrate_bps": 44812.0,
+        "pix_fmt": "gray",
+        "stream_count": 4,
+        "video_codec": "av1",
+        "video_level": 4,
+        "video_profile": "Main",
+        "width": 640
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/alpha_video_fixed.avif"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "iec61966-2-1",
+        "duration_s": 1.92,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 1.0,
+        "height": 480,
+        "overall_bitrate_bps": 44812.0,
+        "pix_fmt": "gray",
+        "stream_count": 4,
+        "video_codec": "av1",
+        "video_level": 4,
+        "video_profile": "Main",
+        "width": 640
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/alpha_video_no_avis.avif"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "smpte170m",
+        "color_transfer": "iec61966-2-1",
+        "duration_s": 1.0,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 2,
+        "frame_rate": 2.0,
+        "height": 100,
+        "overall_bitrate_bps": 12888.0,
+        "pix_fmt": "yuv444p",
+        "stream_count": 2,
+        "video_bitrate_bps": 920.0,
+        "video_codec": "av1",
+        "video_profile": "High",
+        "width": 100
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/avis_with_no_ptim_no_iloc.avif"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "smpte170m",
+        "color_transfer": "iec61966-2-1",
+        "duration_s": 1.0,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 2,
+        "frame_rate": 2.0,
+        "height": 100,
+        "overall_bitrate_bps": 13000.0,
+        "pix_fmt": "yuv444p",
+        "stream_count": 2,
+        "video_bitrate_bps": 920.0,
+        "video_codec": "av1",
+        "video_profile": "High",
+        "width": 100
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/avis_with_pitm_no_iloc.avif"
+    },
+    {
+      "expected": {
+        "duration_s": 0.033,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 30.0,
+        "height": 144,
+        "overall_bitrate_bps": 378723.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_bitrate_bps": 159120.0,
+        "video_codec": "h263",
+        "width": 176
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/bbb_sunflower_qcif_30fps_h263_noaudio_1f.3gp"
+    },
+    {
+      "expected": {
+        "duration_s": 0.033,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 30.0,
+        "height": 144,
+        "overall_bitrate_bps": 356643.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_bitrate_bps": 79920.0,
+        "video_codec": "mpeg4",
+        "video_level": 1,
+        "video_profile": "Simple Profile",
+        "width": 176
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse/tests/bbb_sunflower_qcif_30fps_mp4v_noaudio_1f.mp4"
+    },
+    {
+      "expected": {
+        "duration_s": 0.042,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 1,
+        "frame_rate": 24.0,
+        "height": 60,
+        "overall_bitrate_bps": 295869.0,
+        "pix_fmt": "yuv420p",
+        "rotation": 90.0,
+        "stream_count": 1,
+        "video_bitrate_bps": 142464.0,
+        "video_codec": "h264",
+        "video_level": 10,
+        "video_profile": "High",
+        "width": 100
+      },
+      "path": "abnormal/mp4parse-rust/mp4parse_capi/tests/video_rotation_90.mp4"
+    },
+    {
+      "expected": {
+        "audio_codec": "flac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 2.741,
+        "format": "flac",
+        "overall_bitrate_bps": 513759.0,
+        "sample_fmt": "s32",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/flac/bear_32bit.flac"
+    },
+    {
+      "expected": {
+        "audio_codec": "flac",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "flac",
+        "sample_fmt": "s16",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/flac/bear_no_num_samples.flac"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 13.573,
+        "format": "mp3",
+        "overall_bitrate_bps": 64000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp3/100kb-garbage-prefix.mp3"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 26.073,
+        "format": "mp3",
+        "overall_bitrate_bps": 64000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp3/200kb-garbage-prefix.mp3"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 113241.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 2.696,
+        "format": "mp3",
+        "overall_bitrate_bps": 113905.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp3/bear-vbr-no-seek-table.mp3"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 96001.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "bt2020",
+        "color_space": "bt2020nc",
+        "color_transfer": "bt709",
+        "duration_s": 2.481,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 74,
+        "frame_rate": 29.822,
+        "height": 2160,
+        "overall_bitrate_bps": 50642219.0,
+        "pix_fmt": "yuvj420p",
+        "rotation": 90.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_bitrate_bps": 47934934.0,
+        "video_codec": "h264",
+        "video_level": 51,
+        "video_profile": "High",
+        "width": 3840
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp4/bt2020-sdr.mp4"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 131610.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "bt2020",
+        "color_space": "bt2020nc",
+        "color_transfer": "arib-std-b67",
+        "duration_s": 0.107,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 5,
+        "frame_rate": 30.0,
+        "height": 720,
+        "overall_bitrate_bps": 4842359.0,
+        "pix_fmt": "yuv420p10le",
+        "rotation": 90.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 5,
+        "video_bitrate_bps": 2690160.0,
+        "video_codec": "hevc",
+        "video_level": 93,
+        "video_profile": "Main 10",
+        "width": 1280
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp4/dolbyvision-hdr.mov"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 192156.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "duration_s": 10.133,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 304,
+        "frame_rate": 30.0,
+        "height": 1080,
+        "overall_bitrate_bps": 22293406.0,
+        "pix_fmt": "yuvj420p",
+        "rotation": 90.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 3,
+        "video_bitrate_bps": 22043696.0,
+        "video_codec": "h264",
+        "video_level": 41,
+        "video_profile": "High",
+        "width": 1920
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/mp4/h264_1080p_30fps_10sec.mp4"
+    },
+    {
+      "expected": {
+        "format": "ass",
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/ssa/overlapping_cues_different_layers"
+    },
+    {
+      "expected": {
+        "format": "ass",
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/ssa/style_strikeout"
+    },
+    {
+      "expected": {
+        "format": "srt",
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/subrip/typical_negative_timestamps"
+    },
+    {
+      "expected": {
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "duration_s": 0.512,
+        "format": "mpegts",
+        "overall_bitrate_bps": 1169125.0,
+        "sample_fmt": "fltp",
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/ts/sample_mpegh_lcbl_cicp1_multi.ts"
+    },
+    {
+      "expected": {
+        "format": "webvtt",
+        "stream_count": 1
+      },
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/webvtt/with_bad_cue_header"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 4.871,
+        "format": "4xm",
+        "height": 480,
+        "overall_bitrate_bps": 706289.0,
+        "pix_fmt": "rgb565le",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "4xm",
+        "width": 640
+      },
+      "path": "normal/fate-suite/4xm/version1.4xm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 126144.0,
+        "audio_codec": "adpcm_4xm",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 13.356,
+        "format": "4xm",
+        "height": 112,
+        "overall_bitrate_bps": 126384.0,
+        "pix_fmt": "bgr555le",
+        "sample_fmt": "s16p",
+        "sample_rate": 7884,
+        "stream_count": 2,
+        "video_codec": "4xm",
+        "width": 240
+      },
+      "path": "normal/fate-suite/4xm/version2.4xm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 8500.0,
+        "audio_codec": "sipr",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 5369.163,
+        "format": "aa",
+        "overall_bitrate_bps": 83.0,
+        "sample_fmt": "flt",
+        "sample_rate": 8500,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/aa/bush.aa"
+    },
+    {
+      "expected": {
+        "format": "sga",
+        "height": 8,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "sga",
+        "width": 168
+      },
+      "path": "normal/fate-suite/aac/usac/fd_2_c1_0x03.s16"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 384000.0,
+        "audio_codec": "ac3",
+        "bit_depth": 32,
+        "channels": 4,
+        "duration_s": 1.984,
+        "format": "ac3",
+        "overall_bitrate_bps": 384000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ac3/millers_crossing_4.0.ac3"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 192000.0,
+        "audio_codec": "ac3",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 4.167,
+        "format": "ac3",
+        "overall_bitrate_bps": 191999.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ac3/monsters_inc_2.0_192_small.ac3"
+    },
+    {
+      "expected": {
+        "audio_codec": "ac4",
+        "format": "ac4",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ac4/clip-impulse.ac4"
+    },
+    {
+      "expected": {
+        "audio_codec": "ac4",
+        "format": "ac4",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ac4/clip-stereo51.ac4"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128000.0,
+        "audio_codec": "g729",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 65.79,
+        "format": "act",
+        "overall_bitrate_bps": 8093.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/act/rec03.act"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128000.0,
+        "audio_codec": "g729",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 204.0,
+        "format": "act",
+        "overall_bitrate_bps": 8051.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/act/rec05.act"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 292000.0,
+        "audio_codec": "atrac1",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 12.139,
+        "format": "aea",
+        "overall_bitrate_bps": 293349.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/aea/chirp.aea"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "format": "mm",
+        "frame_rate": 10.0,
+        "height": 160,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 8000,
+        "stream_count": 2,
+        "video_codec": "mmvideo",
+        "width": 256
+      },
+      "path": "normal/fate-suite/alg-mm/ibmlogo.mm"
+    },
+    {
+      "expected": {
+        "format": "alias_pix",
+        "frame_rate": 25.0,
+        "height": 79,
+        "pix_fmt": "bgr24",
+        "stream_count": 1,
+        "video_codec": "alias_pix",
+        "width": 201
+      },
+      "path": "normal/fate-suite/aliaspix/first.pix"
+    },
+    {
+      "expected": {
+        "format": "alias_pix",
+        "frame_rate": 25.0,
+        "height": 81,
+        "pix_fmt": "gray",
+        "stream_count": 1,
+        "video_codec": "alias_pix",
+        "width": 199
+      },
+      "path": "normal/fate-suite/aliaspix/firstgray.pix"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 44100.0,
+        "audio_codec": "adpcm_ima_alp",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 0.92,
+        "format": "alp",
+        "overall_bitrate_bps": 44273.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/alp/ad_p11.pcm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "adpcm_ima_alp",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 3.175,
+        "format": "alp",
+        "overall_bitrate_bps": 176440.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/alp/theme-cut.tun"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 6400.0,
+        "audio_codec": "amr_nb",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 5.68,
+        "format": "amr",
+        "overall_bitrate_bps": 6408.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/amrnb/5.9k.amr"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 8000.0,
+        "audio_codec": "amr_nb",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 5.964,
+        "format": "amr",
+        "overall_bitrate_bps": 8008.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/amrnb/7.95k.amr"
+    },
+    {
+      "expected": {
+        "duration_s": 2.16,
+        "format": "tty",
+        "frame_rate": 25.0,
+        "height": 400,
+        "overall_bitrate_bps": 47722.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "ansi",
+        "width": 640
+      },
+      "path": "normal/fate-suite/ansi/ansi256.ans"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "adpcm_ima_apm",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 2.991,
+        "format": "apm",
+        "overall_bitrate_bps": 176667.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/apm/as01.apm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 44100.0,
+        "audio_codec": "adpcm_ima_apm",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 6.005,
+        "format": "apm",
+        "overall_bitrate_bps": 22183.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/apm/outro1.apm"
+    },
+    {
+      "expected": {
+        "color_space": "gbr",
+        "format": "apng",
+        "frame_rate": 25.0,
+        "height": 150,
+        "pix_fmt": "rgba",
+        "stream_count": 1,
+        "video_codec": "apng",
+        "width": 150
+      },
+      "path": "normal/fate-suite/apng/clock.png"
+    },
+    {
+      "expected": {
+        "color_space": "gbr",
+        "format": "apng",
+        "frame_rate": 5.583,
+        "height": 135,
+        "pix_fmt": "rgba",
+        "stream_count": 1,
+        "video_codec": "apng",
+        "width": 116
+      },
+      "path": "normal/fate-suite/apng/o_sample.png"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "adpcm_argo",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 5.944,
+        "format": "argo_asf",
+        "overall_bitrate_bps": 374909.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/argo-asf/cbk2_cut.asf"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "adpcm_argo",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 20.004,
+        "format": "argo_asf",
+        "overall_bitrate_bps": 93736.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/argo-asf/pwin22m.asf"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_afc",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 60.242,
+        "format": "ast",
+        "overall_bitrate_bps": 32185.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ast/demo11_02_partial.ast"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_dtk",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 35.541,
+        "format": "adp",
+        "overall_bitrate_bps": 438857.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/atrac1/chirp_tone_10-16000.pcm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 292000.0,
+        "audio_codec": "atrac1",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 2.684,
+        "format": "aea",
+        "overall_bitrate_bps": 298106.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/atrac1/test_tones_small.aea"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 512000.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 2.0,
+        "format": "wav",
+        "overall_bitrate_bps": 512176.0,
+        "sample_fmt": "s16",
+        "sample_rate": 16000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/audiomatch/tones_16000_stereo.wav"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 34487.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 2.176,
+        "format": "aac",
+        "overall_bitrate_bps": 34487.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 16000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/audiomatch/tones_afconvert_16000_stereo_aac_lc.adts"
+    },
+    {
+      "expected": {
+        "duration_s": 0.667,
+        "format": "ivf",
+        "frame_count": 20,
+        "height": 288,
+        "overall_bitrate_bps": 423380.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "av1",
+        "video_profile": "Main",
+        "width": 352
+      },
+      "path": "normal/fate-suite/av1-test-vectors/av1-1-b8-03-sizeup.ivf"
+    },
+    {
+      "expected": {
+        "format": "av1",
+        "frame_rate": 25.0,
+        "height": 300,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "av1",
+        "video_profile": "Main",
+        "width": 300
+      },
+      "path": "normal/fate-suite/av1/annexb.obu"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "gbr",
+        "color_transfer": "iec61966-2-1",
+        "format": "obu",
+        "frame_rate": 25.0,
+        "height": 256,
+        "pix_fmt": "gbrp",
+        "stream_count": 1,
+        "video_codec": "av1",
+        "video_profile": "High",
+        "width": 256
+      },
+      "path": "normal/fate-suite/av1/still_picture_rgb.obu"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88888.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "format": "bethsoftvid",
+        "frame_rate": 14.0,
+        "height": 200,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 11111,
+        "stream_count": 2,
+        "video_codec": "bethsoftvid",
+        "width": 320
+      },
+      "path": "normal/fate-suite/bethsoft-vid/anim0001.vid"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 6.333,
+        "format": "bfi",
+        "frame_count": 57,
+        "height": 140,
+        "overall_bitrate_bps": 1096663.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "bfi",
+        "width": 320
+      },
+      "path": "normal/fate-suite/bfi/2287.bfi"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_thp_le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 2.18,
+        "format": "bfstm",
+        "overall_bitrate_bps": 294165.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/bfstm/loz-mm-mikau.bcstm"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_thp",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 7.078,
+        "format": "bfstm",
+        "overall_bitrate_bps": 146733.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/bfstm/spl-forest-day.bfstm"
+    },
+    {
+      "expected": {
+        "audio_codec": "binkaudio_dct",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 8.867,
+        "format": "bink",
+        "frame_rate": 30.0,
+        "height": 480,
+        "overall_bitrate_bps": 183157.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 44000,
+        "stream_count": 2,
+        "video_codec": "binkvideo",
+        "width": 640
+      },
+      "path": "normal/fate-suite/bink/binkaudio_dct.bik"
+    },
+    {
+      "expected": {
+        "duration_s": 1.333,
+        "format": "bink",
+        "frame_rate": 15.0,
+        "height": 480,
+        "overall_bitrate_bps": 2801664.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "binkvideo",
+        "width": 640
+      },
+      "path": "normal/fate-suite/bink/hol2br.bik"
+    },
+    {
+      "expected": {
+        "audio_codec": "binkaudio_dct",
+        "channels": 1,
+        "duration_s": 0.49,
+        "format": "binka",
+        "overall_bitrate_bps": 75363.0,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/bink/sw_limon_01.binka"
+    },
+    {
+      "expected": {
+        "audio_codec": "bmv_audio",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "bmv",
+        "frame_rate": 12.0,
+        "height": 429,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "bmv_video",
+        "width": 640
+      },
+      "path": "normal/fate-suite/bmv/surfing-partial.bmv"
+    },
+    {
+      "expected": {
+        "format": "brender_pix",
+        "frame_rate": 25.0,
+        "height": 256,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "brender_pix",
+        "width": 256
+      },
+      "path": "normal/fate-suite/brenderpix/rivrock1.pix"
+    },
+    {
+      "expected": {
+        "format": "brender_pix",
+        "frame_rate": 25.0,
+        "height": 128,
+        "pix_fmt": "rgb565be",
+        "stream_count": 1,
+        "video_codec": "brender_pix",
+        "width": 128
+      },
+      "path": "normal/fate-suite/brenderpix/sbwheel.pix"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_thp",
+        "bit_depth": 16,
+        "channels": 6,
+        "duration_s": 82.991,
+        "format": "brstm",
+        "overall_bitrate_bps": 19741.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/brstm/lozswd_partial.brstm"
+    },
+    {
+      "expected": {
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 5.0,
+        "format": "caf",
+        "overall_bitrate_bps": 137411.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/caf/aac.caf"
+    },
+    {
+      "expected": {
+        "audio_codec": "opus",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 5.0,
+        "format": "caf",
+        "overall_bitrate_bps": 85915.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/caf/opus.caf"
+    },
+    {
+      "expected": {
+        "format": "cavsvideo",
+        "frame_rate": 25.0,
+        "height": 720,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "cavs",
+        "width": 1280
+      },
+      "path": "normal/fate-suite/cavs/bunny.mp4"
+    },
+    {
+      "expected": {
+        "duration_s": 81.0,
+        "format": "cdg",
+        "frame_rate": 300.0,
+        "height": 216,
+        "overall_bitrate_bps": 57600.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "cdgraphics",
+        "width": 300
+      },
+      "path": "normal/fate-suite/cdgraphics/brotherjohn.cdg"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "pcm_s8_planar",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 1.585,
+        "format": "cdxl",
+        "frame_count": 16,
+        "frame_rate": 10.083,
+        "height": 120,
+        "overall_bitrate_bps": 1292307.0,
+        "pix_fmt": "bgr24",
+        "sample_fmt": "u8p",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "cdxl",
+        "width": 160
+      },
+      "path": "normal/fate-suite/cdxl/cat.cdxl"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "pcm_s8_planar",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 1.535,
+        "format": "cdxl",
+        "frame_count": 46,
+        "frame_rate": 29.97,
+        "height": 80,
+        "overall_bitrate_bps": 1333836.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8p",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "cdxl",
+        "width": 128
+      },
+      "path": "normal/fate-suite/cdxl/fruit.cdxl"
+    },
+    {
+      "expected": {
+        "duration_s": 21.016,
+        "format": "dfa",
+        "frame_rate": 7.083,
+        "height": 480,
+        "overall_bitrate_bps": 50673.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "dfa",
+        "width": 640
+      },
+      "path": "normal/fate-suite/chronomaster-dfa/0003.dfa"
+    },
+    {
+      "expected": {
+        "duration_s": 2.556,
+        "format": "dfa",
+        "frame_rate": 14.083,
+        "height": 206,
+        "overall_bitrate_bps": 586954.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "dfa",
+        "width": 218
+      },
+      "path": "normal/fate-suite/chronomaster-dfa/0007.dfa"
+    },
+    {
+      "expected": {
+        "duration_s": 0.032,
+        "format": "cine",
+        "height": 800,
+        "overall_bitrate_bps": 256999937.0,
+        "pix_fmt": "bayer_gbrg8",
+        "stream_count": 1,
+        "video_codec": "rawvideo",
+        "width": 1280
+      },
+      "path": "normal/fate-suite/cine/bayer_gbrg8.cine"
+    },
+    {
+      "expected": {
+        "audio_codec": "ape",
+        "bit_depth": 16,
+        "channels": 2,
+        "color_space": "bt470bg",
+        "duration_s": 60.48,
+        "format": "ape",
+        "height": 305,
+        "overall_bitrate_bps": 7206.0,
+        "pix_fmt": "yuvj444p",
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "mjpeg",
+        "video_profile": "Baseline",
+        "width": 302
+      },
+      "path": "normal/fate-suite/cover_art/luckynight_cover.ape"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 22222.0,
+        "audio_codec": "adpcm_sbpro_2",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 9.404,
+        "format": "voc",
+        "overall_bitrate_bps": 22244.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11111,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/creative/bbc_2bit.voc"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 177776.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "format": "avs",
+        "frame_count": 56,
+        "frame_rate": 15.0,
+        "height": 198,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22222,
+        "stream_count": 2,
+        "video_codec": "avs",
+        "width": 318
+      },
+      "path": "normal/fate-suite/creatureshock-avs/outatime.avs"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "adpcm_ima_apc",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 33.2,
+        "format": "apc",
+        "overall_bitrate_bps": 176407.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/cryo-apc/cine007.apc"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 129032.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 16.4,
+        "format": "c93",
+        "frame_count": 205,
+        "frame_rate": 12.5,
+        "height": 192,
+        "overall_bitrate_bps": 943079.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 16129,
+        "stream_count": 2,
+        "video_codec": "c93",
+        "width": 320
+      },
+      "path": "normal/fate-suite/cyberia-c93/intro1.c93"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 13824000.0,
+        "audio_codec": "pcm_s24daud",
+        "bit_depth": 16,
+        "channels": 6,
+        "duration_s": 0.076,
+        "format": "daud",
+        "overall_bitrate_bps": 13823608.0,
+        "sample_fmt": "s16",
+        "sample_rate": 96000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/d-cinema/thx_science_flt_1920-partial.302"
+    },
+    {
+      "expected": {
+        "format": "dds_pipe",
+        "frame_rate": 25.0,
+        "height": 64,
+        "pix_fmt": "rgb565le",
+        "stream_count": 1,
+        "video_codec": "dds",
+        "width": 128
+      },
+      "path": "normal/fate-suite/dds/fate_rgb16.dds"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "dsicinaudio",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 47.583,
+        "format": "dsicin",
+        "height": 160,
+        "overall_bitrate_bps": 176292.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "dsicinvideo",
+        "width": 320
+      },
+      "path": "normal/fate-suite/delphine-cin/logo-partial.cin"
+    },
+    {
+      "expected": {
+        "format": "anm",
+        "frame_count": 156,
+        "frame_rate": 30.0,
+        "height": 200,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "anm",
+        "width": 320
+      },
+      "path": "normal/fate-suite/deluxepaint-anm/intro1.anm"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "format": "dirac",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "dirac",
+        "width": 320
+      },
+      "path": "normal/fate-suite/dirac/vts.profile-main.drc"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "bt709",
+        "color_transfer": "bt709",
+        "format": "dirac",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "dirac",
+        "width": 320
+      },
+      "path": "normal/fate-suite/dirac/vts.profile-vc2-low-delay.drc"
+    },
+    {
+      "expected": {
+        "color_space": "bt709",
+        "format": "dnxhd",
+        "frame_rate": 25.0,
+        "height": 1536,
+        "pix_fmt": "yuv422p",
+        "stream_count": 1,
+        "video_codec": "dnxhd",
+        "video_profile": "DNXHR LB",
+        "width": 256
+      },
+      "path": "normal/fate-suite/dnxhd/prefix-256x1536.dnxhr"
+    },
+    {
+      "expected": {
+        "color_space": "bt709",
+        "format": "dnxhd",
+        "frame_rate": 25.0,
+        "height": 1716,
+        "pix_fmt": "yuv422p",
+        "stream_count": 1,
+        "video_codec": "dnxhd",
+        "video_profile": "DNXHR LB",
+        "width": 256
+      },
+      "path": "normal/fate-suite/dnxhd/prefix-256x1716.dnxhr"
+    },
+    {
+      "expected": {
+        "audio_codec": "dolby_e",
+        "bit_depth": 32,
+        "channels": 6,
+        "format": "s337m",
+        "sample_fmt": "fltp",
+        "sample_rate": 44800,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dolby_e/16-11"
+    },
+    {
+      "expected": {
+        "audio_codec": "dss_sp",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 0.591,
+        "format": "dss",
+        "overall_bitrate_bps": 27721.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dss/olympus-sp-byte3-mid.dss"
+    },
+    {
+      "expected": {
+        "audio_codec": "dss_sp",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 0.887,
+        "format": "dss",
+        "overall_bitrate_bps": 27718.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dss/sp-paused.dss"
+    },
+    {
+      "expected": {
+        "audio_codec": "dts",
+        "bit_depth": 32,
+        "channels": 8,
+        "duration_s": 0.064,
+        "format": "dtshd",
+        "overall_bitrate_bps": 4508000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dts/dcadec-suite/xbr_xxch_71_24_48_3840.dtshd"
+    },
+    {
+      "expected": {
+        "audio_codec": "dts",
+        "bit_depth": 24,
+        "channels": 8,
+        "duration_s": 0.064,
+        "format": "dtshd",
+        "overall_bitrate_bps": 4111000.0,
+        "sample_fmt": "s32p",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dts/dcadec-suite/xll_71_24_48_768_0.dtshd"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1536000.0,
+        "audio_codec": "dts",
+        "bit_depth": 32,
+        "channels": 7,
+        "duration_s": 2.62,
+        "format": "dts",
+        "overall_bitrate_bps": 1536001.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dts/dts_es.dts"
+    },
+    {
+      "expected": {
+        "audio_codec": "dts",
+        "bit_depth": 24,
+        "channels": 8,
+        "format": "dts",
+        "sample_fmt": "s32p",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/dts/master_audio_7.1_24bit.dts"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 45152.0,
+        "audio_codec": "adpcm_ms",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 44.4,
+        "format": "dxa",
+        "frame_rate": 10.0,
+        "height": 480,
+        "overall_bitrate_bps": 356428.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "dxa",
+        "width": 640
+      },
+      "path": "normal/fate-suite/dxa/meetsquid.dxa"
+    },
+    {
+      "expected": {
+        "duration_s": 53.081,
+        "format": "dxa",
+        "frame_rate": 12.0,
+        "height": 200,
+        "overall_bitrate_bps": 15071.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "dxa",
+        "width": 640
+      },
+      "path": "normal/fate-suite/dxa/scummvm.dxa"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_ea_xas",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "ea_cdata",
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ea-cdata/166b084d.46410f77.0009b440.24be960c.cdata"
+    },
+    {
+      "expected": {
+        "format": "ea",
+        "frame_rate": 10.0,
+        "height": 200,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "cmv",
+        "width": 200
+      },
+      "path": "normal/fate-suite/ea-cmv/title.cmv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "adpcm_ima_ea_eacs",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "ea",
+        "frame_rate": 15.0,
+        "height": 240,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "tgv",
+        "width": 320
+      },
+      "path": "normal/fate-suite/ea-tgv/intro8k-partial.tgv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 256000.0,
+        "audio_codec": "eac3",
+        "bit_depth": 32,
+        "channels": 6,
+        "duration_s": 1.504,
+        "format": "eac3",
+        "overall_bitrate_bps": 256000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/eac3/csi_miami_5.1_256_spx_small.eac3"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1152000.0,
+        "audio_codec": "eac3",
+        "bit_depth": 32,
+        "channels": 8,
+        "duration_s": 5.024,
+        "format": "eac3",
+        "overall_bitrate_bps": 1152000.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/eac3/the_great_wall_7.1.eac3"
+    },
+    {
+      "expected": {
+        "format": "evc",
+        "frame_rate": 25.0,
+        "height": 288,
+        "stream_count": 1,
+        "video_codec": "evc",
+        "video_profile": "Baseline",
+        "width": 352
+      },
+      "path": "normal/fate-suite/evc/akiyo_cif.evc"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 12.0,
+        "format": "s16le",
+        "overall_bitrate_bps": 705600.0,
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/ffmpeg-synthetic/asynth1.sw"
+    },
+    {
+      "expected": {
+        "format": "pgm_pipe",
+        "frame_rate": 25.0,
+        "height": 432,
+        "pix_fmt": "gray",
+        "stream_count": 1,
+        "video_codec": "pgm",
+        "width": 352
+      },
+      "path": "normal/fate-suite/ffmpeg-synthetic/vsynth1/45.pgm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "pcm_s8_planar",
+        "bit_depth": 8,
+        "channels": 2,
+        "duration_s": 7.3,
+        "format": "film_cpk",
+        "height": 224,
+        "overall_bitrate_bps": 2142741.0,
+        "pix_fmt": "rgb24",
+        "sample_fmt": "u8p",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "cinepak",
+        "width": 320
+      },
+      "path": "normal/fate-suite/film/logo-capcom.cpk"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 396900.0,
+        "audio_codec": "adpcm_adx",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 83.96,
+        "format": "film_cpk",
+        "frame_rate": 24.0,
+        "height": 216,
+        "overall_bitrate_bps": 12489.0,
+        "pix_fmt": "rgb24",
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "cinepak",
+        "width": 296
+      },
+      "path": "normal/fate-suite/film/op-partial.cak"
+    },
+    {
+      "expected": {
+        "format": "fits",
+        "height": 173,
+        "pix_fmt": "gray16le",
+        "stream_count": 1,
+        "video_codec": "fits",
+        "width": 77
+      },
+      "path": "normal/fate-suite/fits/tst0006.fits"
+    },
+    {
+      "expected": {
+        "format": "fits",
+        "height": 512,
+        "pix_fmt": "gray16le",
+        "stream_count": 1,
+        "video_codec": "fits",
+        "width": 512
+      },
+      "path": "normal/fate-suite/fits/x0cj010ct_d0h.fit"
+    },
+    {
+      "expected": {
+        "format": "flic",
+        "height": 200,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "flic",
+        "width": 320
+      },
+      "path": "normal/fate-suite/fli/intel.dat"
+    },
+    {
+      "expected": {
+        "format": "flic",
+        "height": 480,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "flic",
+        "width": 640
+      },
+      "path": "normal/fate-suite/fli/jj00c2.fli"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 67874.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 210.21,
+        "format": "flv",
+        "frame_rate": 30.0,
+        "height": 240,
+        "overall_bitrate_bps": 19485.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_bitrate_bps": 393929.0,
+        "video_codec": "h264",
+        "video_level": 21,
+        "video_profile": "Main",
+        "width": 426
+      },
+      "path": "normal/fate-suite/flv/enigma_principles_of_lust-part.flv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "adpcm_g722",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 21.291,
+        "format": "g722",
+        "overall_bitrate_bps": 64000.0,
+        "sample_fmt": "s16",
+        "sample_rate": 16000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/g722/conf-adminmenu-162.g722"
+    },
+    {
+      "expected": {
+        "audio_codec": "g723_1",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "g723_1",
+        "sample_fmt": "s16p",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/g723_1/dtx63b.tco"
+    },
+    {
+      "expected": {
+        "audio_codec": "g723_1",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "g723_1",
+        "sample_fmt": "s16p",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/g723_1/dtx63e.tco"
+    },
+    {
+      "expected": {
+        "format": "bin",
+        "height": 640,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "bintext",
+        "width": 1280
+      },
+      "path": "normal/fate-suite/g728/outa3.bin"
+    },
+    {
+      "expected": {
+        "duration_s": 1.75,
+        "format": "gdv",
+        "frame_count": 21,
+        "frame_rate": 12.0,
+        "height": 140,
+        "overall_bitrate_bps": 467730.0,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "gdv",
+        "width": 170
+      },
+      "path": "normal/fate-suite/gdv/ace.gdv"
+    },
+    {
+      "expected": {
+        "audio_codec": "gremlin_dpcm",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 7.083,
+        "format": "gdv",
+        "frame_count": 85,
+        "frame_rate": 12.0,
+        "height": 280,
+        "overall_bitrate_bps": 563785.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 21168,
+        "stream_count": 2,
+        "video_codec": "gdv",
+        "width": 320
+      },
+      "path": "normal/fate-suite/gdv/chptr1.gdv"
+    },
+    {
+      "expected": {
+        "duration_s": 4.01,
+        "format": "gif",
+        "frame_count": 3,
+        "frame_rate": 0.752,
+        "height": 60,
+        "overall_bitrate_bps": 31018.0,
+        "pix_fmt": "bgra",
+        "stream_count": 1,
+        "video_codec": "gif",
+        "width": 468
+      },
+      "path": "normal/fate-suite/gif/banner2.gif"
+    },
+    {
+      "expected": {
+        "duration_s": 0.82,
+        "format": "gif",
+        "frame_count": 36,
+        "frame_rate": 50.0,
+        "height": 360,
+        "overall_bitrate_bps": 3017804.0,
+        "pix_fmt": "bgra",
+        "stream_count": 1,
+        "video_codec": "gif",
+        "width": 480
+      },
+      "path": "normal/fate-suite/gif/newtons_cradle_animation_book_2.gif"
+    },
+    {
+      "expected": {
+        "format": "h264",
+        "frame_rate": 25.0,
+        "height": 288,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "h264",
+        "video_level": 40,
+        "video_profile": "Main",
+        "width": 352
+      },
+      "path": "normal/fate-suite/h264-conformance/capama3_sand_f.264"
+    },
+    {
+      "expected": {
+        "format": "h264",
+        "frame_rate": 25.0,
+        "height": 288,
+        "pix_fmt": "yuv422p",
+        "stream_count": 1,
+        "video_codec": "h264",
+        "video_level": 31,
+        "video_profile": "High 4:2:2",
+        "width": 352
+      },
+      "path": "normal/fate-suite/h264-conformance/frext/hi422fr1_sony_a.jsv"
+    },
+    {
+      "expected": {
+        "format": "hevc",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "hevc",
+        "video_level": 60,
+        "video_profile": "Main",
+        "width": 416
+      },
+      "path": "normal/fate-suite/hevc-conformance/pmerge_d_ti_3.bit"
+    },
+    {
+      "expected": {
+        "format": "hevc",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "hevc",
+        "video_level": 63,
+        "video_profile": "Main",
+        "width": 416
+      },
+      "path": "normal/fate-suite/hevc-conformance/ps_b_vidyo_3.bit"
+    },
+    {
+      "expected": {
+        "format": "hnm",
+        "frame_rate": 24.0,
+        "height": 150,
+        "pix_fmt": "pal8",
+        "stream_count": 1,
+        "video_codec": "hnm4video",
+        "width": 640
+      },
+      "path": "normal/fate-suite/hnm4/boundary-runs.hnm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "idcin",
+        "frame_rate": 14.0,
+        "height": 240,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "idcin",
+        "width": 320
+      },
+      "path": "normal/fate-suite/idcin/idlog-2mb.cin"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "roq_dpcm",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "roq",
+        "frame_rate": 30.0,
+        "height": 256,
+        "pix_fmt": "yuvj444p",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "roq",
+        "width": 512
+      },
+      "path": "normal/fate-suite/idroq/idlogo.roq"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "8svx_fib",
+        "bit_depth": 8,
+        "channels": 2,
+        "duration_s": 5.072,
+        "format": "iff",
+        "overall_bitrate_bps": 352894.0,
+        "sample_fmt": "u8p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/iff/8svx_fib.iff"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 79544.0,
+        "audio_codec": "8svx_fib",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 8.059,
+        "format": "iff",
+        "overall_bitrate_bps": 79647.0,
+        "sample_fmt": "u8p",
+        "sample_rate": 19886,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/iff/dasboot-in-compressed"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 2304000.0,
+        "audio_codec": "pcm_s24le",
+        "bit_depth": 24,
+        "channels": 2,
+        "color_primaries": "bt709",
+        "color_transfer": "bt709",
+        "duration_s": 4.0,
+        "format": "imf",
+        "frame_rate": 24.0,
+        "height": 360,
+        "overall_bitrate_bps": 32440.0,
+        "pix_fmt": "rgb48le",
+        "sample_fmt": "s32",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "jpeg2000",
+        "width": 640
+      },
+      "path": "normal/fate-suite/imf/countdown-audio/cpl_688f4f63-a317-4271-99bf-51444ff39c5b.xml"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_transfer": "bt709",
+        "duration_s": 1.708,
+        "format": "imf",
+        "frame_rate": 24.0,
+        "height": 360,
+        "overall_bitrate_bps": 42441.0,
+        "pix_fmt": "rgb48le",
+        "stream_count": 1,
+        "video_codec": "jpeg2000",
+        "width": 640
+      },
+      "path": "normal/fate-suite/imf/countdown/cpl_bb2ce11c-1bb6-4781-8e69-967183d02b9b.xml"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "interplay_dpcm",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "ipmovie",
+        "frame_rate": 29.976,
+        "height": 320,
+        "pix_fmt": "rgb555le",
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "interplayvideo",
+        "width": 640
+      },
+      "path": "normal/fate-suite/interplay-mve/descent3-level5-16bit-partial.mve"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "interplay_dpcm",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "ipmovie",
+        "frame_rate": 14.986,
+        "height": 320,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "interplayvideo",
+        "width": 432
+      },
+      "path": "normal/fate-suite/interplay-mve/interplay-logo-2mb.mve"
+    },
+    {
+      "expected": {
+        "format": "iv8",
+        "frame_rate": 25.0,
+        "height": 576,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "mpeg4",
+        "width": 704
+      },
+      "path": "normal/fate-suite/iv8/zzz-partial.mpg"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 160.8,
+        "format": "jv",
+        "frame_count": 2010,
+        "height": 200,
+        "overall_bitrate_bps": 13041.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "jv",
+        "width": 320
+      },
+      "path": "normal/fate-suite/jv/intro.jv"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "gbr",
+        "color_transfer": "iec61966-2-1",
+        "format": "jpegxl_anim",
+        "height": 48,
+        "pix_fmt": "rgba",
+        "stream_count": 1,
+        "video_codec": "jpegxl_anim",
+        "width": 48
+      },
+      "path": "normal/fate-suite/jxl/icos4d.jxl"
+    },
+    {
+      "expected": {
+        "color_primaries": "bt709",
+        "color_space": "gbr",
+        "color_transfer": "iec61966-2-1",
+        "format": "jpegxl_anim",
+        "height": 96,
+        "pix_fmt": "rgba",
+        "stream_count": 1,
+        "video_codec": "jpegxl_anim",
+        "width": 128
+      },
+      "path": "normal/fate-suite/jxl/newton.jxl"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1411200.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 5.217,
+        "format": "avi",
+        "frame_count": 313,
+        "frame_rate": 60.0,
+        "height": 240,
+        "overall_bitrate_bps": 1633278.0,
+        "pix_fmt": "rgb555le",
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_bitrate_bps": 199163.0,
+        "video_codec": "kgv1",
+        "width": 320
+      },
+      "path": "normal/fate-suite/kega/kgv1.avi"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "adpcm_ima_ssi",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 5.669,
+        "format": "kvag",
+        "overall_bitrate_bps": 176419.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/kvag/credits_cut.vag"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "adpcm_ima_ssi",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 11.338,
+        "format": "kvag",
+        "overall_bitrate_bps": 88209.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/kvag/mull1_cut.vag"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 256000.0,
+        "audio_codec": "mp2",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "lmlm4",
+        "frame_rate": 29.97,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "mpeg4",
+        "video_level": 3,
+        "video_profile": "Simple Profile",
+        "width": 320
+      },
+      "path": "normal/fate-suite/lmlm4/lmlm4_cifat30fps.divx"
+    },
+    {
+      "expected": {
+        "audio_codec": "mlp",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "mlp",
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.mlp"
+    },
+    {
+      "expected": {
+        "audio_codec": "osq",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 9.5,
+        "format": "osq",
+        "overall_bitrate_bps": 887493.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.osq"
+    },
+    {
+      "expected": {
+        "audio_codec": "rka",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 9.5,
+        "format": "rka",
+        "overall_bitrate_bps": 855965.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.rka"
+    },
+    {
+      "expected": {
+        "audio_codec": "shorten",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "shn",
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.shn"
+    },
+    {
+      "expected": {
+        "audio_codec": "tak",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 9.5,
+        "format": "tak",
+        "overall_bitrate_bps": 850872.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.tak"
+    },
+    {
+      "expected": {
+        "audio_codec": "tta",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 60.48,
+        "format": "tta",
+        "overall_bitrate_bps": 138700.0,
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/luckynight-partial.tta"
+    },
+    {
+      "expected": {
+        "audio_codec": "ape",
+        "bit_depth": 24,
+        "channels": 2,
+        "duration_s": 126.812,
+        "format": "ape",
+        "overall_bitrate_bps": 6308.0,
+        "sample_fmt": "s32p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/lossless-audio/nolegacy-cut.ape"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 189000.0,
+        "audio_codec": "adpcm_ea_maxis_xa",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 56.595,
+        "format": "xa",
+        "overall_bitrate_bps": 189003.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/maxis-xa/sc2kbug.xa"
+    },
+    {
+      "expected": {
+        "format": "msnwctcp",
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "mimic",
+        "width": 320
+      },
+      "path": "normal/fate-suite/mimic/mimic2-womanloveffmpeg.cam"
+    },
+    {
+      "expected": {
+        "duration_s": 0.017,
+        "format": "mlv",
+        "frame_count": 192,
+        "height": 610,
+        "overall_bitrate_bps": 755033507.0,
+        "pix_fmt": "bayer_rggb16le",
+        "stream_count": 1,
+        "video_codec": "rawvideo",
+        "width": 1472
+      },
+      "path": "normal/fate-suite/mlv/m19-0333-cut.mlv"
+    },
+    {
+      "expected": {
+        "audio_codec": "fastaudio",
+        "bit_depth": 32,
+        "channels": 2,
+        "format": "moflex",
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 32000,
+        "stream_count": 3,
+        "video_codec": "mobiclip",
+        "width": 320
+      },
+      "path": "normal/fate-suite/mobiclip/mobiclip-reference-rect-partitions.moflex"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "format": "mvi",
+        "frame_rate": 15.0,
+        "height": 240,
+        "pix_fmt": "rgb555le",
+        "sample_fmt": "u8",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "motionpixels",
+        "width": 320
+      },
+      "path": "normal/fate-suite/motion-pixels/intro-partial.mvi"
+    },
+    {
+      "expected": {
+        "audio_codec": "g729",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "bit",
+        "sample_fmt": "s16p",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/mp3-conformance/he_free.bit"
+    },
+    {
+      "expected": {
+        "format": "m4v",
+        "frame_rate": 25.0,
+        "height": 480,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "mpeg4",
+        "video_level": 1,
+        "video_profile": "Simple Profile",
+        "width": 640
+      },
+      "path": "normal/fate-suite/mpeg4/resize_down-down.h263"
+    },
+    {
+      "expected": {
+        "format": "m4v",
+        "frame_rate": 25.0,
+        "height": 300,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "mpeg4",
+        "video_level": 1,
+        "video_profile": "Simple Profile",
+        "width": 400
+      },
+      "path": "normal/fate-suite/mpeg4/resize_up-down.h263"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 2,
+        "format": "mtv",
+        "frame_rate": 16.0,
+        "height": 64,
+        "pix_fmt": "rgb565be",
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "rawvideo",
+        "width": 96
+      },
+      "path": "normal/fate-suite/mtv/comedian_auto-partial.mtv"
+    },
+    {
+      "expected": {
+        "audio_codec": "musepack7",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 11.912,
+        "format": "mpc",
+        "overall_bitrate_bps": 167699.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/musepack/inside-mp7.mpc"
+    },
+    {
+      "expected": {
+        "audio_codec": "musepack8",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 11.703,
+        "format": "mpc8",
+        "overall_bitrate_bps": 166322.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/musepack/inside-mp8.mpc"
+    },
+    {
+      "expected": {
+        "duration_s": 8.0,
+        "format": "mv",
+        "frame_count": 80,
+        "frame_rate": 10.0,
+        "height": 288,
+        "overall_bitrate_bps": 4473680.0,
+        "pix_fmt": "rgb555le",
+        "stream_count": 1,
+        "video_codec": "mvc1",
+        "width": 384
+      },
+      "path": "normal/fate-suite/mv/posture.mv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "pcm_alaw",
+        "bit_depth": 16,
+        "channels": 1,
+        "color_space": "bt470bg",
+        "format": "mxg",
+        "height": 960,
+        "pix_fmt": "yuvj420p",
+        "sample_fmt": "s16",
+        "sample_rate": 8000,
+        "stream_count": 2,
+        "video_codec": "mxpeg",
+        "width": 1280
+      },
+      "path": "normal/fate-suite/mxpeg/m1.mxg"
+    },
+    {
+      "expected": {
+        "format": "nc",
+        "frame_rate": 100.0,
+        "height": 576,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "mpeg4",
+        "width": 720
+      },
+      "path": "normal/fate-suite/nc-camera/nc-sample-partial"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "pcm_mulaw",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 1.701,
+        "format": "nistsphere",
+        "overall_bitrate_bps": 93016.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/nistsphere/nist-ulaw.nist"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 16000.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 60.46,
+        "format": "nsv",
+        "frame_rate": 14.985,
+        "height": 112,
+        "overall_bitrate_bps": 51096.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "vp3",
+        "width": 160
+      },
+      "path": "normal/fate-suite/nsv/witchblade-51kbps.nsv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1411200.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 2.128,
+        "format": "nuv",
+        "frame_rate": 29.97,
+        "height": 480,
+        "overall_bitrate_bps": 1334872.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "nuv",
+        "width": 640
+      },
+      "path": "normal/fate-suite/nuv/today.nuv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 132300.0,
+        "audio_codec": "atrac3",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 31.511,
+        "format": "oma",
+        "overall_bitrate_bps": 133104.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/oma/01-untitled-partial.oma"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_dtk",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 95.095,
+        "format": "adp",
+        "overall_bitrate_bps": 438857.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/opus/testvector05.dec"
+    },
+    {
+      "expected": {
+        "audio_codec": "paf_audio",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 407.5,
+        "format": "paf",
+        "frame_count": 4075,
+        "frame_rate": 10.0,
+        "height": 192,
+        "overall_bitrate_bps": 41171.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "paf_video",
+        "width": 256
+      },
+      "path": "normal/fate-suite/paf/hod1-partial.paf"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 44100.0,
+        "audio_codec": "adpcm_ima_cunning",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 2.835,
+        "format": "pp_bnk",
+        "overall_bitrate_bps": 44269.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 11025,
+        "stream_count": 2
+      },
+      "path": "normal/fate-suite/pp_bnk/videomod-trunc-t2.11c"
+    },
+    {
+      "expected": {
+        "format": "cavsvideo",
+        "frame_rate": 25.0,
+        "height": 12544,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "cavs",
+        "width": 13115
+      },
+      "path": "normal/fate-suite/probe-format/jpeg-not-cavsvideo"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1536000.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 0.007,
+        "format": "dv",
+        "frame_rate": 60000.0,
+        "height": 480,
+        "overall_bitrate_bps": 28772838.0,
+        "pix_fmt": "yuv411p",
+        "sample_fmt": "s16",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_bitrate_bps": 28771229.0,
+        "video_codec": "dvvideo",
+        "width": 720
+      },
+      "path": "normal/fate-suite/probe-format/roundup2015"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_xa",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "psxstr",
+        "frame_rate": 15.0,
+        "height": 240,
+        "pix_fmt": "yuvj420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 37800,
+        "stream_count": 2,
+        "video_codec": "mdec",
+        "width": 320
+      },
+      "path": "normal/fate-suite/psx-str/descent-partial.str"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128000.0,
+        "audio_codec": "mp2",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 2.45,
+        "format": "pva",
+        "frame_rate": 25.0,
+        "height": 576,
+        "overall_bitrate_bps": 3424233.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_bitrate_bps": 3880800.0,
+        "video_codec": "mpeg2video",
+        "video_level": 8,
+        "video_profile": "Main",
+        "width": 544
+      },
+      "path": "normal/fate-suite/pva/pva_test-partial.pva"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 13000.0,
+        "audio_codec": "qcelp",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 7.038,
+        "format": "qcp",
+        "overall_bitrate_bps": 13193.0,
+        "sample_fmt": "flt",
+        "sample_rate": 8000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/qcp/0036580847.qcp"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 1536000.0,
+        "audio_codec": "pcm_s32be",
+        "bit_depth": 32,
+        "channels": 1,
+        "format": "r3d",
+        "frame_rate": 23.976,
+        "height": 1152,
+        "pix_fmt": "rgba64le",
+        "sample_fmt": "s32",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_codec": "jpeg2000",
+        "width": 2048
+      },
+      "path": "normal/fate-suite/r3d/4mb-sample.r3d"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64083.0,
+        "audio_codec": "cook",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 1350.471,
+        "format": "rm",
+        "frame_rate": 29.97,
+        "height": 240,
+        "overall_bitrate_bps": 1190.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_bitrate_bps": 385916.0,
+        "video_codec": "rv30",
+        "width": 352
+      },
+      "path": "normal/fate-suite/real/rv30.rm"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_thp",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 7.016,
+        "format": "redspark",
+        "overall_bitrate_bps": 36781.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/redspark/jingle04_partial.rsd"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 137.807,
+        "format": "rl2",
+        "height": 200,
+        "overall_bitrate_bps": 90159.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 11025,
+        "stream_count": 2,
+        "video_codec": "rl2",
+        "width": 320
+      },
+      "path": "normal/fate-suite/rl2/z4915300.rl2"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 705600.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 2,
+        "duration_s": 4.0,
+        "format": "rpl",
+        "frame_rate": 25.0,
+        "height": 240,
+        "overall_bitrate_bps": 2124360.0,
+        "pix_fmt": "rgb555le",
+        "sample_fmt": "u8",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "escape124",
+        "width": 320
+      },
+      "path": "normal/fate-suite/rpl/escape.rpl"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_ima_rad",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 1.333,
+        "format": "rsd",
+        "overall_bitrate_bps": 252288.0,
+        "sample_fmt": "s16",
+        "sample_rate": 24000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/rsd/hit_run_partial.rsd"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 8.333,
+        "format": "siff",
+        "frame_count": 100,
+        "frame_rate": 12.0,
+        "height": 240,
+        "overall_bitrate_bps": 1653855.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "vb",
+        "width": 320
+      },
+      "path": "normal/fate-suite/siff/intro_b.vb"
+    },
+    {
+      "expected": {
+        "audio_codec": "smackaudio",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 7.1,
+        "format": "smk",
+        "height": 200,
+        "overall_bitrate_bps": 815878.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "smackvideo",
+        "width": 320
+      },
+      "path": "normal/fate-suite/smacker/wetlogo.smk"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_ima_smjpeg",
+        "bit_depth": 16,
+        "channels": 1,
+        "color_space": "bt470bg",
+        "duration_s": 8.111,
+        "format": "smjpeg",
+        "frame_count": 73,
+        "frame_rate": 9.0,
+        "height": 240,
+        "overall_bitrate_bps": 557363.0,
+        "pix_fmt": "yuvj420p",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "mjpeg",
+        "video_profile": "Baseline",
+        "width": 320
+      },
+      "path": "normal/fate-suite/smjpeg/scenwin.mjpg"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_vima",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 8.733,
+        "format": "smush",
+        "frame_count": 131,
+        "frame_rate": 15.0,
+        "height": 480,
+        "overall_bitrate_bps": 240131.0,
+        "pix_fmt": "rgb565le",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "sanm",
+        "width": 640
+      },
+      "path": "normal/fate-suite/smush/ronin_part.znm"
+    },
+    {
+      "expected": {
+        "audio_codec": "sol_dpcm",
+        "bit_depth": 16,
+        "channels": 2,
+        "format": "sol",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sol/lsl7sample.sol"
+    },
+    {
+      "expected": {
+        "format": "aqtitle",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/aqtitle_capability_tester.aqt"
+    },
+    {
+      "expected": {
+        "format": "jacosub",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/jacosub_capability_tester.jss"
+    },
+    {
+      "expected": {
+        "format": "microdvd",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/microdvd_capability_tester.sub"
+    },
+    {
+      "expected": {
+        "format": "mpl2",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/mpl2_capability_tester.txt"
+    },
+    {
+      "expected": {
+        "format": "mpsub",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/mpsub_capability_tester.sub"
+    },
+    {
+      "expected": {
+        "format": "sup",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/pgs_sub.sup"
+    },
+    {
+      "expected": {
+        "format": "pjs",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/pjs_capability_tester.pjs"
+    },
+    {
+      "expected": {
+        "format": "realtext",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/realtext_capability_tester.rt"
+    },
+    {
+      "expected": {
+        "format": "sami",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/sami_multilang_tweak_tester.smi"
+    },
+    {
+      "expected": {
+        "format": "stl",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/stl_capability_tester.stl"
+    },
+    {
+      "expected": {
+        "format": "subviewer1",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/subviewer1_capability_tester.sub"
+    },
+    {
+      "expected": {
+        "format": "subviewer",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/subviewer_capability_tester.sub"
+    },
+    {
+      "expected": {
+        "format": "lrc",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/test-lrc-ms.lrc"
+    },
+    {
+      "expected": {
+        "format": "lrc",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/test-lrc.lrc"
+    },
+    {
+      "expected": {
+        "format": "vobsub",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/vobsub.idx"
+    },
+    {
+      "expected": {
+        "format": "vplayer",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/vplayer_capability_tester.txt"
+    },
+    {
+      "expected": {
+        "format": "scc",
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/sub/witch.scc"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_thp",
+        "bit_depth": 16,
+        "channels": 2,
+        "color_space": "bt470bg",
+        "duration_s": 217.077,
+        "format": "thp",
+        "frame_count": 6500,
+        "frame_rate": 29.97,
+        "height": 320,
+        "overall_bitrate_bps": 38643.0,
+        "pix_fmt": "yuvj420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 2,
+        "video_codec": "thp",
+        "width": 608
+      },
+      "path": "normal/fate-suite/thp/pikmin2-opening1-partial.thp"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "pcm_s16be",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "tiertexseq",
+        "frame_rate": 25.0,
+        "height": 128,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "tiertexseqvideo",
+        "width": 256
+      },
+      "path": "normal/fate-suite/tiertex-seq/gameover.seq"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176464.0,
+        "audio_codec": "pcm_u8",
+        "bit_depth": 8,
+        "channels": 1,
+        "duration_s": 1.852,
+        "format": "tmv",
+        "frame_rate": 59.94,
+        "height": 200,
+        "overall_bitrate_bps": 1132466.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22058,
+        "stream_count": 2,
+        "video_bitrate_bps": 959043.0,
+        "video_codec": "tmv",
+        "width": 320
+      },
+      "path": "normal/fate-suite/tmv/pop-partial.tmv"
+    },
+    {
+      "expected": {
+        "audio_codec": "truehd",
+        "bit_depth": 24,
+        "channels": 2,
+        "format": "truehd",
+        "sample_fmt": "s32",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/truehd/spdifenc-branch-padding.thd"
+    },
+    {
+      "expected": {
+        "format": "txd",
+        "frame_rate": 5.0,
+        "height": 249,
+        "pix_fmt": "rgba",
+        "stream_count": 1,
+        "video_codec": "txd",
+        "width": 387
+      },
+      "path": "normal/fate-suite/txd/odd.txd"
+    },
+    {
+      "expected": {
+        "color_space": "bt709",
+        "duration_s": 0.04,
+        "format": "avi",
+        "frame_count": 1,
+        "frame_rate": 25.0,
+        "height": 48,
+        "overall_bitrate_bps": 1930400.0,
+        "pix_fmt": "yuv422p",
+        "stream_count": 1,
+        "video_codec": "utvideo",
+        "width": 64
+      },
+      "path": "normal/fate-suite/utvideo/utvideo_yuv422_709_64x48_gradient.avi"
+    },
+    {
+      "expected": {
+        "format": "vc1",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "vc1",
+        "video_profile": "Advanced",
+        "width": 320
+      },
+      "path": "normal/fate-suite/vc1/sa00050.vc1"
+    },
+    {
+      "expected": {
+        "duration_s": 24.0,
+        "format": "vc1test",
+        "frame_rate": 1.0,
+        "height": 480,
+        "overall_bitrate_bps": 333606.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "wmv3",
+        "video_profile": "Main",
+        "width": 720
+      },
+      "path": "normal/fate-suite/vc1/smm0005.rcv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "vmdaudio",
+        "bit_depth": 8,
+        "channels": 1,
+        "format": "vmd",
+        "height": 240,
+        "overall_bitrate_bps": 176400.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "u8",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "vmdvideo",
+        "width": 320
+      },
+      "path": "normal/fate-suite/vmd/12.vmd"
+    },
+    {
+      "expected": {
+        "audio_codec": "adpcm_ea_xas",
+        "bit_depth": 16,
+        "channels": 1,
+        "format": "ea_cdata",
+        "sample_fmt": "s16p",
+        "sample_rate": 512,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/vorbis/1.0-test_small.pcm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128031.0,
+        "audio_codec": "vorbis",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 5.687,
+        "format": "ogg",
+        "overall_bitrate_bps": 140660.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/vorbis/rc3-test_small.ogg"
+    },
+    {
+      "expected": {
+        "duration_s": 0.967,
+        "format": "ivf",
+        "frame_count": 29,
+        "height": 144,
+        "overall_bitrate_bps": 131172.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "vp8",
+        "width": 176
+      },
+      "path": "normal/fate-suite/vp8-test-vectors-r1/vp80-00-comprehensive-001.ivf"
+    },
+    {
+      "expected": {
+        "duration_s": 0.333,
+        "format": "matroska,webm",
+        "frame_rate": 29.97,
+        "height": 196,
+        "overall_bitrate_bps": 290762.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "vp9",
+        "video_profile": "Profile 0",
+        "width": 200
+      },
+      "path": "normal/fate-suite/vp9-test-vectors/vp90-2-03-size-200x196.webm"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "adpcm_ima_ws",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 27.867,
+        "format": "wsvqa",
+        "frame_count": 418,
+        "frame_rate": 15.0,
+        "height": 200,
+        "overall_bitrate_bps": 75256.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "ws_vqa",
+        "width": 320
+      },
+      "path": "normal/fate-suite/vqa/cc-demo1-partial.vqa"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 20000.0,
+        "audio_codec": "twinvq",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 120.094,
+        "format": "vqf",
+        "overall_bitrate_bps": 20009.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/vqf/achterba.vqf"
+    },
+    {
+      "expected": {
+        "format": "vvc",
+        "frame_rate": 25.0,
+        "height": 240,
+        "pix_fmt": "yuv420p10le",
+        "stream_count": 1,
+        "video_codec": "vvc",
+        "video_level": 32,
+        "video_profile": "Main 10",
+        "width": 416
+      },
+      "path": "normal/fate-suite/vvc-conformance/ibc_b_tencent_2.bit"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 176400.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 1.701,
+        "format": "w64",
+        "overall_bitrate_bps": 176926.0,
+        "sample_fmt": "s16",
+        "sample_rate": 11025,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/w64/w64-pcm16.w64"
+    },
+    {
+      "expected": {
+        "audio_codec": "wavpack",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 3393.227,
+        "format": "wv",
+        "overall_bitrate_bps": 32906.0,
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/wavpack/special/cue_sheet.wv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "pcm_s16le",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 9.667,
+        "format": "wc3movie",
+        "height": 165,
+        "overall_bitrate_bps": 368838.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_codec": "xan_wc3",
+        "width": 320
+      },
+      "path": "normal/fate-suite/wc3movie/sc_32-part.mve"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "adpcm_ima_ws",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 0.481,
+        "format": "wsaud",
+        "overall_bitrate_bps": 88399.0,
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/westwood-aud/excellent.aud"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 256000.0,
+        "audio_codec": "mp2",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 155.461,
+        "format": "wtv",
+        "frame_rate": 25.0,
+        "height": 576,
+        "overall_bitrate_bps": 53959.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 48000,
+        "stream_count": 5,
+        "video_codec": "mpeg2video",
+        "video_level": 8,
+        "video_profile": "Main",
+        "width": 720
+      },
+      "path": "normal/fate-suite/wtv/law-and-order-partial.wtv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 352800.0,
+        "audio_codec": "adpcm_ima_xbox",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 8.5,
+        "format": "xmv",
+        "height": 480,
+        "overall_bitrate_bps": 925214.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_codec": "wmv2",
+        "width": 640
+      },
+      "path": "normal/fate-suite/xmv/logos1p.fmv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 48000.0,
+        "audio_codec": "wmav2",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 20.011,
+        "format": "xwma",
+        "overall_bitrate_bps": 63945.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 1
+      },
+      "path": "normal/fate-suite/xwma/ergon.xwma"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 88200.0,
+        "audio_codec": "adpcm_ima_apc",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 0.583,
+        "format": "yop",
+        "frame_rate": 12.0,
+        "height": 174,
+        "overall_bitrate_bps": 4114288.0,
+        "pix_fmt": "pal8",
+        "sample_fmt": "s16",
+        "sample_rate": 22050,
+        "stream_count": 2,
+        "video_bitrate_bps": 4227072.0,
+        "video_codec": "yop",
+        "width": 580
+      },
+      "path": "normal/fate-suite/yop/test1.yop"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 32378.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 7.757,
+        "format": "aac",
+        "overall_bitrate_bps": 32494.0,
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 1
+      },
+      "path": "normal/mplayerhq/a-codecs/aac/aacplusdecodercheckpackage_v2.1/bitstreams/file1.aac"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 128.0,
+        "audio_codec": "wmav2",
+        "bit_depth": 32,
+        "channels": 1,
+        "duration_s": 39.688,
+        "format": "asf",
+        "frame_rate": 25.0,
+        "height": 240,
+        "overall_bitrate_bps": 388568.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 8000,
+        "stream_count": 2,
+        "video_codec": "msmpeg4v3",
+        "width": 320
+      },
+      "path": "normal/mplayerhq/asf-wmv/acm_decoder/trinity.asf"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 24000.0,
+        "audio_codec": "adpcm_g726",
+        "bit_depth": 16,
+        "channels": 1,
+        "duration_s": 15.484,
+        "format": "asf",
+        "frame_rate": 14.985,
+        "height": 120,
+        "overall_bitrate_bps": 195840.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16",
+        "sample_rate": 8000,
+        "stream_count": 2,
+        "video_codec": "mpeg4",
+        "width": 160
+      },
+      "path": "normal/mplayerhq/asf-wmv/asf-code-53/movn018.asf"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 57344.0,
+        "audio_codec": "mp3",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 28.133,
+        "format": "flv",
+        "frame_rate": 30.0,
+        "height": 348,
+        "overall_bitrate_bps": 367636.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 2,
+        "video_bitrate_bps": 376832.0,
+        "video_codec": "vp6f",
+        "width": 464
+      },
+      "path": "normal/mplayerhq/flv/asian-commercials-are-weird.flv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 768000.0,
+        "audio_codec": "dts",
+        "bit_depth": 32,
+        "channels": 6,
+        "duration_s": 11689.483,
+        "format": "matroska,webm",
+        "frame_rate": 23.976,
+        "height": 556,
+        "overall_bitrate_bps": 50233.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 48000,
+        "stream_count": 6,
+        "video_codec": "h264",
+        "video_level": 51,
+        "video_profile": "High",
+        "width": 1280
+      },
+      "path": "normal/mplayerhq/matroska/decode-error-stop.mkv"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 191999.0,
+        "audio_codec": "aac",
+        "bit_depth": 32,
+        "channels": 2,
+        "duration_s": 590.118,
+        "format": "mov,mp4,m4a,3gp,3g2,mj2",
+        "frame_count": 14185,
+        "frame_rate": 23.998,
+        "height": 272,
+        "overall_bitrate_bps": 1674185.0,
+        "pix_fmt": "yuvj420p",
+        "sample_fmt": "fltp",
+        "sample_rate": 44100,
+        "stream_count": 3,
+        "video_bitrate_bps": 1473164.0,
+        "video_codec": "svq3",
+        "width": 640
+      },
+      "path": "normal/mplayerhq/mov/animatrix/detect_640_dl.mov"
+    },
+    {
+      "expected": {
+        "duration_s": 0.117,
+        "format": "mpegvideo",
+        "frame_rate": 25.0,
+        "height": 120,
+        "overall_bitrate_bps": 104856535.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_bitrate_bps": 104857200.0,
+        "video_codec": "mpeg1video",
+        "width": 160
+      },
+      "path": "normal/mplayerhq/mpeg-vob/1fps/sukhoi.mpg"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 64000.0,
+        "audio_codec": "mp2",
+        "bit_depth": 16,
+        "channels": 2,
+        "duration_s": 11.574,
+        "format": "mpeg",
+        "frame_rate": 23.976,
+        "height": 144,
+        "overall_bitrate_bps": 279507.0,
+        "pix_fmt": "yuv420p",
+        "sample_fmt": "s16p",
+        "sample_rate": 32000,
+        "stream_count": 2,
+        "video_bitrate_bps": 104857200.0,
+        "video_codec": "mpeg1video",
+        "width": 192
+      },
+      "path": "normal/mplayerhq/mpeg1/mpeg_demuxer_crash.mpg"
+    },
+    {
+      "expected": {
+        "audio_bitrate_bps": 4608000.0,
+        "audio_codec": "pcm_s24le",
+        "bit_depth": 24,
+        "channels": 4,
+        "color_transfer": "bt470m",
+        "duration_s": 11.457,
+        "format": "mxf",
+        "frame_rate": 25.0,
+        "height": 608,
+        "overall_bitrate_bps": 54612318.0,
+        "pix_fmt": "yuv422p",
+        "sample_fmt": "s32",
+        "sample_rate": 48000,
+        "stream_count": 2,
+        "video_bitrate_bps": 50000000.0,
+        "video_codec": "mpeg2video",
+        "video_level": 5,
+        "video_profile": "4:2:2",
+        "width": 720
+      },
+      "path": "normal/mplayerhq/mxf/ebu_small_d10_50_audio_resampling_problem.mxf"
+    },
+    {
+      "expected": {
+        "duration_s": 8.667,
+        "format": "yuv4mpegpipe",
+        "frame_rate": 30.0,
+        "height": 288,
+        "overall_bitrate_bps": 36496833.0,
+        "pix_fmt": "yuv420p",
+        "stream_count": 1,
+        "video_codec": "rawvideo",
+        "width": 352
+      },
+      "path": "normal/xiph-derf/football_cif.y4m"
+    }
+  ],
+  "source_index_sha256": "c84ac827fedad0f3d5e90e0c180830a7812cca3030aee2e9e52014f93ddd6087",
+  "truth_avformat_version": "62.12.103"
+}

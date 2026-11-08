@@ -14,6 +14,7 @@
 #include <string>
 
 #include "core/domain/io/Utf8Path.h"
+#include "core/reporting/QcReportExporter.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -55,6 +56,11 @@ inline bool WriteUtf8File(const std::string& path, const std::string& content) {
     file << content;
     return file.good();
 }
+
+// 把任意 UTF-8 纯文本按 PDF 版式写出。MiniPdfWriter 在 QcReportExporterPdf.cpp 的
+// 匿名 namespace 里，所以实现也放那里；三个报告家族（单文件 / 对比 / 批量汇总）
+// 的 PDF 都走这一个入口，避免各自另排一套正文之后与自家 TXT 漂移。
+QcPdfExportResult WriteTextAsPdf(const std::string& path, const std::string& text);
 
 } // namespace detail
 } // namespace reporting

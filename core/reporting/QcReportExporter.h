@@ -6,6 +6,11 @@
 //   1) 固定机器可读 schema（含 profile、metrics、streams、rules 快照），供 CI 二次消费；
 //   2) 支持批量汇总与双文件对比的导出。
 // 手头只有裸 QcReport 时用 ExportReport()，它现场包一个最小 bundle。
+// ⚠️ 裸 QcReport 没有"分析是否跑完 / 超时 / 失败原因"这些运行上下文，
+//    便捷入口不猜、不伪造；需要这些结论层事实的调用方必须传 QcRunResult
+//    （另一个 ExportReport 重载）或直接构造 QcExportBundle 走 ExportAuto。
+//    Auto 系列按扩展名选格式，认不出来的扩展名一律拒绝落盘 —— 静默退回 JSON
+//    会留下「叫 .xyz 的 JSON 文件」，下游按扩展名读必然出错。
 //
 // CSV 的口径：一个问题一行，没有"文件占一行"的变体 —— 批量透视交给
 // summary CSV，混在一起会让行数失去意义。
@@ -87,9 +92,15 @@ public:
     // 手头只有裸 QcReport（没有 QcRunResult / profile 上下文）时的便捷入口：
     // 现场包一个最小 bundle 再走 ExportAuto。UI 上"直接对诊断结果点导出"就是这种场景，
     // 让调用方为了拿一个导出按钮而先造 QcRunResult 是没有意义的。
+    // ⚠️ 能力边界：调用方只在「本次分析确实跑完了」时才调它，因此 run.ok 恒为 true；
+    //    report.completed / report.partial 保留报告自己的结论层语义，不与 run.ok 绑定。
+    //    超时 / 打开失败 / 被取消这些状态它表达不了，请用下面的 QcRunResult 重载。
     static bool ExportReport(const std::string& path, const model::QcReport& report);
+    // 有完整运行上下文时走这个：五个完整性标志（分析成功 / 结论完整 / 抽样 /
+    // 超时 / 错误原因）全部如实落盘，不丢信息、不造占位错误文案。
+    static bool ExportReport(const std::string& path, const qc::QcRunResult& run);
 
-    // 按扩展名自动选格式；认不出来时退回 JSON。
+    // 按扩展名自动选格式；认不出来时返回 false 且不落文件。
     static bool ExportAuto(const std::string& path, const QcExportBundle& bundle);
     static bool Export(const std::string& path, const QcExportBundle& bundle, qc::QcReportFormat format);
 
@@ -105,12 +116,15 @@ public:
     static bool ExportComparisonCsv(const std::string& path, const qc::QcComparison& comparison);
     static bool ExportComparisonHtml(const std::string& path, const qc::QcComparison& comparison);
     static bool ExportComparisonText(const std::string& path, const qc::QcComparison& comparison);
+    static QcPdfExportResult ExportComparisonPdf(const std::string& path, const qc::QcComparison& comparison);
 
     // ---- 批量汇总 ----
     static bool ExportBatchSummaryAuto(const std::string& path, const QcBatchSummaryInput& input);
     static bool ExportBatchSummaryJson(const std::string& path, const QcBatchSummaryInput& input);
     static bool ExportBatchSummaryCsv(const std::string& path, const QcBatchSummaryInput& input);
     static bool ExportBatchSummaryHtml(const std::string& path, const QcBatchSummaryInput& input);
+    static bool ExportBatchSummaryText(const std::string& path, const QcBatchSummaryInput& input);
+    static QcPdfExportResult ExportBatchSummaryPdf(const std::string& path, const QcBatchSummaryInput& input);
 
     // BatchQcRun -> QcBatchSummaryInput
     static QcBatchSummaryInput MakeBatchSummary(const std::string& root, const qc::BatchQcRun& run,
@@ -122,6 +136,7 @@ public:
     static std::string BuildJson(const QcExportBundle& bundle);
     static std::string BuildComparisonText(const qc::QcComparison& comparison);
     static std::string BuildComparisonHtml(const qc::QcComparison& comparison);
+    static std::string BuildBatchSummaryText(const QcBatchSummaryInput& input);
 };
 
 // 生成导出文件名：<base> + <扩展名>（调用方负责目录存在）

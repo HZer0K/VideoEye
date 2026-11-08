@@ -60,8 +60,10 @@ std::string QcReportOutputPath(const std::string& directory, const std::string& 
 
 bool QcReportExporter::ExportComparisonAuto(const std::string& path, const qc::QcComparison& comparison) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
+    // 认不出的扩展名不能退回 JSON：那会写下一个"叫 .xyz 的 JSON 文件"，
+    // 调用方 / 下游按扩展名读必然出错。显式拒绝，由调用方决定换格式还是提示。
     if (!qc::QcReportFormatFromPath(path, format))
-        format = qc::QcReportFormat::Json;
+        return false;
     switch (format) {
     case qc::QcReportFormat::Json:
         return ExportComparisonJson(path, comparison);
@@ -72,7 +74,7 @@ bool QcReportExporter::ExportComparisonAuto(const std::string& path, const qc::Q
     case qc::QcReportFormat::Text:
         return ExportComparisonText(path, comparison);
     case qc::QcReportFormat::Pdf:
-        return ExportComparisonText(path, comparison);
+        return ExportComparisonPdf(path, comparison).ok;
     }
     return false;
 }
@@ -121,7 +123,7 @@ QcBatchSummaryInput QcReportExporter::MakeBatchSummary(const std::string& root, 
 bool QcReportExporter::ExportBatchSummaryAuto(const std::string& path, const QcBatchSummaryInput& input) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
     if (!qc::QcReportFormatFromPath(path, format))
-        format = qc::QcReportFormat::Json;
+        return false;
     switch (format) {
     case qc::QcReportFormat::Json:
         return ExportBatchSummaryJson(path, input);
@@ -130,9 +132,9 @@ bool QcReportExporter::ExportBatchSummaryAuto(const std::string& path, const QcB
     case qc::QcReportFormat::Html:
         return ExportBatchSummaryHtml(path, input);
     case qc::QcReportFormat::Text:
-        return ExportBatchSummaryCsv(path, input);
+        return ExportBatchSummaryText(path, input);
     case qc::QcReportFormat::Pdf:
-        return ExportBatchSummaryHtml(path, input);
+        return ExportBatchSummaryPdf(path, input).ok;
     }
     return false;
 }
@@ -163,10 +165,23 @@ bool QcReportExporter::ExportReport(const std::string& path, const model::QcRepo
     QcExportBundle bundle;
     bundle.profile_id = "default";
     bundle.profile_name = "默认规则";
-    bundle.run.ok = report.completed;
+    // ⚠️ 不要把 run.ok 绑成 report.completed：这两个是**独立的完整性维度**。
+    //    run.ok = 分析是否跑完（结论层事实一），report.completed = 结论是否完整
+    //    （事实二）。绑起来会让五格式里的「分析成功 / 结论完整」永远同值，
+    //    抽样且未跑完这类真实状态就再也表达不出来了。
+    //    本入口的契约是「调用方只在分析确实跑完后才调它」，所以 run.ok 恒 true；
+    //    timed_out / error 没有来源，保持默认值（false / 空），绝不伪造占位文案。
+    bundle.run.ok = true;
     bundle.run.report = report;
-    if (!bundle.run.ok)
-        bundle.run.error = "分析未完成";
+    bundle.has_comparison = false;
+    return ExportAuto(path, bundle);
+}
+
+bool QcReportExporter::ExportReport(const std::string& path, const qc::QcRunResult& run) {
+    QcExportBundle bundle;
+    bundle.profile_id = run.profile_id.empty() ? "default" : run.profile_id;
+    bundle.profile_name = "默认规则"; // 只有裸 run 时没有 profile 名称可用
+    bundle.run = run;                 // 五个完整性标志全部原样带过去
     bundle.has_comparison = false;
     return ExportAuto(path, bundle);
 }
@@ -174,7 +189,7 @@ bool QcReportExporter::ExportReport(const std::string& path, const model::QcRepo
 bool QcReportExporter::ExportAuto(const std::string& path, const QcExportBundle& bundle) {
     qc::QcReportFormat format = qc::QcReportFormat::Json;
     if (!qc::QcReportFormatFromPath(path, format))
-        format = qc::QcReportFormat::Json;
+        return false;
     return Export(path, bundle, format);
 }
 

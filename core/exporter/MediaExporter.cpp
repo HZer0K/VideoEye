@@ -630,6 +630,17 @@ public:
         return end_ms_;
     }
 
+    // 用户是否**明确**指定了终点。
+    //
+    // ⭐⭐ end_ms_ 在没指定 end 时等于容器声明的时长，它只是进度分母，绝不能拿来裁包：
+    // B 帧重排、时基精度、fMP4 元数据少报都会让尾包的 PTS 略超出声明时长。
+    // 实测外部语料 fragmented_captions_h265.mp4（声明 2035.367 ms、末包 PTS
+    // 2068.73 ms）曾因此被整包丢掉 2 个包，还提前终止了读取循环。编码模式的
+    // FrameOutside 早就有 requested_end_ms_ > 0 守护，拷贝模式这里漏了。
+    bool HasExplicitEnd() const {
+        return requested_end_ms_ > 0;
+    }
+
 private:
     qint64 start_ms_ = 0;
     qint64 end_ms_ = 0;
@@ -749,8 +760,9 @@ bool PacketPump::HandlePacket() {
         return true;
     }
 
-    // 区间终点检查
-    if (range_.end_ms() > 0 && pkt_pts_ms != AV_NOPTS_VALUE && pkt_pts_ms > range_.end_ms()) {
+    // 区间终点检查：只在用户明确指定 end 时生效。没指定时 end_ms() 是容器声明
+    // 时长，拿它当阈值会把 PTS 略超声明时长的真实尾帧裁掉（见 HasExplicitEnd）。
+    if (range_.HasExplicitEnd() && pkt_pts_ms != AV_NOPTS_VALUE && pkt_pts_ms > range_.end_ms()) {
         av_packet_unref(pkt_);
         reached_end_ = true;
         return false;

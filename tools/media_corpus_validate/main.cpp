@@ -2,7 +2,18 @@
 //   1) FormatDetector 魔数/扩展名格式检测
 //   2) ContainerStructureAnalyzer 容器结构解析（含 FFmpeg 通用回退）
 //   3) MediaInfoAnalyzer 媒体信息解析（FFmpeg 打开 + 探测 + 文本输出）
+//   4) truth_*：同一个进程内用**同版本 libavformat** 独立再打开一次，直读原始字段
 // 输出 TSV，供 scripts/validate_corpus.py 与 INDEX.tsv 比对并设阈值门禁。
+//
+// 为什么要 truth_*（切片 2）：结论语义门禁原先拿 PATH 里的 ffprobe 6.1 当真值，
+// 而产品链接 8.1.3，11 条已知差异全是「工具版本噪音」。预编译包只给 DLL 不给
+// ffprobe.exe，所以改成 validator 自己用同一套 8.1.3 头文件/库直读原始
+// AVFormatContext 字段。取值路径与 MediaInfoAnalyzer 的文本组装 + 文本抽取完全
+// 独立（一个读 par->width，一个经 FormatFromContext 写文本再 ParseMediaInfoText
+// 读回来），因此仍能抓到格式化/抽取层的错误；但它不再是另一个 FFmpeg 版本。
+//
+// ⚠️ 新列一律追加到表尾，原有 29 列的顺序一个都不能动（离线脚本按列名读，
+//    但历史 results.tsv 与人工诊断都按列号，顺序漂移会让所有旧结论失效）。
 //
 // 这个工具不进默认构建：需要一棵外部语料树（几 GB 到几十 GB），PR 流程不跑它，
 // nightly / 本地用 --index/--root 指到语料后由脚本驱动。编译开关:
@@ -10,7 +21,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -28,10 +38,19 @@
 #include "core/analysis/container/ContainerStructureAnalyzer.h"
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
+#include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "infrastructure/logging/Logger.h"
+#include "tools/media_corpus_validate/MediaInfoFields.h"
 
 extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libavutil/display.h>
 #include <libavutil/log.h>
+#include <libavutil/pixdesc.h>
+#include <libavutil/samplefmt.h>
+#include <libavutil/time.h>
 }
 
 namespace {
@@ -136,107 +155,139 @@ std::vector<IndexRow> LoadIndex(const std::string& index_path, const std::string
     return rows;
 }
 
-// 把 MediaInfoAnalyzer 的 "Duration : 1 min 27 s 336 ms" 解析回秒数。
-double ParseHumanDuration(const std::string& text) {
-    double seconds = 0.0;
-    size_t pos = 0;
-    while (pos < text.size()) {
-        while (pos < text.size() && (text[pos] == ' '))
-            ++pos;
-        size_t number_start = pos;
-        while (pos < text.size() && (std::isdigit(static_cast<unsigned char>(text[pos])) || text[pos] == '.'))
-            ++pos;
-        if (number_start == pos)
-            break;
-        double value = std::atof(text.substr(number_start, pos - number_start).c_str());
-        while (pos < text.size() && text[pos] == ' ')
-            ++pos;
-        size_t unit_start = pos;
-        while (pos < text.size() && std::isalpha(static_cast<unsigned char>(text[pos])))
-            ++pos;
-        const std::string unit = text.substr(unit_start, pos - unit_start);
-        if (unit == "h")
-            seconds += value * 3600.0;
-        else if (unit == "min")
-            seconds += value * 60.0;
-        else if (unit == "s")
-            seconds += value;
-        else if (unit == "ms")
-            seconds += value / 1000.0;
-        else
-            break;
-    }
-    return seconds;
+// ---- 同版本 libavformat 独立真值 ----------------------------------------
+//
+// 这里刻意**不**复用 MediaInfoAnalyzer 的 Open()：那会变成自证。自己 alloc/open/
+// 探测一次，直接读 AVFormatContext / AVCodecParameters 的原始字段，再与
+// 「FormatFromContext 写文本 → ParseMediaInfoText 读回来」的 mi_* 列比对。
+// 验证目标是结论展示链路（单位、时基、字段错配、格式化精度），不是 FFmpeg 探测
+// 本身的正确性；因此探测参数与产品保持一致，避免把参数差异误当成产品缺陷。
+
+std::string AvformatVersionString() {
+    const unsigned v = avformat_version();
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%u.%u.%u", (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+    return buf;
 }
 
-// 从 MediaInfo 文本中抽取 General 的 Duration、第一条视频/音频的 codec/宽高。
-struct MediaInfoFields {
-    double duration_s = 0.0;
-    std::string video_codec;
-    int width = 0;
-    int height = 0;
-    std::string audio_codec;
-    int audio_sample_rate = 0;
-    int audio_channels = 0;
+std::string CodecTruthName(AVCodecID id) {
+    const char* name = avcodec_get_name(id);
+    return (name && *name) ? name : "";
+}
+
+int AudioBitDepthTruth(const AVCodecParameters* par) {
+    if (par->bits_per_raw_sample > 0)
+        return par->bits_per_raw_sample;
+    const AVSampleFormat sample_fmt = static_cast<AVSampleFormat>(par->format);
+    if (av_sample_fmt_is_planar(sample_fmt) || par->format >= 0)
+        return av_get_bytes_per_sample(sample_fmt) * 8;
+    return 0;
+}
+
+// 与 FormatFromContext 的旋转判定同口径（只认 90/180/270 三种标准矩阵）。
+// 矩阵算法本身的正确性由 MediaInfoFormatTests 守，这里比的是「文本抽取有没有读对」。
+double RotationTruth(const AVCodecParameters* par) {
+    const AVPacketSideData* sd =
+        av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+    if (!sd || sd->size < 36)
+        return 0.0;
+    const int32_t* m = reinterpret_cast<const int32_t*>(sd->data);
+    if (m[0] == 0 && m[1] == 65536)
+        return 90.0;
+    if (m[0] == 0 && m[1] == -65536)
+        return 270.0;
+    if (m[0] == -65536 && m[1] == 0)
+        return 180.0;
+    return 0.0;
+}
+
+struct TruthOutcome {
+    corpus_fields::TruthFields fields;
+    bool ok = false;
 };
 
-std::string Trim(const std::string& s) {
-    size_t b = s.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    size_t e = s.find_last_not_of(" \t\r");
-    return s.substr(b, e - b + 1);
-}
+TruthOutcome ReadTruth(const std::string& path, long long timeout_ms,
+                       const std::shared_ptr<std::atomic<bool>>& cancel) {
+    TruthOutcome out;
+    AVFormatContext* fmt = avformat_alloc_context();
+    if (!fmt)
+        return out;
 
-MediaInfoFields ParseMediaInfoText(const std::string& text) {
-    MediaInfoFields fields;
-    std::string section;
-    bool have_duration = false;
-    std::istringstream ss(text);
-    std::string line;
-    while (std::getline(ss, line)) {
-        const std::string trimmed = Trim(line);
-        if (trimmed.empty())
+    videoeye::ffmpeg_io::AvInterruptState interrupt;
+    interrupt.cancel = cancel.get();
+    const int64_t budget_us = static_cast<int64_t>(timeout_ms) * 1000;
+    videoeye::ffmpeg_io::AttachInterrupt(fmt, interrupt, budget_us);
+    fmt->probesize = 32 * 1024 * 1024;
+    fmt->max_analyze_duration = 5 * AV_TIME_BASE;
+
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) {
+        // avformat_open_input 失败时会自行释放并把 *ps 置空；再 free(NULL) 是安全的，
+        // 与 MediaInfoAnalyzer::Open 的写法保持一致。
+        avformat_free_context(fmt);
+        return out;
+    }
+    interrupt.deadline_us = av_gettime() + budget_us;
+    // 与产品一致：探测失败仍保留已探到的部分信息，不把「真值」整体判成缺失。
+    (void)avformat_find_stream_info(fmt, nullptr);
+
+    corpus_fields::TruthFields& f = out.fields;
+    if (fmt->duration > 0 && fmt->duration != AV_NOPTS_VALUE)
+        f.duration_s = static_cast<double>(fmt->duration) / static_cast<double>(AV_TIME_BASE);
+    if (fmt->iformat && fmt->iformat->name)
+        f.format = fmt->iformat->name;
+    f.stream_count = static_cast<int>(fmt->nb_streams);
+    if (fmt->bit_rate > 0)
+        f.overall_bitrate_bps = fmt->bit_rate;
+
+    bool have_video = false;
+    bool have_audio = false;
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        const AVStream* st = fmt->streams[i];
+        if (!st || !st->codecpar)
             continue;
-        if (trimmed.compare(0, 4, "Vide") == 0 && trimmed.find(':') == std::string::npos) {
-            section = "video";
-            continue;
-        }
-        if (trimmed.compare(0, 5, "Audio") == 0 && trimmed.find(':') == std::string::npos) {
-            section = "audio";
-            continue;
-        }
-        if (trimmed.compare(0, 7, "General") == 0 && trimmed.find(':') == std::string::npos) {
-            section = "general";
-            continue;
-        }
-        const size_t colon = trimmed.find(':');
-        if (colon == std::string::npos)
-            continue;
-        const std::string key = Trim(trimmed.substr(0, colon));
-        const std::string value = Trim(trimmed.substr(colon + 1));
-        if (key == "Duration") {
-            if (section != "general" || have_duration)
-                continue;
-            fields.duration_s = ParseHumanDuration(value);
-            have_duration = true;
-        } else if (section == "video") {
-            if (key == "Format" && fields.video_codec.empty())
-                fields.video_codec = value;
-            else if (key == "Width")
-                fields.width = std::atoi(value.c_str());
-            else if (key == "Height")
-                fields.height = std::atoi(value.c_str());
-        } else if (section == "audio") {
-            if (key == "Format" && fields.audio_codec.empty())
-                fields.audio_codec = value;
-            else if (key == "Sample rate")
-                fields.audio_sample_rate = std::atoi(value.c_str());
-            else if (key == "Channels")
-                fields.audio_channels = std::atoi(value.c_str());
+        const AVCodecParameters* par = st->codecpar;
+        if (par->codec_type == AVMEDIA_TYPE_VIDEO && !have_video) {
+            have_video = true;
+            f.video_codec = CodecTruthName(par->codec_id);
+            f.width = par->width;
+            f.height = par->height;
+            if (const char* profile = avcodec_profile_name(par->codec_id, par->profile))
+                f.video_profile = profile;
+            if (par->level != AV_LEVEL_UNKNOWN && par->level != 0)
+                f.video_level = par->level;
+            if (const char* pix = av_get_pix_fmt_name(static_cast<AVPixelFormat>(par->format)))
+                f.pix_fmt = pix;
+            f.frame_rate = av_q2d(st->avg_frame_rate);
+            if (st->nb_frames > 0)
+                f.frame_count = st->nb_frames;
+            if (par->bit_rate > 0)
+                f.video_bitrate_bps = par->bit_rate;
+            if (par->color_space != AVCOL_SPC_UNSPECIFIED)
+                if (const char* n = av_color_space_name(par->color_space))
+                    f.color_space = n;
+            if (par->color_primaries != AVCOL_PRI_UNSPECIFIED)
+                if (const char* n = av_color_primaries_name(par->color_primaries))
+                    f.color_primaries = n;
+            if (par->color_trc != AVCOL_TRC_UNSPECIFIED)
+                if (const char* n = av_color_transfer_name(par->color_trc))
+                    f.color_transfer = n;
+            f.rotation = RotationTruth(par);
+        } else if (par->codec_type == AVMEDIA_TYPE_AUDIO && !have_audio) {
+            have_audio = true;
+            f.audio_codec = CodecTruthName(par->codec_id);
+            if (const char* n = av_get_sample_fmt_name(static_cast<AVSampleFormat>(par->format)))
+                f.sample_fmt = n;
+            f.sample_rate = par->sample_rate;
+            f.channels = par->ch_layout.nb_channels;
+            f.bit_depth = AudioBitDepthTruth(par);
+            if (par->bit_rate > 0)
+                f.audio_bitrate_bps = par->bit_rate;
         }
     }
-    return fields;
+
+    avformat_close_input(&fmt);
+    out.ok = true;
+    return out;
 }
 
 std::string JoinStreams(const std::vector<videoeye::model::ContainerStreamInfo>& streams) {
@@ -250,7 +301,9 @@ std::string JoinStreams(const std::vector<videoeye::model::ContainerStreamInfo>&
 }
 
 struct Record {
-    std::string line;
+    std::string line; // 前三段 + 扩展 mi_*；truth_* 由第二阶段追加
+    std::string path;
+    bool need_truth = false;
     long long elapsed_ms = 0;
 };
 
@@ -265,7 +318,7 @@ void Progress(const std::string& phase, const std::string& path) {
     g_progress.flush();
 }
 
-void ProcessOne(const IndexRow& row, long long timeout_ms, std::vector<Record>& out) {
+void ProcessOne(const IndexRow& row, long long timeout_ms, bool truth_enabled, std::vector<Record>& out) {
     const auto t0 = Clock::now();
     Progress("start", row.path);
     std::string fields;
@@ -305,7 +358,7 @@ void ProcessOne(const IndexRow& row, long long timeout_ms, std::vector<Record>& 
     add(container_timeout.TimedOut() ? "1" : "0");
 
     // ---- 3) 媒体信息解析 ----
-    MediaInfoFields media_fields;
+    corpus_fields::MediaInfoFields media_fields;
     bool media_ok = false;
     bool media_timed_out = false;
     // 清单不再跳过：MediaInfoAnalyzer 已在入口拒绝 HLS/DASH 清单（见
@@ -322,29 +375,75 @@ void ProcessOne(const IndexRow& row, long long timeout_ms, std::vector<Record>& 
         add(media_ok ? "1" : "0");
         add(media_ok ? "" : media_info.GetLastError());
         if (media_ok)
-            media_fields = ParseMediaInfoText(media_info.GetCompleteInfo());
+            media_fields = corpus_fields::ParseMediaInfoText(media_info.GetCompleteInfo());
         media_timed_out = media_timeout.TimedOut();
     }
-    char duration_buf[64];
-    std::snprintf(duration_buf, sizeof(duration_buf), "%.3f", media_fields.duration_s);
-    add(duration_buf);
-    add(media_fields.video_codec);
-    add(std::to_string(media_fields.width));
-    add(std::to_string(media_fields.height));
-    add(media_fields.audio_codec);
-    add(std::to_string(media_fields.audio_sample_rate));
-    add(std::to_string(media_fields.audio_channels));
+    // 原有 7 个 mi_* 列的顺序是切片 1 定的，与 FieldNames() 的前 7 项不同，
+    // 必须按 LegacyMiColumnOrder() 映射，不能图省事直接取 columns[0..6]。
+    const auto mi_columns = corpus_fields::ToColumns(media_fields);
+    for (const size_t index : corpus_fields::LegacyMiColumnOrder())
+        add(mi_columns[index]);
     add(media_timed_out ? "1" : "0");
 
     const auto t1 = Clock::now();
     const long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     add(std::to_string(elapsed));
 
+    // ---- 4) 追加扩展 mi_* 列（表尾追加，表头与这里必须逐列同序）----
+    for (const auto& value : corpus_fields::ExtendedColumns(media_fields))
+        add(value);
+
     Record record;
     record.line = fields;
+    record.path = row.path;
+    record.need_truth = truth_enabled && media_ok;
     record.elapsed_ms = elapsed;
     out.push_back(std::move(record));
-    Progress("done", row.path);
+    Progress("parsed", row.path);
+}
+
+// ---- 第二阶段：同版本 libavformat 独立真值采集 ---------------------------
+//
+// ❗ 不要把它塞回 ProcessOne。四段解析挤在同一批 8 线程里时，真值采集的
+// FFmpeg 打开/探测会直接抢走同一线程后续文件的 struct/media CPU 预算。
+// 分两阶段后可用性判据只反映前三条链路，真值采集再慢也不会污染它们。
+// 注意这不能消除「20 s 单阶段预算贴着 orange.jxl 固有耗时」的边界 flaky，
+// 那由 validate_corpus.py --timeout-ms 按实测余量解决。
+void CollectTruth(std::vector<Record>& records, long long timeout_ms, int jobs, bool truth_enabled) {
+    const std::string version = AvformatVersionString();
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < jobs; ++t) {
+        threads.emplace_back([&] {
+            while (true) {
+                const size_t i = next.fetch_add(1);
+                if (i >= records.size())
+                    break;
+                Record& record = records[i];
+                TruthOutcome truth;
+                if (truth_enabled && record.need_truth) {
+                    TimeoutFlag truth_timeout;
+                    truth_timeout.Arm(timeout_ms);
+                    truth = ReadTruth(record.path, timeout_ms, truth_timeout.flag());
+                    truth_timeout.Finish();
+                    if (truth_timeout.TimedOut())
+                        truth.ok = false;
+                }
+                if (!truth.ok)
+                    truth.fields = corpus_fields::TruthFields{}; // 没拿到可靠真值就不要半截数字
+                std::string tail;
+                auto add = [&tail](const std::string& value) { tail += Escape(value) + "\t"; };
+                for (const auto& value : corpus_fields::ToColumns(truth.fields))
+                    add(value);
+                add(truth.ok ? "1" : "0");
+                add(version);
+                record.line += tail;
+                Progress("done", record.path);
+            }
+        });
+    }
+    for (auto& thread : threads)
+        thread.join();
 }
 
 } // namespace
@@ -357,7 +456,10 @@ int main(int argc, char** argv) {
     int jobs = 8;
     int limit = 0;
     int skip = 0;
-    long long timeout_ms = 20000;
+    long long timeout_ms = 30000; // 与 validate_corpus.py 一致；慢样本见脚本里的实测说明
+    // truth 列始终出现在表头（离线脚本按列名读，表结构必须稳定）；--no-truth
+    // 只是跳过真值采集的 IO，用于只想快速跑可用性门禁的场合。
+    bool truth_enabled = true;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -377,12 +479,15 @@ int main(int argc, char** argv) {
             skip = std::max(0, std::atoi(argv[++i]));
         else if (arg == "--timeout-ms" && i + 1 < argc)
             timeout_ms = std::atoll(argv[++i]);
+        else if (arg == "--no-truth")
+            truth_enabled = false;
     }
 
     if (index_path.empty() || root.empty()) {
         std::cerr << "usage: media_corpus_validate --index <INDEX.tsv> --root <corpus-root>\n"
                      "       [--out results.tsv] [--jobs N] [--limit N] [--skip N]\n"
-                     "       [--timeout-ms N] [--progress progress.log]\n"
+                     "       [--timeout-ms N] [--progress progress.log] [--no-truth]\n"
+                     "       (--no-truth 跳过同版本 libavformat 真值采集，列仍保留但为空)\n"
                      "通常由 scripts/validate_corpus.py 驱动，不必手敲。\n";
         return 2;
     }
@@ -419,7 +524,7 @@ int main(int argc, char** argv) {
                 const size_t i = next.fetch_add(1);
                 if (i >= total)
                     break;
-                ProcessOne(rows[i], timeout_ms, per_thread[static_cast<size_t>(t)]);
+                ProcessOne(rows[i], timeout_ms, truth_enabled, per_thread[static_cast<size_t>(t)]);
                 const size_t completed = done.fetch_add(1) + 1;
                 if (completed % 200 == 0) {
                     std::fprintf(stderr, "[%zu/%zu]\n", completed, total);
@@ -437,12 +542,20 @@ int main(int argc, char** argv) {
             merged.push_back(std::move(record));
     }
 
+    // 三段解析全部结束后才采真值：阶段隔离，避免与 struct/media 抢 CPU 预算。
+    CollectTruth(merged, timeout_ms, jobs, truth_enabled);
+
     std::ofstream out(out_path, std::ios::binary);
     out << "path\tcategory\tidx_container\tidx_codec\tidx_duration_s\tidx_resolution\tidx_size_bytes\tidx_parse\t"
            "detected_format\tdetected_enum\tstruct_ok\tstruct_valid\tstruct_format_name\tstruct_error\t"
            "struct_stream_count\tstruct_streams\tstruct_summary\tstruct_timed_out\tmi_ok\tmi_error\tmi_duration_s\t"
            "mi_video_codec\tmi_width\tmi_height\tmi_audio_codec\tmi_sample_rate\tmi_channels\tmi_timed_out\telapsed_"
-           "ms\n";
+           "ms\t";
+    for (const auto& name : corpus_fields::ExtendedFieldNames())
+        out << "mi_" << name << "\t";
+    for (const auto& name : corpus_fields::FieldNames())
+        out << "truth_" << name << "\t";
+    out << "truth_ok\ttruth_avformat_version\n";
     for (const auto& record : merged)
         out << record.line << "\n";
     out.close();

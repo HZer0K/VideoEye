@@ -29,8 +29,10 @@
 #include <string>
 
 #include "core/domain/model/RepairRequest.h"
+#include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairEngine.h"
 #include "core/repair/RepairExecutor.h"
+#include "core/repair/RepairFragmentForensics.h"
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPlanner.h"
 #include "core/repair/RepairUtils.h"
@@ -1239,4 +1241,44 @@ TEST(RepairEngine, InterleavedPlainMdatWithoutMoovStillNeedsReference) {
     EXPECT_EQ(result.status, RepairBusinessStatus::NeedsReference) << ToString(result.status) << " " << result.summary;
     EXPECT_FALSE(result.output_published);
     EXPECT_FALSE(result.diagnosis.blocking_reasons.empty());
+}
+
+// 覆盖范围的「实测值」必须能被独立取证复算。
+//
+// FragmentedSegmentsProduceMeasuredForensics 只断言 bytes_scanned > 0，把实现换成
+// 「顶层盒大小之和」或整个文件大小照样全绿；reached_eof 也只断言为 true，但那条
+// 在缺 moov 时恰好是派生式 parse_ok && found_moov 会给出 false，所以仍有判别力。
+// 这里把取证器独立调一遍当作真值，逐字段钉死口径，并显式校验三种值确实能区分
+// （口径重合时用例自己会报「失去判别力」，不会假装通过）。
+TEST(RepairEngine, FragmentCoverageIsMeasuredPayloadBytesNotBoxSizes) {
+    const std::string dir = MakeTempDir("coverage_measured");
+    const auto media = videoeye_test::CreateFragmentedTestMedia(dir, "coverage");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    videoeye::IsobmffFile parsed;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(media.segment_path, parsed)) << parsed.error_message;
+    const auto ev = videoeye::repair::RepairFragmentForensics::Analyze(media.segment_path, parsed, nullptr);
+    ASSERT_TRUE(ev.analyzed) << ev.error;
+    ASSERT_GT(ev.bytes_scanned, 0u);
+    ASSERT_GT(ev.samples_scanned, 0u);
+
+    uint64_t structural_bytes = 0;
+    for (const auto& box : parsed.top_level)
+        structural_bytes += box.size;
+    const uint64_t file_size = FileSize(media.segment_path);
+    EXPECT_NE(ev.bytes_scanned, structural_bytes) << "盒大小之和与实测载荷重合，用例失去判别力";
+    EXPECT_NE(ev.bytes_scanned, file_size) << "文件大小与实测载荷重合，用例失去判别力";
+
+    const RepairResult result =
+        repair::RepairEngine::Run(MakeRequest(media.segment_path, dir + "/out"), nullptr, nullptr);
+    const auto& coverage = result.diagnosis.coverage;
+    EXPECT_EQ(coverage.bytes_scanned, ev.bytes_scanned)
+        << "覆盖范围只能写逐段实扫的 mdat 载荷字节，不能拿盒大小 / 文件大小充数";
+    EXPECT_NE(coverage.bytes_scanned, structural_bytes);
+    EXPECT_NE(coverage.bytes_scanned, file_size);
+    EXPECT_EQ(coverage.packets_scanned, ev.samples_scanned);
+    EXPECT_EQ(coverage.reached_eof, ev.reached_eof);
+    EXPECT_TRUE(coverage.reached_eof) << "缺 moov 的分片序列已实扫到文件尾；用 parse_ok && found_moov 派生会恒 false";
+    EXPECT_FALSE(coverage.truncated_by_budget);
+    EXPECT_EQ(coverage.time_scanned_seconds, ev.estimated_duration_seconds);
 }

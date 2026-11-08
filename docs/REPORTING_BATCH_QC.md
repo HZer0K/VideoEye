@@ -76,7 +76,7 @@ QC 的入口是 GUI 的「报告与批量 QC」页 —— 项目不再提供独�
   并支持选择导出格式。
 - **批量扫描**：选择目录、扩展名、并发数、是否递归、输出目录；运行后表格逐行显示
   文件 / 状态 / 评分 / 结论 / 各类问题计数 / 耗时 / 输出路径，可随时「停止」（已完成的保留）。
-- **导出汇总**：把批量结果聚合成 CSV/JSON/HTML 汇总。
+- **导出汇总**：把批量结果聚合成 CSV / JSON / HTML / TXT / PDF 五种汇总（保存对话框可选）。
 
 **五种导出格式的正文只有一处来源**：JSON / CSV / HTML / PDF / TXT 里，PDF 与纯文本共用同一份
 正文（`BuildText` 的逐行输出按显示宽度折行后画进 PDF）。单文件报告的章节共 11 节
@@ -118,6 +118,60 @@ CSV 是"每个问题一行"的数据表，不参与这条章节约定（它的�
 
 这条约束由 `CsvMetaHeaderSeparatesNoIssuesFromNotRun`（先断言两种情形的数据区**确实完全
 一样**，再断言元数据头能区分）与 `CsvCoverageRowsMirrorDimensionStatus` 守着。
+
+### 五格式的完整性块（结论层不能只活在 CSV 里）
+
+CSV 把五个标志分开落，但历史上 JSON 只落 `completed / partial / error`，HTML / TXT / PDF
+更把它们压成一个派生标签（`if(partial) else if(!completed)`）。后果是同一个「后台超时」
+换个格式就成了「分析未跑完」，而「打开失败」与「用户取消」在四种格式里根本分不开；
+`partial && !completed` 同时成立时派生标签还会吞掉「没跑完」。
+
+现在五个标志由 `core/reporting/ReportIntegrityFacts.h` 的 `ReadIntegrityFacts()` 统一读成
+一份事实，各格式只负责渲染：
+
+| 格式 | 落盘位置 | 读法 |
+|---|---|---|
+| CSV | `#结论` 的五个中文键 | 跳过 `#` 行之外，按 `#结论,<键>,<值>` 成对读 |
+| JSON | `summary.integrity` 对象 | `analysis_ok / conclusion_complete / sampled / timed_out / error`（`error` 恒落，空串也是事实） |
+| HTML | `<p class="integrity">` | 一行固定键名文本 |
+| TXT / PDF | 正文紧随「评分」的 `完整性:` 行 | 同一行文本；PDF 折行后去掉空白即可复原 |
+
+历史字段 `summary.completed / partial / error` 保留，避免破坏既有下游；新对象与之同源，
+不会互相矛盾。HTML / TXT / PDF 共用 `IntegrityLineText()`，所以三端只需一套解析口径。
+
+`test_report_format_consistency.cpp` 把 7 种结论态（正常 / 真没问题 / 打开失败 / 用户取消 /
+后台超时 / 抽样 / 抽样且未完成）各导出成 5 种格式，逐份解析回结构化事实，比对条目序列、
+级别、计数与五个完整性标志；另有专测断言 6 种「没命中」的结论态在每种格式里两两可分。
+
+### 扩展名 ↔ 正文的分派契约
+
+Auto 系列（`ExportAuto` / `ExportComparisonAuto` / `ExportBatchSummaryAuto`）按路径扩展名
+选实现，**落盘内容必须与扩展名一致**。历史缺陷：`.pdf` 对比写成 TXT、`.txt` / `.pdf`
+汇总写成 CSV / HTML；更隐蔽的是认不出的扩展名静默退回 JSON，留下「叫 `.xyz` 的 JSON
+文件」，下游按扩展名读必然出错。
+
+现在三个家族都有五种实现，PDF 统一走 `detail::WriteTextAsPdf()`（各家族先生成自己的
+纯文本正文，再按显示宽度折行画进 PDF），因此 TXT 与 PDF 不可能出现两个版本：
+
+| 家族 | JSON | CSV | HTML | TXT | PDF |
+|---|---|---|---|---|---|
+| 单文件报告 | `ExportJson` | `ExportCsv` | `ExportHtml` | `ExportText` / `BuildText` | `ExportPdf` |
+| 双文件对比 | `ExportComparisonJson` | `ExportComparisonCsv` | `ExportComparisonHtml` | `ExportComparisonText` | `ExportComparisonPdf` |
+| 批量汇总 | `ExportBatchSummaryJson` | `ExportBatchSummaryCsv` | `ExportBatchSummaryHtml` | `ExportBatchSummaryText` | `ExportBatchSummaryPdf` |
+
+- 未知扩展名：三个 Auto 一律返回 `false` 且**不落文件**；显式传格式的 `Export(path, bundle, format)`
+  不受此限（格式由调用方决定，文件名也由调用方负责）。
+- `ExportReport(裸 QcReport)` 的能力边界：它没有运行上下文，只在「分析确实跑完了」时由
+  UI 调用，因此 `run.ok` 恒 `true`；`report.completed / partial` 保留自己的结论层语义，
+  **不与 `run.ok` 绑定**（绑起来会让「分析成功 / 结论完整」永远同值），也不伪造
+  `"分析未完成"` 之类的错误原因。需要表达超时 / 打开失败 / 被取消的调用方请走
+  `ExportReport(path, QcRunResult)` 重载，或直接构造 `QcExportBundle` 走 `ExportAuto`。
+
+`test_report_dispatch_consistency.cpp` 让三个家族各导出 5 种扩展名（15 份产物），用**不依赖
+产品代码**的识别器按 BOM / 魔数 / 结构标记判实际格式，再校验结构有效性与本家族独有特征串
+—— 最后一条专门防「格式对了但正文串到别的家族」（例如汇总 PDF 误调单文件 `ExportPdf`，
+产物是合法 PDF，只看魔数发现不了）。另有未知扩展名拒绝、识别器自证判别力、便捷入口
+五维度解耦与 TXT/PDF 同源四组守护。
 
 这条约束由 `test_qc_report_exporter` 的三个用例守着：
 

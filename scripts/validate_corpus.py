@@ -16,13 +16,20 @@
   4. INDEX parse=ok 的媒体成功率低于 --min-media-on-ok（清单除外）
   5. INDEX parse=fail 的"仍然能打开"数量超过 --max-false-accept
   6. 清单文件被 MediaInfoAnalyzer 打开成功、或超时（应被入口拒绝）
+  7. 传了 --semantic-golden 时，结论语义门禁未通过（23 个 mi_* 字段与
+     media_corpus_validate 用同版本 libavformat 独立直读、冻结在 golden 里的
+     truth_* 真值不一致），见 scripts/corpus_semantic_gate.py
 
 报告项（只打印，不判红）：主容器识别率、与 ffprobe 的抽样交叉校验。
+注意第 7 条不是抽样交叉校验的升级版而是另一回事：那条只打印 2 个字段的差异，
+这条按 23 个字段逐样本判红、校验真值未漂移，且带覆盖守护防止"没有事实实时也一路绿"。
+⚠️ 真值来自校验工具输出的 truth_* 列，所以不能用 --no-truth 生成的旧结果表跑语义门禁。
 
 用法：
   python scripts/validate_corpus.py \
       --index D:/Coding/Test/media/INDEX.tsv \
       --root  D:/Coding/Test/media \
+      --semantic-golden tests/corpus/semantic_golden.json \
       --ffprobe-sample 100
 
 工具默认从 build/test-release/bin 找；没有时先构建：
@@ -43,6 +50,7 @@ from collections import Counter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SEMANTIC_GATE = REPO_ROOT / "scripts" / "corpus_semantic_gate.py"
 
 MANIFEST_FORMATS = {"HLS", "DASH"}
 MANIFEST_ERROR_TOKEN = "清单"
@@ -128,6 +136,29 @@ def is_manifest(row: dict) -> bool:
     return row.get("detected_format", "") in MANIFEST_FORMATS
 
 
+def run_semantic_gate(args, results: Path) -> list[str]:
+    """结论语义门禁：可用性全绿不代表报出来的数字对。"""
+    if not args.semantic_golden:
+        return []
+    cmd = [
+        sys.executable, str(SEMANTIC_GATE), "--check",
+        "--index", str(args.index),
+        "--results", str(results),
+        "--root", str(args.root),
+        "--golden", str(args.semantic_golden),
+    ]
+    print(f"[semantic] {' '.join(cmd)}", flush=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    print((proc.stdout or "").rstrip(), flush=True)
+    if proc.stderr:
+        print((proc.stderr or "").rstrip(), flush=True)
+    if proc.returncode == 2:
+        return [f"语义门禁输入不全（golden/结果表/INDEX 缺失）: {args.semantic_golden}"]
+    if proc.returncode != 0:
+        return ["结论语义门禁未通过（见上方 DIFF 与覆盖守护明细）"]
+    return []
+
+
 def container_accuracy(rows: list[dict]) -> None:
     matched = 0
     considered = 0
@@ -200,7 +231,10 @@ def main() -> int:
     parser.add_argument("--tool", default=str(default_tool_path()), help="media_corpus_validate 路径")
     parser.add_argument("--out", default=str(REPO_ROOT / "build" / "corpus_validation" / "results.tsv"))
     parser.add_argument("--jobs", type=int, default=8)
-    parser.add_argument("--timeout-ms", type=int, default=20000, help="单文件单阶段超时")
+    # 单阶段预算。实测 fate-suite/jxl/orange.jxl 前三段就要 28~31 s（单线程），
+    # 8 并发下 struct 阶段在 20~25 s 波动，20 s 会把它反复误判成超时；30 s 给
+    # 并发留约 50% 余量，仍远低于「真卡死不返回」的量级，超时判据保持判红。
+    parser.add_argument("--timeout-ms", type=int, default=30000, help="单文件单阶段超时")
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 条（调试用）")
     parser.add_argument("--skip", type=int, default=0)
     parser.add_argument("--min-struct-on-ok", type=float, default=0.995)
@@ -208,6 +242,8 @@ def main() -> int:
     parser.add_argument("--max-false-accept", type=int, default=60, help="parse=fail 却仍能打开的上限")
     parser.add_argument("--ffprobe-sample", type=int, default=0, help="与 ffprobe 交叉校验的抽样数（0=不做）")
     parser.add_argument("--ffprobe", default="ffprobe")
+    parser.add_argument("--semantic-golden", default="",
+                        help="结论语义真值快照；给了就顺带跑 corpus_semantic_gate.py --check")
     args = parser.parse_args()
 
     out_path = run_validator(args)
@@ -272,6 +308,7 @@ def main() -> int:
 
     container_accuracy(rows)
     ffprobe_crosscheck(rows, args.ffprobe_sample, args.ffprobe)
+    failures += run_semantic_gate(args, out_path)
 
     print(f"\n结果明细: {out_path}")
     if failures:

@@ -44,7 +44,10 @@ std::string FormatDuration(double seconds) {
     if (h > 0 || min > 0)
         out += std::to_string(min) + " min ";
     out += std::to_string(s) + " s";
-    if (h == 0 && total_min == 0)
+    // 只要有余数就带上毫秒。以前只有「不到 1 分钟」才输出 ms，导致 65.79 s
+    // 被写成 "1 min 5 s" —— 媒体信息页时长凭空少近 1 秒，且 >=60 s 时
+    // 全部如此。语料语义门禁在 rec03.act / brstm / cak 上抓到了这一点。
+    if (ms > 0)
         out += " " + std::to_string(ms) + " ms";
     return out;
 }

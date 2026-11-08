@@ -1,6 +1,7 @@
 #include "core/reporting/QcReportExporter.h"
 
 #include "core/reporting/QcReportExporterInternal.h"
+#include "core/reporting/ReportIntegrityFacts.h"
 
 #include <sstream>
 
@@ -100,14 +101,16 @@ void AppendMetaHeader(std::ostringstream& body, const QcExportBundle& bundle) {
 
     // 五个完整性标志分开落，不合成一个"完整性=完整/抽样/未完成"的派生值：
     // 合成之后"打开失败"与"用户取消"会挤进同一个词，而两者的处置方式完全不同。
+    // 值统一取 ReportIntegrityFacts.h 的唯一事实源，别在这里另读一遍 run。
+    const detail::IntegrityFacts integrity = detail::ReadIntegrityFacts(bundle);
     MetaRow verdict(body, "结论");
     verdict.Number("评分", Fixed(report.score, 1))
         .Text("结论", report.verdict)
-        .Flag("分析成功", run.ok)           // 打开 + 分析是否正常返回
-        .Flag("结论完整", report.completed) // 是否覆盖完整扫描（取消 / 失败为否）
-        .Flag("抽样扫描", report.partial)   // 命中包数上限，只看了部分数据
-        .Flag("超时放弃", run.timed_out)
-        .Text("错误原因", run.error);
+        .Flag("分析成功", integrity.analysis_ok)         // 打开 + 分析是否正常返回
+        .Flag("结论完整", integrity.conclusion_complete) // 是否覆盖完整扫描（取消 / 失败为否）
+        .Flag("抽样扫描", integrity.sampled)             // 命中包数上限，只看了部分数据
+        .Flag("超时放弃", integrity.timed_out)
+        .Text("错误原因", integrity.error);
     body << "\n";
 
     MetaRow counts(body, "统计");

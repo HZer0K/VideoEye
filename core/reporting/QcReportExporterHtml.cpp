@@ -1,6 +1,7 @@
 #include "core/reporting/QcReportExporter.h"
 
 #include "core/reporting/QcReportExporterInternal.h"
+#include "core/reporting/ReportIntegrityFacts.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -213,8 +214,12 @@ void AppendTitleAndMeta(std::ostringstream& out, const QcExportBundle& bundle, c
                         const model::QcReport& report) {
     out << "  <h1>VideoEye QC 报告</h1>\n";
     out << "  <p class=\"meta\">模板: " << Html(bundle.profile_name) << " (" << Html(bundle.profile_id)
-        << ") ｜ 生成时间: " << Html(report.generated_at) << " ｜ 分析耗时: " << Fixed(run.elapsed_ms, 0) << " ms"
-        << (report.completed ? (report.partial ? " ｜ <b>抽样完成·非全量</b>" : "") : " ｜ <b>分析未跑完</b>")
+        << ") ｜ 生成时间: " << Html(report.generated_at) << " ｜ 分析耗时: " << Fixed(run.elapsed_ms, 0)
+        << " ms</p>\n";
+    // 完整性标志分开落，不再用 if(partial) else if(!completed) 的派生标签：
+    // 那个写法既丢掉 run.ok / run.timed_out，又会在 partial && !completed 时
+    // 只显示「抽样」而吞掉「没跑完」。与 TXT / PDF 共用同一行文本，天然同源。
+    out << "  <p class=\"integrity\">" << Html(detail::IntegrityLineText(detail::ReadIntegrityFacts(bundle)))
         << "</p>\n";
 }
 
