@@ -154,6 +154,16 @@
       }
     },
     {
+      "name": "linux-coverage",
+      "displayName": "Linux/macOS 覆盖率摸底（gcov + gcovr）",
+      "inherits": "linux-test-base",
+      "binaryDir": "${sourceDir}/build/test-coverage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VIDEOEYE_ENABLE_COVERAGE": "ON"
+      }
+    },
+    {
       "name": "linux-fuzz",
       "displayName": "Linux libFuzzer 入口（clang + ASan/UBSan，不产出可发布二进制）",
       "inherits": "linux-base",
@@ -204,6 +214,10 @@
       "configurePreset": "linux-test-tsan"
     },
     {
+      "name": "linux-coverage",
+      "configurePreset": "linux-coverage"
+    },
+    {
       "name": "linux-fuzz",
       "configurePreset": "linux-fuzz"
     }
@@ -236,6 +250,18 @@
     {
       "name": "linux-test-debug",
       "configurePreset": "linux-test-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 4,
+        "noTestsAction": "error",
+        "stopOnFailure": true
+      }
+    },
+    {
+      "name": "linux-coverage",
+      "configurePreset": "linux-coverage",
       "output": {
         "outputOnFailure": true
       },

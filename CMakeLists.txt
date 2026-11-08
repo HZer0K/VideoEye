@@ -285,6 +285,30 @@ if(VIDEOEYE_ENABLE_FUZZERS)
 endif()
 
 # ============================================================
+# 覆盖率采集（仅 GCC/Clang）
+#
+# 项目此前没有任何覆盖率采集: 147 组 ctest 全绿只能说明"跑过了", 说明不了
+# "解析层/UI 层还有多少代码从没被任何用例执行过"。打开本开关后 CMake 在编译与
+# 链接期加 --coverage, 产物落 .gcda; CI 的 coverage job 用 gcovr 汇总。
+#
+# 第一轮是**摸底**, 不设硬阈值 —— 先拿到基线, 再按模块逐步收紧。刻意不做成
+# preset 默认开启: 插桩会显著拖慢测试, 日常 test job 不需要。
+# MSVC 没有 --coverage, Windows 侧要用 OpenCppCoverage, 所以这里直接报错,
+# 避免"开了开关却什么都没采集到"的假绿。
+# ============================================================
+option(VIDEOEYE_ENABLE_COVERAGE "生成 gcov 覆盖率数据（仅 GCC/Clang）" OFF)
+if(VIDEOEYE_ENABLE_COVERAGE)
+    if(MSVC)
+        message(FATAL_ERROR
+            "VIDEOEYE_ENABLE_COVERAGE 只支持 GCC/Clang（--coverage）。\n"
+            "Windows 请改用 OpenCppCoverage 或覆盖率 job 的 Linux 路径。")
+    endif()
+    message(STATUS "覆盖率已启用: --coverage 插桩（产物落 .gcda，配合 gcovr 汇总）")
+    add_compile_options(--coverage)
+    add_link_options(--coverage)
+endif()
+
+# ============================================================
 # 依赖: 只有 Qt Widgets 与 FFmpeg（预编译）
 # ============================================================
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -1096,6 +1120,18 @@ option(BUILD_TESTING "Build unit tests" OFF)
 if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ============================================================
+# 真实语料校验工具（离线 / nightly）
+#
+# 这条链路不是单测: 它要一棵外部语料树（几十 GB、数千文件），在 PR 流程里跑不起来。
+# 打开开关后构建 tools/media_corpus_validate，由 scripts/validate_corpus.py 驱动，
+# 与语料自带的 INDEX.tsv 比对并执行阈值门禁。默认 OFF，不拖慢日常构建。
+# ============================================================
+option(VIDEOEYE_BUILD_CORPUS_VALIDATOR "构建真实语料校验工具（需要外部语料树）" OFF)
+if(VIDEOEYE_BUILD_CORPUS_VALIDATOR)
+    add_subdirectory(tools/media_corpus_validate)
 endif()
 
 # ============================================================

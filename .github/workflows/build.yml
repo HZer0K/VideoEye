@@ -580,6 +580,73 @@ jobs:
         if: runner.os == 'Linux'
         run: ctest --preset ${{ matrix.preset }}
 
+  # ─────────────── 覆盖率摸底 ───────────────
+  # 147 组 ctest 全绿只证明"跑过了", 不证明"解析/播放/UI 的代码都被执行过"。
+  # 这个 job 用 gcc --coverage + gcovr 出一份按目录的覆盖率, 先拿基线再逐步收紧。
+  #
+  # 第一轮刻意 **report-only**: 基线未知时挂 fail-under 只会逼着大家把阈值改成 0。
+  # 拿到基线后, 下一步按模块设门槛(优先 core/analysis 解析层), 见
+  # docs/PERFORMANCE.md 与构建说明中的覆盖率小节。
+  #
+  # 只汇总 core/ infrastructure/ ui/: tests 与 third_party 的代码不该算进分母。
+  # (预编译 FFmpeg 是二进制, 本来就没有 .gcda。)
+  coverage:
+    name: Coverage (linux, report-only)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev libgtest-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev \
+            ccache gcovr
+
+      - name: Ensure FFmpeg >= 7.1 (Linux)
+        id: ffmpeg
+        uses: ./.github/actions/ensure-ffmpeg
+
+      - name: Configure (coverage)
+        run: cmake --preset linux-coverage ${{ steps.ffmpeg.outputs.cmake_args }}
+
+      - name: Build (coverage)
+        run: cmake --build --preset linux-coverage
+
+      - name: Run ctest (coverage)
+        run: ctest --preset linux-coverage
+
+      - name: Coverage report (report-only)
+        run: |
+          set -euo pipefail
+          gcovr -r . \
+            --filter 'core/' \
+            --filter 'infrastructure/' \
+            --filter 'ui/' \
+            --exclude 'tests/' \
+            --exclude 'third_party/' \
+            --exclude 'build/' \
+            --xml-pretty --xml coverage.xml \
+            --html-details coverage.html \
+            --txt coverage.txt \
+            --print-summary
+          echo "===== 覆盖率基线 ====="
+          echo "本 job 只产出基线, 不设阈值; 阈值收紧前请先看 coverage.txt 的模块分布。"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage*.html
+            coverage.txt
+
   # ─────────────── 内存 / 数据竞争体检 ───────────────
   # 单独一个 job，不并进 test：sanitizer 会把测试跑得慢一个量级、产出也大，
   # 而且 TSan/ASan 的报错会让 ctest 输出淹没，混在一起没人看得见真正挂的那个。
