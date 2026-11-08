@@ -1135,6 +1135,18 @@ if(VIDEOEYE_BUILD_CORPUS_VALIDATOR)
 endif()
 
 # ============================================================
+# 解析性能与规模基准工具（离线 / nightly）
+#
+# 与语料校验同一定位: 需要额外样本（1 h / 4 h 长视频、>4 GB 截断文件）与较多
+# 机器时间，PR 流程不跑。打开开关后由 scripts/benchmark_analysis.py 驱动，
+# 采集耗时 / 峰值 RSS / 句柄数并与基线 JSON 做阈值比对。默认 OFF。
+# ============================================================
+option(VIDEOEYE_BUILD_ANALYSIS_BENCHMARK "构建解析性能与规模基准工具" OFF)
+if(VIDEOEYE_BUILD_ANALYSIS_BENCHMARK)
+    add_subdirectory(tools/analysis_benchmark)
+endif()
+
+# ============================================================
 # fuzz 入口（阶段 3.3）
 #
 # 独立于 BUILD_TESTING：libFuzzer 不需要 GTest，也不该被"跑不跑单测"这一个

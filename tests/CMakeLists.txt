@@ -460,6 +460,25 @@ add_test(NAME MediaInfoManifestGuardTests COMMAND test_mediainfo_manifest_guard)
 set_tests_properties(MediaInfoManifestGuardTests PROPERTIES TIMEOUT 120)
 
 # ============================================================
+# 测试 4b-3: 解析资源稳定性 (批量吞吐场景)
+# 说明: 连续 open/close 200 次，断言句柄增量 ≤ 4、RSS 增长有界。
+#       单次打开成功不代表批量不泄漏 —— 漏一个 FILE*/AVIO 只有跑到一定
+#       文件数才会以"突然打不开"的形式暴露。阈值与理由见源文件开头。
+# ============================================================
+videoeye_add_test(test_analysis_resource_stability
+    unit/test_analysis_resource_stability.cpp
+)
+target_compile_definitions(test_analysis_resource_stability PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus"
+)
+target_link_libraries(test_analysis_resource_stability PRIVATE
+    VideoEyeAnalysis
+    VideoEyeInfrastructure
+)
+add_test(NAME AnalysisResourceStabilityTests COMMAND test_analysis_resource_stability)
+set_tests_properties(AnalysisResourceStabilityTests PROPERTIES TIMEOUT 300)
+
+# ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
 #
 # TaskManager 本身只依赖 stdlib; 链 VideoEyeInfrastructure 而不是手写清单,
