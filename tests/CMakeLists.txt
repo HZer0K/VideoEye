@@ -2535,6 +2535,30 @@ target_link_libraries(test_repair_safety PRIVATE
 add_test(NAME RepairSafetyTests COMMAND test_repair_safety)
 
 # =================================================
+# 测试：网络源与流媒体健壮性（第五批）
+#
+# 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层
+# （BlockingTcpEndpoint 连协议头都不发）。这里用 HttpTestServer 起可控回环
+# HTTP 服务，覆盖真实世界最常见的失败形态：404、body 截断、响应头回了但
+# body 不来、HLS 分片 404。判据只认 MediaPlayer 的公开终态与预算收敛。
+# 服务端支持 Range（206），避免"MP4 不可 seek"把服务端脚本问题算到被测代码头上。
+# =================================================
+videoeye_add_test(test_network_source_robustness unit/test_network_source_robustness.cpp)
+target_link_libraries(test_network_source_robustness PRIVATE
+    VideoEyePlayback
+    VideoEyeAnalysis
+    VideoEyeInfrastructure
+    Qt6::Core Qt6::Gui)
+target_compile_definitions(test_network_source_robustness PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus"
+)
+# HttpTestServer.h 走 winsock，Windows 上需要显式 ws2_32。
+if(WIN32)
+    target_link_libraries(test_network_source_robustness PRIVATE ws2_32)
+endif()
+add_test(NAME NetworkSourceRobustnessTests COMMAND test_network_source_robustness)
+
+# =================================================
 # 测试：主窗口端到端冒烟（第四批，Qt offscreen）
 #
 # 打开会话的异步链路在纯口径用例里已拆开测过，但没有任何用例把真实的 MainWindow
@@ -2569,6 +2593,10 @@ target_link_libraries(test_main_window_e2e PRIVATE
     VideoEyeDomain
     VideoEyeInfrastructure
     Qt6::Widgets Qt6::Gui Qt6::Core)
+# 本轮新增的 URL 打开用例经 HttpTestServer（winsock），Windows 上需链接 ws2_32。
+if(WIN32)
+    target_link_libraries(test_main_window_e2e PRIVATE ws2_32)
+endif()
 add_test(NAME MainWindowE2ETests COMMAND test_main_window_e2e)
 set_tests_properties(MainWindowE2ETests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

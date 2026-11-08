@@ -25,6 +25,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QPushButton>
 #include <QStatusBar>
@@ -39,6 +40,8 @@
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/ScanTaskBar.h"
+
+#include "HttpTestServer.h"
 
 #ifndef VIDEOEYE_CORPUS_DIR
 #error "本用例依赖真实语料: 需要在 CMake 里定义 VIDEOEYE_CORPUS_DIR"
@@ -59,6 +62,10 @@ constexpr int kCancelBudgetMs = 5000;
 
 QApplication* EnsureApp() {
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    // 本地 HTTP 用例：清掉进程内代理变量，否则系统代理会把 127.0.0.1 的请求改道。
+    qunsetenv("http_proxy");
+    qunsetenv("https_proxy");
+    qputenv("no_proxy", "127.0.0.1,localhost");
     static QApplication* app = [] {
         static int argc = 1;
         static char name[] = "test_main_window_e2e";
@@ -70,6 +77,14 @@ QApplication* EnsureApp() {
 
 QString CorpusPath(const char* relative) {
     return QString(VIDEOEYE_CORPUS_DIR) + QStringLiteral("/") + QString::fromUtf8(relative);
+}
+
+std::string ReadCorpusBytes(const char* relative) {
+    QFile file(CorpusPath(relative));
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QByteArray bytes = file.readAll();
+    return std::string(bytes.constData(), static_cast<size_t>(bytes.size()));
 }
 
 // 泵事件直到 predicate 为真或超时。打开链路的结果都经 Qt 队列投递回 UI 线程，
@@ -237,6 +252,64 @@ TEST(MainWindowE2E, CancelScanThroughTaskBarReturnsToIdle) {
         << "取消后扫描一直不收敛（IsScanRunning 仍为 true）";
     EXPECT_TRUE(PumpUntil([&]() { return !obs.bar->isVisible(); }, kCancelBudgetMs)) << "取消收敛后任务条仍然可见";
     EXPECT_FALSE(obs.bar->IsCancelling()) << "任务条停在「取消中」，没有清掉 cancelling_";
+}
+
+// URL 打开成功：走 OpenSessionController 的通用媒体分支（不是 Raw/PCM），
+// 状态栏、应用栏、首页三处观察点必须一致地落到"已打开"。
+TEST(MainWindowE2E, OpensHttpUrlAndShowsItInAppBar) {
+    EnsureApp();
+
+    const std::string body = ReadCorpusBytes("container/real_h264_aac_faststart.mp4");
+    ASSERT_FALSE(body.empty()) << "缺少真实语料 real_h264_aac_faststart.mp4";
+    videoeye_test::HttpTestServer server({
+        videoeye_test::HttpTestServer::BodyRoute("/clip.mp4", body, "video/mp4"),
+    });
+    ASSERT_TRUE(server.valid()) << "无法启动本地 HTTP 服务";
+
+    MainWindow window;
+    window.show();
+    QApplication::processEvents();
+
+    Observers obs;
+    ASSERT_TRUE(obs.Attach(window));
+
+    const QString url = QString::fromStdString(server.url("/clip.mp4"));
+    ASSERT_TRUE(window.OpenMedia(url, /*autoplay=*/false));
+
+    ASSERT_TRUE(PumpUntil([&]() { return window.statusBar()->currentMessage().contains(QStringLiteral("已打开:")); },
+                          kOpenBudgetMs))
+        << "URL 打开后状态栏没有切到「已打开: …」，实际: " << window.statusBar()->currentMessage().toStdString();
+
+    EXPECT_TRUE(obs.media_path->FullText().contains(QStringLiteral("http://127.0.0.1:")))
+        << "应用栏没有显示 URL: " << obs.media_path->FullText().toStdString();
+    EXPECT_TRUE(obs.overview->HasFile()) << "URL 打开成功但首页没有登记文件";
+}
+
+// URL 404：与本地文件失败同样收尾为"分析模式"，状态栏常驻错误提示、
+// 应用栏标记无法播放 —— 不能停在"正在打开"。
+TEST(MainWindowE2E, HttpNotFoundShowsAnalysisModeHint) {
+    EnsureApp();
+
+    videoeye_test::HttpTestServer server({}); // 未登记路径一律 404
+    ASSERT_TRUE(server.valid());
+
+    MainWindow window;
+    window.show();
+    QApplication::processEvents();
+
+    Observers obs;
+    ASSERT_TRUE(obs.Attach(window));
+
+    ASSERT_TRUE(window.OpenMedia(QString::fromStdString(server.url("/missing.mp4")), /*autoplay=*/false));
+
+    ASSERT_TRUE(PumpUntil(
+        [&]() { return window.statusBar()->currentMessage().contains(QStringLiteral("无法播放 (已进入分析模式)")); },
+        kOpenBudgetMs))
+        << "URL 404 没有给出分析模式提示，实际: " << window.statusBar()->currentMessage().toStdString();
+
+    EXPECT_TRUE(obs.overview->HasFile()) << "分析模式没有登记 URL";
+    EXPECT_TRUE(obs.media_path->FullText().contains(QStringLiteral("无法播放")))
+        << "应用栏没有标记无法播放: " << obs.media_path->FullText().toStdString();
 }
 
 } // namespace
