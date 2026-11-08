@@ -441,6 +441,25 @@ target_link_libraries(test_mediainfo_format PRIVATE VideoEyeAnalysis)
 add_test(NAME MediaInfoFormatTests COMMAND test_mediainfo_format)
 
 # ============================================================
+# 测试 4b-2: MediaInfoAnalyzer 清单入口 (P0 回归)
+# 说明: 真实文件验证发现 dash/hls demuxer 会为清单子资源再开嵌套 AVIO,
+#       外层取消/超时传不进去——本地 mpd 45 s 不返回、live 清单直接崩溃。
+#       这条用例要求在 avformat_alloc_context 之前拒绝清单, 并保留
+#       "普通媒体仍能打开" 的反向断言。2 秒上限是"有没有掉进子资源 IO"的分界。
+# ============================================================
+videoeye_add_test(test_mediainfo_manifest_guard
+    unit/test_mediainfo_manifest_guard.cpp
+)
+target_compile_definitions(test_mediainfo_manifest_guard PRIVATE
+    VIDEOEYE_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus")
+target_link_libraries(test_mediainfo_manifest_guard PRIVATE
+    VideoEyeAnalysis
+    Qt6::Core
+)
+add_test(NAME MediaInfoManifestGuardTests COMMAND test_mediainfo_manifest_guard)
+set_tests_properties(MediaInfoManifestGuardTests PROPERTIES TIMEOUT 120)
+
+# ============================================================
 # 测试 4c: TaskManager (统一后台任务调度) —— 任务 ID / 取消 / 终态 / 过期丢弃
 #
 # TaskManager 本身只依赖 stdlib; 链 VideoEyeInfrastructure 而不是手写清单,

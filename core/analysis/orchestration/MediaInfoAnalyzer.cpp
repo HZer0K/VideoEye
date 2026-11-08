@@ -1,8 +1,9 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
-#include "core/analysis/detail/AnalysisTextUtil.h" // Fixed / StrCat
-#include "core/ffmpeg_io/AvOptions.h"              // 共享 FFmpeg 输入选项构造
-#include "core/ffmpeg_io/FfmpegInterrupt.h"        // 共享 FFmpeg 中断回调
-#include "core/media/streaming/ManifestText.h"     // videoeye::manifest::FileSizeOf
+#include "core/analysis/detail/AnalysisTextUtil.h"      // Fixed / StrCat
+#include "core/analysis/orchestration/FormatDetector.h" // 清单入口识别（扩展名 + 内容嗅探）
+#include "core/ffmpeg_io/AvOptions.h"                   // 共享 FFmpeg 输入选项构造
+#include "core/ffmpeg_io/FfmpegInterrupt.h"             // 共享 FFmpeg 中断回调
+#include "core/media/streaming/ManifestText.h"          // videoeye::manifest::FileSizeOf
 
 #include <algorithm>
 #include <cmath>
@@ -173,6 +174,20 @@ std::string StreamTitle(AVMediaType type) {
     }
 }
 
+/// HLS/DASH 清单识别：先复用 FormatDetector（扩展名 + 文本嗅探，本地无扩展名的
+/// 清单也能认），再补一次查询串感知的扩展名判断 —— FormatDetector 内部的
+/// FileExtension 不剥 URL 的 "?token=..."，网络清单会漏判。
+bool LooksLikeStreamingManifest(const std::string& path) {
+    const model::ContainerFormat fmt = FormatDetector::Detect(path);
+    if (fmt == model::ContainerFormat::HLS || fmt == model::ContainerFormat::DASH)
+        return true;
+    const std::string ext = manifest::ExtensionOf(path);
+    if (ext.empty())
+        return false;
+    const std::vector<std::string>& manifest_exts = FormatDetector::ManifestExtensions();
+    return std::find(manifest_exts.begin(), manifest_exts.end(), ext) != manifest_exts.end();
+}
+
 } // namespace
 
 struct MediaInfoAnalyzer::Impl {
@@ -202,6 +217,17 @@ bool MediaInfoAnalyzer::Open(const std::string& filePath, std::shared_ptr<std::a
     Close();
     if (filePath.empty()) {
         impl_->error = "路径为空";
+        return false;
+    }
+
+    // 清单不能交给 avformat：dash/hls demuxer 会为清单里的子资源再创建嵌套 AVIO
+    // 上下文，外层 interrupt_callback 与超时传不进去。实测本地 DASH 清单超过 45 s
+    // 不返回，个别 live 清单还会让 demuxer 直接崩溃（0xC0000005）；此时取消标志
+    // 也失效，后台线程 join 时会挂住关闭流程。清单分析归「流媒体」页
+    // （StreamingManifestScan），这里在分配上下文之前就拒绝。
+    if (LooksLikeStreamingManifest(filePath)) {
+        impl_->error = "流媒体清单（HLS/DASH）请在流媒体分析页查看";
+        LOG_INFO("MediaInfoAnalyzer: 拒绝流媒体清单 " + filePath);
         return false;
     }
 
