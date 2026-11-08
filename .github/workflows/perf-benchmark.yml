@@ -1,0 +1,180 @@
+# ============================================================
+# 解析性能与规模基准 —— 让"慢了多少 / 句柄是否配平"有机器盯住
+#
+# 背景: tools/analysis_benchmark + scripts/benchmark_analysis.py 已经把
+# 1 h / 4 h / >4 GB / 批量吞吐四类样本的口径定好了，但此前只在本地手动跑。
+# 没人定期跑的门禁等于没有门禁；这里补上 nightly + 手动触发。
+#
+# ❗ 刻意的取舍: 不进 PR 流程。
+#   * 要现做 4 h / >4 GB 样本、要跑几轮规模解析，比单测慢一个量级；
+#   * 共享 runner 的 CPU 抖动会让耗时门禁在 PR 上时红时绿，红多了就没人看。
+#   所以 nightly 放宽倍率（耗时 ×2.0 / RSS ×1.5），PR 侧仍由 build.yml 的单测兜底。
+#
+# 基线按平台分开: 本机 Windows 用 tests/benchmark/baseline_analysis.json，
+# 这个 job 用 tests/benchmark/baseline_analysis_linux_gha.json。跨机器比绝对值
+# 没有意义（MSVC/RelWithDebInfo vs GCC/Release、runner 硬件也不一样）。
+#   * 首次运行（或手动勾选 update_baseline）会以 --update-baseline 生成基线，
+#     产物在 artifact 里 —— 把它提交进仓库后，后续 nightly 才是真正的回退门禁。
+#   * 未生成前 job 仍然门禁超时与句柄泄漏，只是跳过耗时/RSS 比对。
+# ============================================================
+
+name: Performance benchmark
+
+on:
+  schedule:
+    # 每天 02:17 UTC（避开整点，GitHub 定时任务在整点最挤）
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: '要跑的用例，逗号分隔: long_1h,long_4h,large_4gb,corpus_batch'
+        required: false
+        default: 'long_1h,long_4h,large_4gb,corpus_batch'
+      update_baseline:
+        description: '重新生成 Linux 基线（产物在 artifact 里，需要手工提交）'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Parse benchmark (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 与 build.yml 同一套依赖。ffmpeg（CLI）是额外的: 基准样本由
+      # scripts/benchmark_analysis.py 调用 ffmpeg 合成，libav*-dev 不带这个可执行文件。
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev \
+            ffmpeg \
+            ccache
+
+      # 编译缓存: nightly 多数夜晚 HEAD 不变，恢复上一晚的缓存后基本只剩链接。
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-linux-release-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-linux-release-
+
+      - name: Show ccache config
+        run: |
+          ccache --set-config max_size=1G
+          ccache --zero-stats
+
+      # 与 build.yml / fuzz.yml 共用同一个 FFmpeg 准备入口:
+      # 系统 FFmpeg 不够 7.1 时会换成锁定的兜底包，并通过 -DFFMPEG_ROOT 交给 cmake。
+      - name: Ensure FFmpeg >= 7.1
+        id: ffmpeg
+        uses: ./.github/actions/ensure-ffmpeg
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          cmake --preset linux-release \
+            -DVIDEOEYE_BUILD_ANALYSIS_BENCHMARK=ON \
+            ${{ steps.ffmpeg.outputs.cmake_args }}
+
+      - name: Build benchmark tool
+        run: |
+          set -euo pipefail
+          cmake --build --preset linux-release --target analysis_benchmark --parallel "$(nproc)"
+
+      # 门禁的自检: 构建成功但产物路径漂移时，下面的脚本会"找不到工具"而失败 ——
+      # 那还能看见；真正危险的是有人把 option / target 删掉后 job 静默跳过整轮基准。
+      - name: Assert benchmark binary exists
+        run: |
+          set -euo pipefail
+          tool=build/release/bin/analysis_benchmark
+          if [ ! -x "$tool" ]; then
+            echo "::error::没有找到 $tool；VIDEOEYE_BUILD_ANALYSIS_BENCHMARK 或 target 可能被删了"
+            exit 1
+          fi
+          echo "工具: $tool"
+
+      - name: Resolve baseline
+        id: baseline
+        run: |
+          set -euo pipefail
+          path=tests/benchmark/baseline_analysis_linux_gha.json
+          if [ -f "$path" ]; then
+            echo "seed=false" >> "$GITHUB_OUTPUT"
+            echo "使用已提交的 Linux 基线: $path"
+          else
+            echo "seed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::还没有 $path；本次以 --update-baseline 生成，之后请把 artifact 里的文件提交进仓库"
+          fi
+
+      - name: Run benchmark gate
+        env:
+          INPUT_CASES: ${{ inputs.cases }}
+          INPUT_UPDATE_BASELINE: ${{ inputs.update_baseline }}
+          SEED: ${{ steps.baseline.outputs.seed }}
+        run: |
+          set -euo pipefail
+          baseline=tests/benchmark/baseline_analysis_linux_gha.json
+          cases="${INPUT_CASES:-long_1h,long_4h,large_4gb,corpus_batch}"
+          update=""
+          if [ "$SEED" = "true" ] || [ "${INPUT_UPDATE_BASELINE}" = "true" ]; then
+            update="--update-baseline"
+            # 重写基线必须跑全量: 脚本是按"本次跑过的用例"覆盖基线文件的，
+            # 只跑 long_1h 就把另外三个用例从基线里抹掉了，下一晚 nightly 必然红。
+            cases="long_1h,long_4h,large_4gb,corpus_batch"
+          fi
+          python3 scripts/benchmark_analysis.py \
+            --tool build/release/bin/analysis_benchmark \
+            --cases "$cases" \
+            --baseline "$baseline" \
+            --time-ratio 2.0 \
+            --rss-ratio 1.5 \
+            $update
+
+      # 门禁自检: 阈值门禁最常见的失效方式是"比对了，但算错了/漏判了，照样 exit 0"。
+      # 这里用一个必然超限的耗时倍率跑最小用例，脚本必须非 0 退出 —— 否则这条门禁
+      # 只是打印了几行数字，之后的 nightly 全绿也证明不了任何东西。
+      - name: Self-check gate rejects impossible thresholds
+        run: |
+          set -euo pipefail
+          if python3 scripts/benchmark_analysis.py \
+              --tool build/release/bin/analysis_benchmark \
+              --cases corpus_batch \
+              --skip-generate \
+              --baseline tests/benchmark/baseline_analysis_linux_gha.json \
+              --time-ratio 0.01 \
+              --rss-ratio 1.5 \
+              --report build/benchmark/selfcheck_report.json \
+              > build/benchmark/selfcheck.log 2>&1; then
+            echo "::error::耗时门禁没有拦住必然超限的阈值（--time-ratio 0.01），门禁失效"
+            tail -30 build/benchmark/selfcheck.log
+            exit 1
+          fi
+          echo "自检通过: 必然超限的阈值被判失败"
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-benchmark-report
+          path: |
+            build/benchmark/report.json
+            build/benchmark/*.csv
+            tests/benchmark/baseline_analysis_linux_gha.json
+          if-no-files-found: warn

@@ -188,6 +188,7 @@ pre-commit 的第 5 道门会核对版本号，不一致时打印警告但不拦
 | `build.yml` | 每个 PR / push | 分层与格式门禁、Windows + Linux 构建、单测、asan/tsan |
 | `release.yml` | push tag `v*` | 产出安装包 / SHA256 / SBOM，建**草稿** Release |
 | `fuzz.yml` | 每周一定时 + 手动 + 解析层改动 | 构建 libFuzzer 入口并各跑一段（默认 120s），崩溃/超时/OOM 会把复现输入传成 artifact |
+| `perf-benchmark.yml` | 每天定时 + 手动 | 构建 `analysis_benchmark`，跑 1 h / 4 h / >4 GB / 批量样本，与 Linux 基线比对耗时、RSS 与句柄增量；报告与基线传成 artifact |
 
 `fuzz.yml` 的关键参数别删：`-timeout=10`（抓死循环）、`-rss_limit_mb=2048`（抓无界分配）、
 `-max_len=65536`（保证跑得完）。历史上码流解析器出过"空转数十亿次"和"4GB 分配"，

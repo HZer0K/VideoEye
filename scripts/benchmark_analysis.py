@@ -20,6 +20,17 @@ moov 仍在文件头部（faststart），解析路径不会因为尾部填充而
     python scripts/benchmark_analysis.py --update-baseline   # 首次/换机器后重建基线
     python scripts/benchmark_analysis.py                     # 与基线比对，超阈值 exit 1
     python scripts/benchmark_analysis.py --cases long_1h,corpus_batch
+
+门禁阈值（可用 --time-ratio / --rss-ratio / --max-handle-delta 覆盖）：
+  * 任一阶段超时 > 0            —— 失败（规模样本卡住本身就是回归）；
+  * 单文件句柄增量 > 4          —— 失败（打开/关闭没配平）；
+  * 中位耗时 > 基线 × 倍率      —— 本地默认 1.5；共享 runner 抖动大，CI 用 2.0；
+  * 峰值 RSS > 基线 × 倍率      —— 本地默认 1.3；CI 用 1.5。
+基线必须与"同一平台 + 同一构建类型"的实测数字比较（跨机器比绝对值没有意义）：
+  * 本机 Windows / win-test-release -> tests/benchmark/baseline_analysis.json
+  * GitHub Actions ubuntu-latest     -> tests/benchmark/baseline_analysis_linux_gha.json
+CI 由 .github/workflows/perf-benchmark.yml 在 nightly 与手动触发时运行；首次没有
+Linux 基线时会以 --update-baseline 生成并上传 artifact，提交后才能开始拦截回退。
 """
 
 from __future__ import annotations

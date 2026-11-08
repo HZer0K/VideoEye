@@ -165,11 +165,48 @@
 
 ---
 
-## 7. 还没做的
+## 7. 解析性能与规模基准（nightly）
 
-- **没有自动化的长视频基准**。目前只有指标与上限，1 小时素材的实测数字仍要靠人跑一次
-  再看日志。要做的话：生成一个合成长素材（脚本可复用 `tests/corpus/generate_corpus.py`
-  的思路），把 `open_ms / analysis_ms / peak_memory_mb` 落进一个基线文件。
+"1 小时素材到底慢不慢"不再靠人跑一次看日志，而是有样本、有基线、有门禁：
+
+```bash
+# 工具本身默认不构建（PR 流程用不上），打开开关才编
+cmake --preset win-test-release -DVIDEOEYE_BUILD_ANALYSIS_BENCHMARK=ON
+cmake --build --preset win-test-release
+python scripts/benchmark_analysis.py            # 与基线比对，超阈值 exit 1
+```
+
+| 用例 | 样本 | 钉住什么 |
+|------|------|----------|
+| `long_1h` | ffmpeg `testsrc2` 合成 1 h | 长时长下结构树 / 章节 / 时长码率的解析成本 |
+| `long_4h` | 1 h 样本 `-stream_loop 3 -c copy` | 更长时间轴与索引递归 |
+| `large_4gb` | 1 h 样本 `truncate` 到 4 GiB + 64 MiB | 32 位偏移 / 文件大小字段溢出 |
+| `corpus_batch` | `tests/corpus` 下已提交语料 | 批量吞吐、句柄配平、RSS 是否随文件数上涨 |
+
+门禁口径（任一命中即失败）：
+
+| 项 | 本机默认 | CI nightly |
+|----|----------|------------|
+| 任一阶段超时 | > 0 | > 0 |
+| 单文件句柄增量 | > 4 | > 4 |
+| 中位耗时 | 基线 × 1.5 | 基线 × 2.0 |
+| 峰值 RSS | 基线 × 1.3 | 基线 × 1.5 |
+
+**基线必须与同一平台 / 同一构建类型比较**，跨机器比绝对值没有意义：
+
+| 基线文件 | 谁在用 |
+|----------|--------|
+| `tests/benchmark/baseline_analysis.json` | 本机 Windows（`win-test-release`） |
+| `tests/benchmark/baseline_analysis_linux_gha.json` | GitHub Actions `ubuntu-latest` |
+
+CI 侧由 `.github/workflows/perf-benchmark.yml` 每天定时 + 手动触发；首次没有 Linux 基线
+时会以 `--update-baseline` 生成并上传 artifact，把它提交进仓库后才开始拦截回退。
+换机器 / 换编译器 / 改构建类型后同样要重新 `--update-baseline`，否则门禁比的是别人的机器。
+
+---
+
+## 8. 还没做的
+
 - **`analysis_ms` 没有预算**。分析耗时与素材长度强相关，定一个数只会变成"总是超预算"
   的噪音，等有基线再定。
 - **导出还没有峰值内存曲线**，只在导出结束时采一次。
