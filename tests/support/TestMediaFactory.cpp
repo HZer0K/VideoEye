@@ -139,10 +139,11 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
             media.width = spec.width;
             media.height = spec.height;
             media.fps = spec.fps;
+            media.fps_den = spec.fps_den;
             media.frame_count = spec.frame_count;
             media.sample_rate = spec.with_audio ? spec.sample_rate : 0;
             media.channels = spec.with_audio ? spec.channels : 0;
-            media.duration_seconds = static_cast<double>(spec.frame_count) / spec.fps;
+            media.duration_seconds = static_cast<double>(spec.frame_count) * spec.fps_den / spec.fps;
         }
         return media;
     };
@@ -177,9 +178,9 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     venc->width = spec.width;
     venc->height = spec.height;
     venc->pix_fmt = AV_PIX_FMT_YUV420P;
-    venc->time_base = AVRational{1, spec.fps};
-    venc->framerate = AVRational{spec.fps, 1};
-    venc->gop_size = spec.fps;              // 1 秒一个关键帧
+    venc->time_base = AVRational{spec.fps_den, spec.fps};
+    venc->framerate = AVRational{spec.fps, spec.fps_den};
+    venc->gop_size = std::max(1, spec.fps / std::max(1, spec.fps_den)); // 约 1 秒一个关键帧
     venc->max_b_frames = spec.max_b_frames; // 0 = 关掉 B 帧: 输出 PTS 与输入一致, 帧数断言才可预测
     venc->bit_rate = 400000;
     if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
@@ -263,7 +264,7 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     // 音频总采样数向上取整到整帧: AAC 只接受整帧, 尾部补的那一小段由编码器自己吞掉。
     int64_t total_audio_samples = 0;
     if (aenc && audio_frame_size > 0) {
-        const double seconds = static_cast<double>(spec.frame_count) / spec.fps;
+        const double seconds = static_cast<double>(spec.frame_count) * spec.fps_den / spec.fps;
         const int64_t want = static_cast<int64_t>(std::ceil(seconds * spec.sample_rate));
         total_audio_samples = ((want + audio_frame_size - 1) / audio_frame_size) * audio_frame_size;
     }
@@ -297,7 +298,7 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         drain(venc, vst);
 
         // 音频补到"不落后于当前画面时间", 让 muxer 拿到基本有序的输入
-        const double video_time = static_cast<double>(i) / spec.fps;
+        const double video_time = static_cast<double>(i) * spec.fps_den / spec.fps;
         const int64_t want = static_cast<int64_t>(video_time * spec.sample_rate);
         if (!push_audio_until(want)) {
             finish(false, "无法分配音频帧");
@@ -595,6 +596,7 @@ MediaProbe ProbeMediaFile(const std::string& path) {
         probe.duration_seconds = static_cast<double>(fmt->duration) / 1e6;
 
     int video_index = -1;
+    int audio_index = -1;
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVStream* stream = fmt->streams[i];
         if (!stream || !stream->codecpar)
@@ -618,6 +620,13 @@ MediaProbe ProbeMediaFile(const std::string& path) {
             ++probe.audio_streams;
             if (probe.audio_codec.empty())
                 probe.audio_codec = codec ? codec->name : std::string();
+            if (audio_index < 0) {
+                audio_index = static_cast<int>(i);
+                if (stream->duration != AV_NOPTS_VALUE && stream->time_base.den)
+                    probe.audio_duration_seconds = static_cast<double>(stream->duration) * av_q2d(stream->time_base);
+                if (stream->start_time != AV_NOPTS_VALUE && stream->time_base.den)
+                    probe.audio_start_seconds = static_cast<double>(stream->start_time) * av_q2d(stream->time_base);
+            }
         }
     }
 
@@ -645,6 +654,8 @@ MediaProbe ProbeMediaFile(const std::string& path) {
                 if (ret < 0)
                     break;
                 if (pkt->stream_index != video_index) {
+                    if (audio_index >= 0 && pkt->stream_index == audio_index)
+                        ++probe.audio_packet_count;
                     av_packet_unref(pkt);
                     continue;
                 }

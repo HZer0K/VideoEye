@@ -34,5 +34,11 @@ public:
                                           const RepairRunBudget* budget);
 };
 
+// 测试专用故障注入（默认全关）：模拟「已经写过若干包之后」写包失败 / 封装尾失败。
+// 真实磁盘错误无法在单测里稳定制造，但「部分写入后仍报成功」是必须钉死的回归。
+// nth_write = 0 表示关闭；> 0 表示在第 N 次写包调用处返回失败。
+void SetTranscodeWriteFailureForTesting(int nth_write);
+void SetTranscodeTrailerFailureForTesting(bool enabled);
+
 } // namespace repair
 } // namespace videoeye

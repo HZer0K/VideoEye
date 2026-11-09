@@ -16,6 +16,7 @@
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/repair/RepairIndexRepair.h"
 #include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPayloadHash.h"
 #include "core/repair/RepairPlainMp4Rebuilder.h"
 #include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
@@ -340,7 +341,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         const std::string rebuilt_path = part_path + ".plain-moov";
         if (CreateExclusiveFile(rebuilt_path)) {
             plain_guard = std::make_unique<TempFileGuard>(rebuilt_path);
-            RepairPlainMp4RebuildResult rebuilt = RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel);
+            RepairPlainMp4RebuildResult rebuilt =
+                RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel, budget);
             const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
             if (stopped) {
                 outcome.canceled = budget != nullptr ? budget->Canceled() : true;
@@ -374,7 +376,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         const std::string rebuilt_path = part_path + ".index-rebuilt";
         if (CreateExclusiveFile(rebuilt_path)) {
             index_guard = std::make_unique<TempFileGuard>(rebuilt_path);
-            const RepairIndexRepairResult index = RepairIndexRepair::Rebuild(input_path, rebuilt_path, cancel);
+            const RepairIndexRepairResult index = RepairIndexRepair::Rebuild(input_path, rebuilt_path, cancel, budget);
             const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
             if (stopped) {
                 outcome.canceled = budget != nullptr ? budget->Canceled() : true;
@@ -434,6 +436,10 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         ffmpeg_io::AttachInterrupt(in, interrupt, ffmpeg_io::kOpenTimeoutUs);
 
     const int open_ret = in ? avformat_open_input(&in, input_path.c_str(), nullptr, nullptr) : AVERROR(ENOMEM);
+    if (open_ret >= 0 && in != nullptr) {
+        outcome.input_is_mpegts = in->iformat != nullptr && in->iformat->name != nullptr &&
+                                  std::string(in->iformat->name).find("mpegts") != std::string::npos;
+    }
     if (open_ret < 0) {
         outcome.error = use_reference_init ? "使用参考初始化段组装后仍无法打开源文件: " + AvErrorText(open_ret) +
                                                  "（参考初始化段可能与源分片不匹配）"
@@ -938,9 +944,12 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 ++outcome.input_video_packet_count;
             }
             if (in_index == first_audio_input_index) {
+                // 音频侧统一走访问单元规范化：TS 的 ADTS 头与 MP4 的裸 AU 是
+                // 同一份内容的不同封装表示，直接逐包哈希会把合法重封装判红。
                 outcome.input_audio_payload_hash =
-                    Fnv1a64Update(outcome.input_audio_payload_hash.value_or(Fnv1a64Begin()), packet->data,
-                                  static_cast<std::size_t>(std::max(packet->size, 0)));
+                    UpdateAudioPayloadHash(outcome.input_audio_payload_hash.value_or(Fnv1a64Begin()), packet->data,
+                                           static_cast<std::size_t>(std::max(packet->size, 0)),
+                                           in->streams[in_index]->codecpar->codec_id == AV_CODEC_ID_AAC);
                 ++outcome.input_audio_packet_count;
             }
 

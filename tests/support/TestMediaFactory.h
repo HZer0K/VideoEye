@@ -27,6 +27,9 @@ struct TestMediaSpec {
     int width = 128;
     int height = 72;
     int fps = 25;
+    // 帧率分母（默认 1）。设为 1001 即可得到 30000/1001、24000/1001 这类
+    // NTSC 分数帧率，用来守住「转码时基不许丢分母」。
+    int fps_den = 1;
     int frame_count = 40; // 40 / 25 = 1.6 s
     int sample_rate = 44100;
     int channels = 2;
@@ -51,6 +54,7 @@ struct TestMedia {
     int width = 0;
     int height = 0;
     int fps = 0;
+    int fps_den = 1;
     int frame_count = 0;
     int sample_rate = 0;
     int channels = 0;
@@ -93,6 +97,9 @@ struct MediaProbe {
     long long video_nb_frames = 0;       // 容器声明的帧数（元数据，可能与真解码结果不同）
     int frame_count = 0;                 // **真实解码**出来的帧数
     int video_packet_count = 0;
+    int audio_packet_count = 0; // 实测读到的音频包数（首条音频轨）
+    double audio_duration_seconds = 0.0;
+    double audio_start_seconds = 0.0;
     int marked_frames = 0;  // 实测 decode_error_flags != 0 的帧数（错误隐藏帧）
     int corrupt_frames = 0; // 实测 AV_FRAME_FLAG_CORRUPT 的帧数（FFmpeg 8.x 上常为 0）
     std::string error;

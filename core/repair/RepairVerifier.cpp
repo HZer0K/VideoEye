@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairPayloadHash.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -185,8 +186,13 @@ DecodePass DecodeStream(AVFormatContext* fmt, int stream_index, int64_t max_pack
         if (packet->flags & AV_PKT_FLAG_CORRUPT)
             ++pass.corrupt_packets;
         if (hash_payload) {
-            pass.payload_hash = Fnv1a64Update(pass.payload_hash.value_or(Fnv1a64Begin()), packet->data,
-                                              static_cast<std::size_t>(std::max(packet->size, 0)));
+            const std::size_t payload_size = static_cast<std::size_t>(std::max(packet->size, 0));
+            const uint64_t state = pass.payload_hash.value_or(Fnv1a64Begin());
+            // 音频与执行器输入侧共用规范化（AAC 剥离 ADTS 头）；视频保持原始包字节。
+            pass.payload_hash = stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO
+                                    ? UpdateAudioPayloadHash(state, packet->data, payload_size,
+                                                             stream->codecpar->codec_id == AV_CODEC_ID_AAC)
+                                    : Fnv1a64Update(state, packet->data, payload_size);
         }
 
         const int send_ret = avcodec_send_packet(ctx, packet);
@@ -653,19 +659,39 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
         if (hash_audio_this) {
             first_audio_checked = true;
             const DecodePass& hash_pass = decoded;
+            const AVCodecID audio_codec = fmt->streams[target.output_stream_index]->codecpar->codec_id;
+            const std::string scope = AudioHashScope(audio_codec == AV_CODEC_ID_AAC);
+            fidelity.limitations.push_back(
+                "音频载荷哈希口径=" + scope +
+                "；AAC 跨 MP4/TS 时剥离 ADTS 头后按访问单元累计，不代表原始包字节逐字节一致");
             if (hash_pass.payload_hash.has_value() && *hash_pass.payload_hash == *expected_audio_hash) {
                 fidelity.audio = model::RepairFidelityStatus::VerifiedMatch;
                 AddVerificationCheck(verification, "fidelity.audio_payload", model::DamageLayer::Codec,
                                      model::RepairCheckStatus::Passed,
-                                     "音频包载荷哈希一致: " + std::to_string(*hash_pass.payload_hash));
+                                     "音频访问单元载荷哈希一致: " + std::to_string(*hash_pass.payload_hash));
             } else {
-                fidelity.audio = model::RepairFidelityStatus::Failed;
-                AddVerificationCheck(verification, "fidelity.audio_payload", model::DamageLayer::Codec,
-                                     model::RepairCheckStatus::Failed,
-                                     "音频包载荷哈希不一致（输入 " + std::to_string(*expected_audio_hash) + " / 产物 " +
-                                         (hash_pass.payload_hash.has_value() ? std::to_string(*hash_pass.payload_hash)
-                                                                             : std::string("unavailable")) +
-                                         "）");
+                // 没有规范化能力时不能把「容器表示变了」硬判成内容被改：明确标为
+                // 未验证，改由逐轨解码 + 样本守恒支撑完整性结论。
+                const bool reformatted = fmt->iformat != nullptr && fmt->iformat->name != nullptr &&
+                                         std::string(fmt->iformat->name).find("mpegts") != std::string::npos;
+                const bool unverifiable = reformatted && audio_codec != AV_CODEC_ID_AAC;
+                if (unverifiable) {
+                    fidelity.audio = model::RepairFidelityStatus::NotVerified;
+                    const std::string detail = "音频编码 " + std::string(avcodec_get_name(audio_codec)) +
+                                               " 在容器切换后缺少访问单元规范化能力，原始载荷未验证";
+                    AddVerificationCheck(verification, "fidelity.audio_payload", model::DamageLayer::Codec,
+                                         model::RepairCheckStatus::Inconclusive, detail);
+                    fidelity.limitations.push_back(detail + "；完整性证据由逐轨解码与包数守恒补足");
+                } else {
+                    fidelity.audio = model::RepairFidelityStatus::Failed;
+                    AddVerificationCheck(
+                        verification, "fidelity.audio_payload", model::DamageLayer::Codec,
+                        model::RepairCheckStatus::Failed,
+                        "音频载荷哈希不一致（输入 " + std::to_string(*expected_audio_hash) + " / 产物 " +
+                            (hash_pass.payload_hash.has_value() ? std::to_string(*hash_pass.payload_hash)
+                                                                : std::string("unavailable")) +
+                            "，口径 " + scope + "）");
+                }
             }
         }
     }

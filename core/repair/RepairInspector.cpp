@@ -763,7 +763,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 // 才允许进入重建流程；否则仍按"需要参考初始化段"阻止执行。
                 const auto probe_start = Clock::now();
                 Emit(progress, 55, stage::Inspecting(), "尝试无参考扫描 mdat 载荷");
-                const RepairPlainMp4Probe probe = RepairPlainMp4Rebuilder::Probe(request.source_path, cancel);
+                const RepairPlainMp4Probe probe = RepairPlainMp4Rebuilder::Probe(request.source_path, cancel, budget);
                 if (probe.attemptable) {
                     model::DamageFinding plain;
                     plain.code = "container.mdat_unindexed";

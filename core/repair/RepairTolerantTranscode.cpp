@@ -21,6 +21,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/rational.h>
 #include <libswscale/swscale.h>
 }
 
@@ -29,6 +30,15 @@ namespace repair {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// 测试专用故障注入，默认全关（见 RepairTolerantTranscode.h）。
+std::atomic<int> g_inject_write_failure_nth{0};
+std::atomic<bool> g_inject_trailer_failure{false};
+
+bool ShouldInjectWriteFailure(uint64_t attempt) {
+    const int nth = g_inject_write_failure_nth.load(std::memory_order_relaxed);
+    return nth > 0 && attempt == static_cast<uint64_t>(nth);
+}
 
 std::string AvErrorText(int code) {
     char buffer[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -49,21 +59,36 @@ std::string FormatDb(double value) {
     return out.str();
 }
 
-// 预算 / 取消统一出口：区分"用户取消"与"超出时间预算"。
-bool StopRequested(const std::atomic<bool>* cancel, const RepairRunBudget* budget, bool* canceled, bool* timed_out) {
-    if (budget != nullptr) {
-        if (!budget->Checkpoint())
-            return false;
-        *canceled = budget->Canceled();
-        *timed_out = !*canceled;
-        return true;
+// 预算 / 取消统一出口：所有 CPU 循环（转码逐包、首帧探测、PSNR 抽帧、
+// FrameReader 内部读包循环）共用同一份状态，避免"只在外层查一次"的漏网。
+struct StopState {
+    const std::atomic<bool>* cancel = nullptr;
+    const RepairRunBudget* budget = nullptr;
+    bool canceled = false;
+    bool timed_out = false;
+
+    StopState(const std::atomic<bool>* c, const RepairRunBudget* b) : cancel(c), budget(b) {
     }
-    if (infrastructure::Checkpoint(cancel)) {
-        *canceled = true;
-        return true;
+
+    bool Check() {
+        if (budget != nullptr) {
+            if (!budget->Checkpoint())
+                return false;
+            canceled = budget->Canceled();
+            timed_out = !canceled;
+            return true;
+        }
+        if (infrastructure::Checkpoint(cancel)) {
+            canceled = true;
+            return true;
+        }
+        return false;
     }
-    return false;
-}
+
+    const char* Reason() const {
+        return canceled ? "被取消" : "超出本次修复预算";
+    }
+};
 
 // 临时产物名字带 .part 后缀，容器扩展名要从 paths.extension 取。
 const char* FormatNameForExtension(const std::string& extension) {
@@ -80,6 +105,40 @@ bool FormatNeedsExtradata(const char* format_name) {
     return std::string(format_name) == "mp4" || std::string(format_name) == "mov" ||
            std::string(format_name) == "matroska";
 }
+
+// 首帧探测期间读到的非视频包暂存表。RAII 保证任何早退路径都不泄漏 AVPacket。
+class PendingPackets {
+public:
+    PendingPackets() = default;
+    ~PendingPackets() {
+        Clear();
+    }
+    PendingPackets(const PendingPackets&) = delete;
+    PendingPackets& operator=(const PendingPackets&) = delete;
+
+    bool Push(const AVPacket* packet, std::uint64_t* bytes, std::uint64_t max_bytes, std::uint64_t max_count) {
+        const std::uint64_t size = static_cast<std::uint64_t>(std::max(packet->size, 0));
+        if (packets_.size() >= max_count || *bytes + size > max_bytes)
+            return false;
+        AVPacket* clone = av_packet_clone(packet);
+        if (clone == nullptr)
+            return false;
+        packets_.push_back(clone);
+        *bytes += size;
+        return true;
+    }
+    const std::vector<AVPacket*>& items() const {
+        return packets_;
+    }
+    void Clear() {
+        for (AVPacket* packet : packets_)
+            av_packet_free(&packet);
+        packets_.clear();
+    }
+
+private:
+    std::vector<AVPacket*> packets_;
+};
 
 AVRational SourceFrameRate(const AVStream* stream) {
     AVRational fps = stream->avg_frame_rate;
@@ -106,12 +165,35 @@ public:
             avformat_close_input(&fmt_);
     }
 
-    bool Open(const std::string& path, std::string* error) {
+    bool Open(const std::string& path, std::string* error, const std::atomic<bool>* cancel,
+              const RepairRunBudget* budget) {
+        // 打开 / 探测必须在起 IO 之前装好中断回调：网络源或半开的本地管道会让
+        // avformat_open_input / find_stream_info 永远不返回，外层的循环检查点够不着。
+        fmt_ = avformat_alloc_context();
+        if (fmt_ == nullptr) {
+            *error = "无法分配输入封装上下文";
+            return false;
+        }
+        interrupt_.cancel = cancel ? const_cast<std::atomic<bool>*>(cancel) : nullptr;
+        int64_t open_timeout = ffmpeg_io::kOpenTimeoutUs;
+        if (budget != nullptr && budget->HasDeadline()) {
+            const int64_t left = budget->RemainingUs();
+            open_timeout = left > 0 ? std::min<int64_t>(open_timeout, left) : 1;
+        }
+        ffmpeg_io::AttachInterrupt(fmt_, interrupt_, open_timeout);
         if (avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr) < 0 || fmt_ == nullptr) {
             *error = "无法打开源文件: " + path;
             return false;
         }
-        if (avformat_find_stream_info(fmt_, nullptr) < 0) {
+        int64_t probe_timeout = ffmpeg_io::kProbeTimeoutUs;
+        if (budget != nullptr && budget->HasDeadline()) {
+            const int64_t left = budget->RemainingUs();
+            probe_timeout = left > 0 ? std::min<int64_t>(probe_timeout, left) : 1;
+        }
+        interrupt_.deadline_us.store(av_gettime() + probe_timeout, std::memory_order_relaxed);
+        const int info_ret = avformat_find_stream_info(fmt_, nullptr);
+        interrupt_.deadline_us.store(0, std::memory_order_relaxed);
+        if (info_ret < 0) {
             *error = "无法读取源文件媒体信息";
             return false;
         }
@@ -146,11 +228,16 @@ public:
     }
 
     // 返回下一帧（引用内部的 frame_，下一次调用前有效）；EOF / 持续解码失败时返回 nullptr。
-    AVFrame* Next(uint64_t* skipped_packets) {
+    // stop 贯穿内部读包循环：预算/取消不能在"每帧一次"的外层粒度上检查。
+    AVFrame* Next(uint64_t* skipped_packets, StopState* stop) {
         if (eof_)
             return nullptr;
         av_frame_unref(frame_);
         for (;;) {
+            if (stop != nullptr && stop->Check()) {
+                eof_ = true;
+                return nullptr;
+            }
             const int ret = avcodec_receive_frame(decoder_, frame_);
             if (ret == 0) {
                 ++decoded_frames_;
@@ -160,24 +247,20 @@ public:
                 eof_ = true;
                 return nullptr;
             }
-            if (ret != AVERROR(EAGAIN)) {
-                // 帧级解码错误：跳过并继续尝试下一包，不能把整个输入当成 EOF。
-                if (!SendNext(skipped_packets)) {
-                    eof_ = true;
-                    return nullptr;
-                }
-                continue;
-            }
-            if (!SendNext(skipped_packets)) {
-                // 输入结束：冲刷解码器。
-                avcodec_send_packet(decoder_, nullptr);
+            // 旧实现在冲刷解码器时只 return 第一帧就置 eof_，其余延迟帧全丢，
+            // PSNR 配对会静默少算。改成下次调用继续从解码器取，直到真的 EOF。
+            if (flushing_) {
                 eof_ = true;
-                while (avcodec_receive_frame(decoder_, frame_) == 0) {
-                    ++decoded_frames_;
-                    return frame_;
-                }
                 return nullptr;
             }
+            if (ret != AVERROR(EAGAIN)) {
+                // 帧级解码错误：跳过并继续尝试下一包，不能把整个输入当成 EOF。
+                if (!SendNext(skipped_packets, stop))
+                    StartFlush();
+                continue;
+            }
+            if (!SendNext(skipped_packets, stop))
+                StartFlush();
         }
     }
 
@@ -192,8 +275,15 @@ public:
     }
 
 private:
-    bool SendNext(uint64_t* skipped_packets) {
+    void StartFlush() {
+        avcodec_send_packet(decoder_, nullptr);
+        flushing_ = true;
+    }
+
+    bool SendNext(uint64_t* skipped_packets, StopState* stop) {
         for (;;) {
+            if (stop != nullptr && stop->Check())
+                return false;
             const int ret = av_read_frame(fmt_, packet_);
             if (ret < 0) {
                 if (ret == AVERROR_EOF)
@@ -220,11 +310,13 @@ private:
 
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* decoder_ = nullptr;
+    ffmpeg_io::AvInterruptState interrupt_;
     int stream_index_ = -1;
     AVFrame* frame_ = nullptr;
     AVPacket* packet_ = nullptr;
     uint64_t decoded_frames_ = 0;
     bool eof_ = false;
+    bool flushing_ = false;
     bool read_failed_ = false;
 };
 
@@ -261,14 +353,17 @@ struct PsnrResult {
     uint64_t samples = 0;
     double average_db = 0.0;
     std::string note;
+    bool stopped = false;
+    std::string stop_reason;
 };
 
-PsnrResult MeasurePsnr(const std::string& input_path, const std::string& output_path, const std::atomic<bool>* cancel) {
+PsnrResult MeasurePsnr(const std::string& input_path, const std::string& output_path, const std::atomic<bool>* cancel,
+                       const RepairRunBudget* budget, StopState* stop) {
     PsnrResult result;
     FrameReader input;
     FrameReader output;
     std::string error;
-    if (!input.Open(input_path, &error) || !output.Open(output_path, &error)) {
+    if (!input.Open(input_path, &error, cancel, budget) || !output.Open(output_path, &error, cancel, budget)) {
         result.note = error;
         return result;
     }
@@ -278,16 +373,24 @@ PsnrResult MeasurePsnr(const std::string& input_path, const std::string& output_
     uint64_t skipped_output = 0;
     double sum = 0.0;
     uint64_t measured = 0;
+    constexpr uint64_t kMaxPsnrSamples = 32;
 
     for (;;) {
-        if (infrastructure::Checkpoint(cancel))
+        // 采样目标达成后立刻收手：旧实现把整段输入 / 产物继续解码到 EOF，
+        // 32 个样本之外的时间全部白烧在预算之外。
+        if (measured >= kMaxPsnrSamples)
             break;
-        AVFrame* in_frame = input.Next(&skipped_input);
-        AVFrame* out_frame = output.Next(&skipped_output);
+        if (stop != nullptr && stop->Check()) {
+            result.stopped = true;
+            result.stop_reason = stop->Reason();
+            break;
+        }
+        AVFrame* in_frame = input.Next(&skipped_input, stop);
+        AVFrame* out_frame = output.Next(&skipped_output, stop);
         if (in_frame == nullptr || out_frame == nullptr)
             break;
         const bool sample = (pair_index < 16) || (pair_index % 100 == 0);
-        if (sample && measured < 32) {
+        if (sample) {
             const double psnr = LumaPsnr(in_frame, out_frame);
             if (psnr >= 0.0) {
                 sum += psnr;
@@ -303,12 +406,22 @@ PsnrResult MeasurePsnr(const std::string& input_path, const std::string& output_
     note << "抽帧 PSNR 比对 " << pair_index << " 对帧，有效样本 " << measured;
     if (skipped_input > 0)
         note << "；输入侧跳过 " << skipped_input << " 个解码失败包";
+    if (result.stopped)
+        note << "；画质评估阶段" << result.stop_reason << "，未跑满采样计划";
     note << "（亮度平面，非全量逐帧比对）";
     result.note = note.str();
     return result;
 }
 
 } // namespace
+
+void SetTranscodeWriteFailureForTesting(int nth_write) {
+    g_inject_write_failure_nth.store(nth_write, std::memory_order_relaxed);
+}
+
+void SetTranscodeTrailerFailureForTesting(bool enabled) {
+    g_inject_trailer_failure.store(enabled, std::memory_order_relaxed);
+}
 
 RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairRequest& request,
                                                         const model::RepairDiagnosis& diagnosis,
@@ -320,15 +433,45 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     (void)diagnosis;
     (void)plan;
     outcome.ffmpeg_version = av_version_info();
+    StopState stop(cancel, budget);
 
-    AVFormatContext* in = nullptr;
+    // 打开 / 探测前装 IO 中断：预算到期或用户取消时，阻塞在 avformat_open_input /
+    // find_stream_info 里的调用必须能被踢出来，而不是等外层循环下一次检查。
+    ffmpeg_io::AvInterruptState input_interrupt;
+    AVFormatContext* in = avformat_alloc_context();
+    if (in == nullptr) {
+        outcome.error = "无法分配输入封装上下文";
+        return outcome;
+    }
+    input_interrupt.cancel = cancel ? const_cast<std::atomic<bool>*>(cancel) : nullptr;
+    int64_t open_timeout = ffmpeg_io::kOpenTimeoutUs;
+    if (budget != nullptr && budget->HasDeadline()) {
+        const int64_t left = budget->RemainingUs();
+        open_timeout = left > 0 ? std::min<int64_t>(open_timeout, left) : 1;
+    }
+    ffmpeg_io::AttachInterrupt(in, input_interrupt, open_timeout);
     if (avformat_open_input(&in, request.source_path.c_str(), nullptr, nullptr) < 0 || in == nullptr) {
         outcome.error = "无法打开源文件（转码前读取失败）";
         return outcome;
     }
-    if (avformat_find_stream_info(in, nullptr) < 0) {
+    int64_t probe_timeout = ffmpeg_io::kProbeTimeoutUs;
+    if (budget != nullptr && budget->HasDeadline()) {
+        const int64_t left = budget->RemainingUs();
+        probe_timeout = left > 0 ? std::min<int64_t>(probe_timeout, left) : 1;
+    }
+    input_interrupt.deadline_us.store(av_gettime() + probe_timeout, std::memory_order_relaxed);
+    const int info_ret = avformat_find_stream_info(in, nullptr);
+    input_interrupt.deadline_us.store(0, std::memory_order_relaxed);
+    if (info_ret < 0) {
         avformat_close_input(&in);
         outcome.error = "无法读取源文件媒体信息";
+        return outcome;
+    }
+    if (stop.Check()) {
+        avformat_close_input(&in);
+        outcome.canceled = stop.canceled;
+        outcome.timed_out = stop.timed_out;
+        outcome.error = std::string("转码打开/探测阶段") + stop.Reason();
         return outcome;
     }
 
@@ -398,7 +541,17 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     }
 
     uint64_t dropped_decode_packets = 0;
+    // 首帧之前出现的音频包必须缓存并在输出音轨建好后回放：B 帧延迟、自动解码
+    // 线程、视频起点靠后都会造成"先来一批音频"。旧实现直接 unref，产物静默
+    // 丢掉这一段，而且 S08 又不要求验证音频轨，丢了没人看得见。
+    PendingPackets pending_nonvideo;
+    uint64_t pending_bytes = 0;
+    bool pending_overflow = false;
+    constexpr uint64_t kMaxPendingPackets = 16384;
+    constexpr uint64_t kMaxPendingBytes = 64ull * 1024ull * 1024ull;
     for (;;) {
+        if (stop.Check())
+            break;
         const int read_ret = av_read_frame(in, packet);
         if (read_ret < 0) {
             // 冲刷解码器取剩余帧。
@@ -408,6 +561,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             break;
         }
         if (packet->stream_index != video_index) {
+            if (!pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets))
+                pending_overflow = true;
             av_packet_unref(packet);
             continue;
         }
@@ -423,13 +578,20 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
     }
 
-    if (first_frame == nullptr || first_frame->width <= 0 || first_frame->height <= 0) {
+    if (first_frame == nullptr || first_frame->width <= 0 || first_frame->height <= 0 || stop.canceled ||
+        stop.timed_out) {
         av_packet_free(&packet);
         av_frame_free(&frame);
         avformat_free_context(out);
         avcodec_free_context(&decoder);
         avformat_close_input(&in);
-        outcome.error = "源视频没有可解码帧（编码层已损坏，无法转码）";
+        if (stop.canceled || stop.timed_out) {
+            outcome.canceled = stop.canceled;
+            outcome.timed_out = stop.timed_out;
+            outcome.error = std::string("转码首帧探测阶段") + stop.Reason();
+        } else {
+            outcome.error = "源视频没有可解码帧（编码层已损坏，无法转码）";
+        }
         return outcome;
     }
 
@@ -462,7 +624,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     encoder->width = width;
     encoder->height = height;
     encoder->pix_fmt = encoder_format;
-    encoder->time_base = AVRational{1, fps.num > 0 ? fps.num : 25};
+    // CFR 帧间隔 = av_inv_q(fps)。旧实现用 {1, fps.num} 且每帧 PTS 只 +1，
+    // 等于把分母丢掉：30000/1001 的内容被按 30000/1 的速度写，约 1001 秒
+    // 的跨度压成 1 秒。PTS 落在编码器时基上逐帧 +1 tick 才是正确帧间隔。
+    encoder->time_base = av_inv_q(fps);
     encoder->framerate = fps;
     encoder->gop_size = std::max(1, static_cast<int>(fps.num / std::max(1, fps.den)) * 12);
     encoder->max_b_frames = 0;
@@ -564,15 +729,49 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     converted->height = height;
     sws = sws_getContext(width, height, static_cast<AVPixelFormat>(first_frame->format), width, height, encoder_format,
                          SWS_BILINEAR, nullptr, nullptr, nullptr);
+    // 固定尺寸只分配一次缓冲，之后逐帧 av_frame_make_writable。
+    // ❗ av_frame_unref() 会连同 format / width / height 一起清零，再调
+    // av_frame_get_buffer 必然 EINVAL：旧实现从第二帧起把每一帧都算成
+    // "源视频损坏"丢掉，40 帧正常输入只写 1 帧，执行器却仍返回成功。
+    const bool buffer_ok = av_frame_get_buffer(converted, 0) >= 0;
+    if (!buffer_ok || sws == nullptr) {
+        outcome.error = buffer_ok ? "无法初始化像素格式转换器（源像素格式不受支持，不是帧内容损坏）"
+                                  : "无法分配转码输出帧缓冲（资源不足，不是源视频损坏）";
+        if (sws != nullptr)
+            sws_freeContext(sws);
+        av_packet_free(&encoded);
+        av_frame_free(&converted);
+        av_write_trailer(out);
+        avio_closep(&out->pb);
+        avcodec_free_context(&encoder);
+        av_packet_free(&packet);
+        av_frame_free(&frame);
+        avformat_free_context(out);
+        avcodec_free_context(&decoder);
+        avformat_close_input(&in);
+        return outcome;
+    }
 
-    // 写一个编码包。
     uint64_t encoded_frames = 0;
     uint64_t video_packets = 0;
     uint64_t audio_packets = 0;
     uint64_t bytes_written = 0;
     bool write_failed = false;
     std::string write_error;
+    // 资源错误（缓冲分配失败）要和"源帧损坏"分开：它不是可丢弃的坏帧。
+    bool resource_failed = false;
+    std::string resource_error;
+    bool size_capped = false;
+    uint64_t write_attempts = 0;
+    const uint64_t max_output_bytes = request.limits.max_output_bytes;
     const double fps_value = fps.num > 0 && fps.den > 0 ? static_cast<double>(fps.num) / fps.den : 25.0;
+    const double frame_seconds = av_q2d(encoder->time_base);
+    // 报告时长取实际写出包的 PTS 跨度，不再用 encoded_frames/fps 自证。
+    bool video_pts_seen = false;
+    double video_pts_min = 0.0;
+    double video_pts_max = 0.0;
+    // 视频 PTS 从零重建，音频按各自首包 PTS 归零，避免两条轨起点错开。
+    std::vector<int64_t> audio_start_pts(in->nb_streams, AV_NOPTS_VALUE);
 
     auto drain_encoder = [&]() -> bool {
         for (;;) {
@@ -586,53 +785,135 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             }
             encoded->stream_index = video_out_index;
             av_packet_rescale_ts(encoded, encoder->time_base, video_out->time_base);
+            if (encoded->pts != AV_NOPTS_VALUE) {
+                const double tb = av_q2d(video_out->time_base);
+                const double start = static_cast<double>(encoded->pts) * tb;
+                const double end =
+                    start + (encoded->duration > 0 ? static_cast<double>(encoded->duration) * tb : frame_seconds);
+                if (!video_pts_seen) {
+                    video_pts_min = start;
+                    video_pts_max = end;
+                    video_pts_seen = true;
+                } else {
+                    video_pts_min = std::min(video_pts_min, start);
+                    video_pts_max = std::max(video_pts_max, end);
+                }
+            }
+            // 达上限后仍要把编码器里的包排空（释放引用），但不再落盘。
+            if (size_capped) {
+                av_packet_unref(encoded);
+                continue;
+            }
             const int written = encoded->size;
-            if (av_interleaved_write_frame(out, encoded) < 0) {
+            ++write_attempts;
+            if (ShouldInjectWriteFailure(write_attempts)) {
+                av_packet_unref(encoded);
+                write_failed = true;
+                write_error = "写入编码包失败（故障注入）";
+                return false;
+            }
+            const int write_ret = av_interleaved_write_frame(out, encoded);
+            av_packet_unref(encoded);
+            if (write_ret < 0) {
                 write_failed = true;
                 write_error = "写入编码包失败";
                 return false;
             }
             ++video_packets;
             bytes_written += static_cast<uint64_t>(std::max(written, 0));
+            if (max_output_bytes > 0 && bytes_written > max_output_bytes)
+                size_capped = true;
         }
     };
 
     auto encode_frame = [&](AVFrame* source) -> bool {
-        if (sws == nullptr) {
-            ++outcome.dropped_video_frames;
-            return true;
-        }
-        if (av_frame_get_buffer(converted, 0) < 0) {
-            ++outcome.dropped_video_frames;
-            return true;
+        // 编码器可能仍持有上一帧的引用；make_writable 会在必要时换一块缓冲，
+        // 且不会像 av_frame_unref 那样把 format / width / height 一并清掉。
+        if (av_frame_make_writable(converted) < 0) {
+            resource_failed = true;
+            resource_error = "转换帧缓冲不可写（无法分配新的输出帧缓冲）";
+            return false;
         }
         sws_scale(sws, (const uint8_t* const*)source->data, source->linesize, 0, height, converted->data,
                   converted->linesize);
+        // encoder->time_base = av_inv_q(fps)，PTS 每帧 +1 tick = 1/fps 秒。
         converted->pts = static_cast<int64_t>(encoded_frames);
         if (avcodec_send_frame(encoder, converted) < 0) {
             ++outcome.dropped_video_frames;
         } else {
             ++encoded_frames;
         }
-        av_frame_unref(converted);
         return drain_encoder();
     };
 
+    // 视频 / 音频共用一个受预算的写包入口：bytes_written 口径与重封装路径一致
+    // （输出包载荷累计字节，不含封装头尾，故实际文件可能略超上限）。
+    auto write_audio_packet = [&](AVPacket* pkt) -> bool {
+        if (size_capped)
+            return true;
+        const int in_index = pkt->stream_index;
+        const int out_index = in_index >= 0 && in_index < static_cast<int>(audio_map.size())
+                                  ? audio_map[static_cast<std::size_t>(in_index)]
+                                  : -1;
+        if (out_index < 0)
+            return true;
+        AVStream* src = in->streams[in_index];
+        AVStream* dst = out->streams[out_index];
+        if (audio_start_pts[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
+            const int64_t first = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+            audio_start_pts[static_cast<std::size_t>(in_index)] = first == AV_NOPTS_VALUE ? 0 : first;
+        }
+        const int64_t offset = audio_start_pts[static_cast<std::size_t>(in_index)];
+        if (pkt->pts != AV_NOPTS_VALUE)
+            pkt->pts -= offset;
+        if (pkt->dts != AV_NOPTS_VALUE)
+            pkt->dts -= offset;
+        av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
+        pkt->stream_index = out_index;
+        const int written = pkt->size;
+        ++write_attempts;
+        if (ShouldInjectWriteFailure(write_attempts)) {
+            av_packet_unref(pkt);
+            write_failed = true;
+            write_error = "写入音频包失败（故障注入）";
+            return false;
+        }
+        const int write_ret = av_interleaved_write_frame(out, pkt);
+        if (write_ret < 0) {
+            write_failed = true;
+            write_error = "写入音频包失败";
+            return false;
+        }
+        ++audio_packets;
+        bytes_written += static_cast<uint64_t>(std::max(written, 0));
+        if (max_output_bytes > 0 && bytes_written > max_output_bytes)
+            size_capped = true;
+        return true;
+    };
+
+    // 回放首帧探测期间缓存的音频包，之后才继续读 `in`。
+    for (AVPacket* cached : pending_nonvideo.items()) {
+        if (!write_audio_packet(cached))
+            break;
+    }
+    pending_nonvideo.Clear();
+
     // ---- 解码 → 转码 → 封装 ----
-    bool canceled = false;
-    bool timed_out = false;
-    if (encode_frame(first_frame) && !write_failed) {
+    if (!resource_failed && encode_frame(first_frame) && !write_failed) {
         for (;;) {
-            if (StopRequested(cancel, budget, &canceled, &timed_out))
+            if (stop.Check() || size_capped)
                 break;
             const int read_ret = av_read_frame(in, packet);
             if (read_ret < 0) {
                 if (read_ret != AVERROR_EOF)
                     outcome.read_error = true;
                 avcodec_send_packet(decoder, nullptr);
-                while (!write_failed && avcodec_receive_frame(decoder, frame) == 0) {
-                    if (!encode_frame(frame))
+                while (!write_failed && !resource_failed && !size_capped &&
+                       avcodec_receive_frame(decoder, frame) == 0) {
+                    if (!encode_frame(frame)) {
+                        av_frame_unref(frame);
                         break;
+                    }
                     av_frame_unref(frame);
                 }
                 break;
@@ -641,40 +922,27 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 if (avcodec_send_packet(decoder, packet) < 0) {
                     ++dropped_decode_packets;
                 } else {
-                    while (!write_failed && avcodec_receive_frame(decoder, frame) == 0) {
-                        if (!encode_frame(frame))
+                    while (!write_failed && !resource_failed && !size_capped &&
+                           avcodec_receive_frame(decoder, frame) == 0) {
+                        if (!encode_frame(frame)) {
+                            av_frame_unref(frame);
                             break;
+                        }
                         av_frame_unref(frame);
                     }
                 }
             } else {
-                const int out_index =
-                    packet->stream_index >= 0 && packet->stream_index < static_cast<int>(audio_map.size())
-                        ? audio_map[static_cast<std::size_t>(packet->stream_index)]
-                        : -1;
-                if (out_index >= 0) {
-                    AVStream* dst = out->streams[out_index];
-                    av_packet_rescale_ts(packet, in->streams[packet->stream_index]->time_base, dst->time_base);
-                    packet->stream_index = out_index;
-                    const int written = packet->size;
-                    if (av_interleaved_write_frame(out, packet) < 0) {
-                        write_failed = true;
-                        write_error = "写入音频包失败";
-                    } else {
-                        ++audio_packets;
-                        bytes_written += static_cast<uint64_t>(std::max(written, 0));
-                    }
-                }
+                write_audio_packet(packet);
             }
             av_packet_unref(packet);
-            if (write_failed)
+            if (write_failed || resource_failed || size_capped)
                 break;
             if ((video_packets + audio_packets) % 200 == 0)
                 Emit(progress, 80, "已转码 " + std::to_string(encoded_frames) + " 帧");
         }
     }
 
-    if (!write_failed) {
+    if (!write_failed && !resource_failed) {
         avcodec_send_frame(encoder, nullptr);
         if (!drain_encoder())
             write_failed = true;
@@ -694,8 +962,13 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         sws_freeContext(sws);
     av_packet_free(&encoded);
     av_frame_free(&converted);
-    if (av_write_trailer(out) < 0 && !write_failed)
+    const int trailer_ret = av_write_trailer(out);
+    const bool trailer_injected = g_inject_trailer_failure.load(std::memory_order_relaxed);
+    if ((trailer_ret < 0 || trailer_injected) && !write_failed) {
         write_failed = true;
+        write_error = trailer_injected ? "写入封装尾失败（故障注入，产物索引可能不完整）"
+                                       : "写入封装尾失败（产物索引 / moov 可能不完整）";
+    }
     avio_closep(&out->pb);
     avformat_free_context(out);
     avcodec_free_context(&encoder);
@@ -704,22 +977,62 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     avcodec_free_context(&decoder);
     avformat_close_input(&in);
 
-    outcome.canceled = canceled;
-    outcome.timed_out = timed_out;
+    outcome.canceled = stop.canceled;
+    outcome.timed_out = stop.timed_out;
     outcome.packets_read = encoded_frames + dropped_decode_packets;
     outcome.packets_written = video_packets + audio_packets;
     outcome.bytes_written = bytes_written;
+    outcome.output_size_capped = size_capped;
     outcome.transcoded_frames = encoded_frames;
     outcome.dropped_video_frames = dropped_decode_packets + outcome.dropped_video_frames;
-    outcome.output_end_seconds = fps_value > 0.0 ? static_cast<double>(encoded_frames) / fps_value : 0.0;
+    // 报告时长以实际写入包的 PTS 跨度为准（含分数帧率），仅在没有任何包
+    // 时间证据时才退回帧数 / 帧率的估算值。
+    const double measured_span = video_pts_seen ? std::max(0.0, video_pts_max - video_pts_min) : 0.0;
+    outcome.output_start_seconds = 0.0;
+    outcome.output_end_seconds =
+        measured_span > 0.0 ? measured_span : (fps_value > 0.0 ? static_cast<double>(encoded_frames) / fps_value : 0.0);
+    if (size_capped) {
+        outcome.transcode_note += "；超过输出字节上限 " + std::to_string(max_output_bytes) + " 字节，仅交付前 " +
+                                  FormatSeconds(*outcome.output_end_seconds) + " 的可播放前缀，之后的源内容未恢复";
+    }
+    if (pending_overflow) {
+        outcome.omitted_items.push_back("首帧探测期间的音频包超过缓存上限，产物可能缺少音频前缀");
+        model::DamageFinding overflow;
+        overflow.code = "audio.prefix_cache_overflow";
+        overflow.detector = "repair.transcode";
+        overflow.layer = model::DamageLayer::Track;
+        overflow.severity = model::IssueSeverity::Warning;
+        overflow.confidence = model::DamageConfidence::Confirmed;
+        overflow.location.precision = model::DamagePrecision::Bounded;
+        overflow.location.provenance = "first-frame probe pending packet cache";
+        overflow.evidence = "首帧探测阶段读到的非视频包超过 16384 个 / 64 MiB 缓存上限，超出部分未回放";
+        overflow.limitations.push_back("只能证明音频前缀不完整，无法确定丢失的具体时间区间");
+        outcome.residual_findings.push_back(std::move(overflow));
+    }
 
-    if (write_failed && outcome.packets_written == 0) {
-        outcome.error = write_error.empty() ? "转码写入失败" : write_error;
+    // 资源错误 / 写入或收尾失败一律不是「成功转码」：旧实现只在
+    // packets_written == 0 时才报错，写过部分包就把磁盘 / 封装错误掩盖成
+    // 一次成功，并把 record.succeeded 置 true。
+    if (resource_failed || write_failed) {
+        outcome.error = resource_failed ? (resource_error.empty() ? "转码输出缓冲资源错误" : resource_error)
+                                        : (write_error.empty() ? "转码写入或封装收尾失败" : write_error);
+        model::DamageFinding failed;
+        failed.code = resource_failed ? "output.transcode_resource_failed" : "output.transcode_write_failed";
+        failed.detector = "repair.transcode";
+        failed.layer = model::DamageLayer::Container;
+        failed.severity = model::IssueSeverity::Error;
+        failed.confidence = model::DamageConfidence::Confirmed;
+        failed.location.precision = model::DamagePrecision::Bounded;
+        failed.location.provenance = "av_frame_make_writable / av_interleaved_write_frame / av_write_trailer";
+        failed.evidence =
+            outcome.error + "；已写入 " + std::to_string(outcome.packets_written) + " 个包的前缀不作为修复完成发布";
+        failed.limitations.push_back("已写出的前缀可能可读，但未经完整验证，不能据此宣称内容已恢复");
+        outcome.residual_findings.push_back(std::move(failed));
         return outcome;
     }
-    if (canceled || timed_out) {
+    if (stop.canceled || stop.timed_out) {
         outcome.ok = outcome.packets_written > 0;
-        outcome.error = canceled ? "转码阶段被取消" : "转码阶段超出预算";
+        outcome.error = std::string("转码阶段") + stop.Reason();
         return outcome;
     }
     if (outcome.packets_written == 0) {
@@ -733,10 +1046,27 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
 
     // ---- 画质评估（独立解码输入与产物，按帧序号配对）----
     Emit(progress, 86, "抽帧 PSNR 画质评估");
-    const PsnrResult psnr = MeasurePsnr(request.source_path, paths.part_path, cancel);
+    const PsnrResult psnr = MeasurePsnr(request.source_path, paths.part_path, cancel, budget, &stop);
     outcome.psnr_samples = psnr.samples;
     outcome.psnr_average_db = psnr.average_db;
     outcome.transcode_note += "；" + psnr.note;
+    if (psnr.stopped) {
+        // 预算在 PSNR 阶段到期：产物已写完，但画质结论没跑完，不能冒充完整修复。
+        outcome.canceled = stop.canceled;
+        outcome.timed_out = stop.timed_out;
+        outcome.ok = outcome.packets_written > 0;
+        outcome.error = std::string("画质评估阶段") + psnr.stop_reason;
+        model::RepairActionExecution aborted;
+        aborted.action = model::RepairAction::S08_TolerantTranscode;
+        aborted.attempted = true;
+        aborted.succeeded = false;
+        aborted.error = outcome.error;
+        aborted.packets_written = outcome.packets_written;
+        aborted.bytes_written = outcome.bytes_written;
+        aborted.detail = outcome.transcode_note;
+        outcome.executions.push_back(std::move(aborted));
+        return outcome;
+    }
 
     model::RepairActionExecution record;
     record.action = model::RepairAction::S08_TolerantTranscode;
@@ -745,11 +1075,13 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     record.packets_read = outcome.packets_read;
     record.packets_written = outcome.packets_written;
     record.bytes_written = outcome.bytes_written;
-    record.output_start_seconds = 0.0;
+    record.output_start_seconds = outcome.output_start_seconds;
     record.output_end_seconds = outcome.output_end_seconds;
     std::ostringstream detail;
     detail << "容忍式转码：解码并编码 " << encoded_frames << " 帧（" << std::string(encoder_codec->name) << "），跳过 "
            << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 " << audio_packets << " 个";
+    if (size_capped)
+        detail << "；超过输出字节上限 " << max_output_bytes << " 字节，仅交付可播放前缀，其余源内容未恢复";
     if (psnr.samples > 0)
         detail << "；抽帧 PSNR 均值 " << FormatDb(psnr.average_db) << "（" << psnr.samples << " 个样本）";
     record.detail = detail.str();
@@ -773,7 +1105,13 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         audio_target.input_stream_index = static_cast<int>(i);
         audio_target.output_stream_index = audio_map[i];
         audio_target.kind = "audio";
-        audio_target.required = false;
+        // 与重封装路径一致：默认逐条验证所有保留媒体轨；显式 target_streams
+        // 时以用户点名的轨为强制验证对象。旧实现把所有音频轨固定 required=false，
+        // 验证器既不解码也不做音画同步，音频丢包 / 错位完全没有证据。
+        const bool explicitly_requested = std::find(request.target_streams.begin(), request.target_streams.end(),
+                                                    static_cast<int>(i)) != request.target_streams.end();
+        audio_target.required = explicitly_requested || request.target_streams.empty();
+        audio_target.note = "S08 转码产物保留音频轨（码流复制，PTS 按首包归零）";
         outcome.verification_targets.push_back(std::move(audio_target));
     }
 

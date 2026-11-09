@@ -25,6 +25,8 @@
 namespace videoeye {
 namespace repair {
 
+class RepairRunBudget;
+
 struct RepairPlainMp4Probe {
     bool attemptable = false;
     std::string kind; // "h264" / "aac" / 空
@@ -47,12 +49,15 @@ struct RepairPlainMp4RebuildResult {
 
 class RepairPlainMp4Rebuilder {
 public:
-    // 轻量探测：扫描 mdat 载荷判断能否在无 moov 的情况下重建；带取消检查。
-    static RepairPlainMp4Probe Probe(const std::string& source_path, const std::atomic<bool>* cancel);
+    // 轻量探测：扫描 mdat 载荷判断能否在无 moov 的情况下重建；带取消 + 共享预算检查。
+    // budget 为空时退回只看取消标志（独立调用 / 旧用例）。
+    static RepairPlainMp4Probe Probe(const std::string& source_path, const std::atomic<bool>* cancel,
+                                     const RepairRunBudget* budget = nullptr);
 
     // 重建：写出带 ftyp+moov+mdat 的完整普通 MP4 到 output_path。
     static RepairPlainMp4RebuildResult Rebuild(const std::string& source_path, const std::string& output_path,
-                                               const std::atomic<bool>* cancel);
+                                               const std::atomic<bool>* cancel,
+                                               const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

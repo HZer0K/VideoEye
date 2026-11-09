@@ -19,6 +19,8 @@
 namespace videoeye {
 namespace repair {
 
+class RepairRunBudget;
+
 struct RepairIndexRepairResult {
     bool attempted = false;
     bool ok = false;
@@ -32,8 +34,9 @@ class RepairIndexRepair {
 public:
     // 需要修复时返回 attempted=true；成功写出 output_path 时 ok=true。
     // output_path 由调用方独占创建，函数内部只做 trunc 覆盖。
+    // budget 为空时退回只看取消标志；非空时重建循环也遵守共享截止时间。
     static RepairIndexRepairResult Rebuild(const std::string& source_path, const std::string& output_path,
-                                           const std::atomic<bool>* cancel);
+                                           const std::atomic<bool>* cancel, const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

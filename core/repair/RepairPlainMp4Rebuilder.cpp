@@ -12,6 +12,8 @@
 #include "core/domain/io/Utf8Path.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBoxWriter.h"
+#include "core/repair/RepairBudget.h"
+#include "core/repair/RepairMdatSelfCheck.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
@@ -22,6 +24,21 @@ constexpr uint32_t kMaxAuBytes = 256u * 1024u * 1024u; // 单帧上限，防止�
 
 bool Cancelled(const std::atomic<bool>* cancel) {
     return cancel != nullptr && cancel->load();
+}
+
+// 共享预算优先：引擎传下来的 deadline 覆盖「取消 + 超时」，独立调用才退回 cancel。
+bool Stopped(const std::atomic<bool>* cancel, const RepairRunBudget* budget, std::string* error) {
+    if (budget != nullptr) {
+        if (!budget->Checkpoint())
+            return false;
+        *error = budget->Canceled() ? "已取消" : "超出本次修复预算";
+        return true;
+    }
+    if (Cancelled(cancel)) {
+        *error = "已取消";
+        return true;
+    }
+    return false;
 }
 
 bool ReadAt(std::ifstream& in, std::uint64_t offset, std::uint8_t* data, std::size_t size) {
@@ -343,7 +360,8 @@ bool ParseAdtsHeader(const std::uint8_t* data, std::size_t available, std::uint3
     return true;
 }
 
-ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel) {
+ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel,
+                    const RepairRunBudget* budget) {
     ScanResult result;
     result.audio = true;
     result.kind = "aac";
@@ -369,10 +387,12 @@ ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     std::uint8_t channels = 0;
     std::uint32_t first_rate = 0;
     while (pos < data.size()) {
-        if ((pos / (1024u * 1024u) != (pos + 1) / (1024u * 1024u)) && Cancelled(cancel)) {
-            result.error = "已取消";
+        // 旧判据 pos/1MiB != (pos+1)/1MiB 只在 pos 恰好停在块边界前一字节时成立；
+        // pos 按整帧 / 整 NAL 长度跳跃，实测 2 MiB、每帧 8 字节的 ADTS 样本
+        // 预置 cancel=true 仍跑完全程。改成逐迭代检查点（最严格的迭代式判据），
+        // 并同时吃共享预算，而不是只在外层重建结束后才补查一次。
+        if (Stopped(cancel, budget, &result.error))
             return result;
-        }
         std::uint32_t frame_len = 0;
         if (!ParseAdtsHeader(data.data() + pos, data.size() - pos, &frame_len, &header_len, &object_type, &sfi,
                              &channels)) {
@@ -424,7 +444,8 @@ ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     return result;
 }
 
-ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel) {
+ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel,
+                    const RepairRunBudget* budget) {
     ScanResult result;
     result.video = true;
     result.kind = "h264";
@@ -464,10 +485,12 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     };
 
     while (pos < data.size()) {
-        if ((pos / (1024u * 1024u) != (pos + 1) / (1024u * 1024u)) && Cancelled(cancel)) {
-            result.error = "已取消";
+        // 旧判据 pos/1MiB != (pos+1)/1MiB 只在 pos 恰好停在块边界前一字节时成立；
+        // pos 按整帧 / 整 NAL 长度跳跃，实测 2 MiB、每帧 8 字节的 ADTS 样本
+        // 预置 cancel=true 仍跑完全程。改成逐迭代检查点（最严格的迭代式判据），
+        // 并同时吃共享预算，而不是只在外层重建结束后才补查一次。
+        if (Stopped(cancel, budget, &result.error))
             return result;
-        }
         if (data.size() - pos < 4) {
             result.error = "载荷尾部长度前缀不完整（offset=" + std::to_string(pos) + "）";
             result.video = false;
@@ -917,28 +940,15 @@ std::vector<std::uint8_t> MakeFtyp(std::vector<std::uint8_t> source) {
 }
 
 void WriteMdatHeader(std::ofstream& out, std::uint64_t payload_size) {
-    std::uint8_t header[16] = {'m', 'd', 'a', 't'};
-    const bool large = payload_size + 8 > 0xFFFFFFFFull;
-    const std::size_t header_size = large ? 16 : 8;
-    const std::uint64_t size = payload_size + header_size;
-    if (large) {
-        header[0] = 0;
-        header[1] = 0;
-        header[2] = 0;
-        header[3] = 1;
-        for (int i = 0; i < 8; ++i)
-            header[8 + i] = static_cast<std::uint8_t>(size >> (56 - 8 * i));
-    } else {
-        header[0] = static_cast<std::uint8_t>(size >> 24);
-        header[1] = static_cast<std::uint8_t>(size >> 16);
-        header[2] = static_cast<std::uint8_t>(size >> 8);
-        header[3] = static_cast<std::uint8_t>(size);
-    }
+    // 旧实现把 'mdat' 写在 [0..3] 又被 size 覆盖，[4..7] 恒为 0 —— 产物里
+    // 是一个类型全零的盒，靠样本偏移恰好能读，但结构自检没发现。
+    std::uint8_t header[16] = {};
+    const std::size_t header_size = MakeMdatHeader(payload_size, header);
     out.write(reinterpret_cast<const char*>(header), static_cast<std::streamsize>(header_size));
 }
 
-ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* cancel, MdatInfo* mdat_out,
-                       std::uint64_t* file_size_out, std::vector<PlainBox>* boxes_out,
+ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
+                       MdatInfo* mdat_out, std::uint64_t* file_size_out, std::vector<PlainBox>* boxes_out,
                        std::vector<std::uint8_t>* ftyp_out, std::string* error) {
     ScanResult result;
     std::vector<PlainBox> boxes;
@@ -979,14 +989,14 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
     }
 
     // 先试 ADTS 纯音频，再试 AVCC 纯视频；两者都失败才拒绝。
-    ScanResult audio = ScanAdts(in, mdat, cancel);
+    ScanResult audio = ScanAdts(in, mdat, cancel, budget);
     if (audio.ok) {
         *mdat_out = mdat;
         *file_size_out = file_size;
         *boxes_out = std::move(boxes);
         return audio;
     }
-    ScanResult video = ScanAvcc(in, mdat, cancel);
+    ScanResult video = ScanAvcc(in, mdat, cancel, budget);
     if (video.ok) {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
@@ -1008,14 +1018,15 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
 
 } // namespace
 
-RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_path, const std::atomic<bool>* cancel) {
+RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_path, const std::atomic<bool>* cancel,
+                                                   const RepairRunBudget* budget) {
     RepairPlainMp4Probe probe;
     MdatInfo mdat;
     std::uint64_t file_size = 0;
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp;
     std::string error;
-    const ScanResult scan = ScanPayload(source_path, cancel, &mdat, &file_size, &boxes, &ftyp, &error);
+    const ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp, &error);
     if (!scan.ok) {
         probe.reason = error;
         return probe;
@@ -1034,20 +1045,19 @@ RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_pat
 
 RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& source_path,
                                                              const std::string& output_path,
-                                                             const std::atomic<bool>* cancel) {
+                                                             const std::atomic<bool>* cancel,
+                                                             const RepairRunBudget* budget) {
     RepairPlainMp4RebuildResult result;
     result.attempted = true;
-    if (Cancelled(cancel)) {
-        result.error = "已取消";
+    if (Stopped(cancel, budget, &result.error))
         return result;
-    }
 
     MdatInfo mdat;
     std::uint64_t file_size = 0;
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp_source;
     std::string error;
-    const ScanResult scan = ScanPayload(source_path, cancel, &mdat, &file_size, &boxes, &ftyp_source, &error);
+    const ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error);
     if (!scan.ok) {
         result.error = error.empty() ? "无法从 mdat 重建样本表" : error;
         return result;
@@ -1105,10 +1115,8 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     }
     std::uint64_t written = 0;
     for (const auto& sample : scan.samples) {
-        if (Cancelled(cancel)) {
-            result.error = "已取消";
+        if (Stopped(cancel, budget, &result.error))
             return result;
-        }
         std::vector<std::uint8_t> buffer(sample.size);
         if (!ReadAt(in, sample.source_offset, buffer.data(), buffer.size())) {
             result.error = "读取样本失败：offset=" + std::to_string(sample.source_offset);
@@ -1137,6 +1145,8 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
         result.error = "重建结果结构自检失败: " + check.error_message;
         return result;
     }
+    if (!VerifyRebuiltMdat(check, payload_start, payload_start + total_payload, total_payload, &result.error))
+        return result;
 
     result.ok = true;
     result.samples_rebuilt = scan.samples.size();

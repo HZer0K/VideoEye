@@ -12,6 +12,8 @@
 #include "core/domain/io/Utf8Path.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBoxWriter.h"
+#include "core/repair/RepairBudget.h"
+#include "core/repair/RepairMdatSelfCheck.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
@@ -20,6 +22,22 @@ namespace {
 
 bool Cancelled(const std::atomic<bool>* cancel) {
     return cancel != nullptr && cancel->load();
+}
+
+// 重建可能遍历上百万个 chunk；只靠调用方在「整个重建完成后」补查一次预算，
+// 界面上设的 60 秒会被这段 CPU / IO 循环轻松吃穿。
+bool Stopped(const std::atomic<bool>* cancel, const RepairRunBudget* budget, std::string* error) {
+    if (budget != nullptr) {
+        if (!budget->Checkpoint())
+            return false;
+        *error = budget->Canceled() ? "已取消" : "超出本次修复预算";
+        return true;
+    }
+    if (Cancelled(cancel)) {
+        *error = "已取消";
+        return true;
+    }
+    return false;
 }
 
 const IsobmffBox* FindChild(const IsobmffBox& box, const char* type) {
@@ -326,35 +344,18 @@ std::vector<uint8_t> MakeFtyp() {
 }
 
 void WriteMdatHeader(std::ofstream& out, std::uint64_t payload_size) {
-    std::uint8_t header[16] = {'m', 'd', 'a', 't'};
-    const bool large = payload_size + 8 > 0xFFFFFFFFull;
-    const std::size_t header_size = large ? 16 : 8;
-    std::uint64_t size = payload_size + header_size;
-    if (large) {
-        header[0] = 0;
-        header[1] = 0;
-        header[2] = 0;
-        header[3] = 1;
-        for (int i = 0; i < 8; ++i)
-            header[8 + i] = static_cast<std::uint8_t>(size >> (56 - 8 * i));
-    } else {
-        header[0] = static_cast<std::uint8_t>(size >> 24);
-        header[1] = static_cast<std::uint8_t>(size >> 16);
-        header[2] = static_cast<std::uint8_t>(size >> 8);
-        header[3] = static_cast<std::uint8_t>(size);
-    }
+    std::uint8_t header[16] = {};
+    const std::size_t header_size = MakeMdatHeader(payload_size, header);
     out.write(reinterpret_cast<const char*>(header), static_cast<std::streamsize>(header_size));
 }
 
 } // namespace
 
 RepairIndexRepairResult RepairIndexRepair::Rebuild(const std::string& source_path, const std::string& output_path,
-                                                   const std::atomic<bool>* cancel) {
+                                                   const std::atomic<bool>* cancel, const RepairRunBudget* budget) {
     RepairIndexRepairResult result;
-    if (Cancelled(cancel)) {
-        result.error = "已取消";
+    if (Stopped(cancel, budget, &result.error))
         return result;
-    }
 
     IsobmffFile parsed;
     if (!IsobmffParser::Parse(source_path, parsed)) {
@@ -462,6 +463,8 @@ RepairIndexRepairResult RepairIndexRepair::Rebuild(const std::string& source_pat
 
     std::vector<ChunkRef> refs;
     for (std::size_t i = 0; i < parsed.tracks.size(); ++i) {
+        if (Stopped(cancel, budget, &result.error))
+            return result;
         if (!BuildChunkRefs(parsed.tracks[i], i, &refs, &result.error))
             return result;
     }
@@ -582,10 +585,8 @@ RepairIndexRepairResult RepairIndexRepair::Rebuild(const std::string& source_pat
     }
     std::uint64_t written = 0;
     for (const auto& ref : sorted_refs) {
-        if (Cancelled(cancel)) {
-            result.error = "已取消";
+        if (Stopped(cancel, budget, &result.error))
             return result;
-        }
         if (!CopyRange(in, out, ref.original_offset + static_cast<std::uint64_t>(shift), ref.size, &written,
                        &result.error))
             return result;
@@ -609,6 +610,8 @@ RepairIndexRepairResult RepairIndexRepair::Rebuild(const std::string& source_pat
         result.error = "重建结果结构自检失败: " + check.error_message;
         return result;
     }
+    if (!VerifyRebuiltMdat(check, payload_start, payload_start + total_payload, total_payload, &result.error))
+        return result;
 
     result.ok = true;
     result.applied_shift_bytes = shift;

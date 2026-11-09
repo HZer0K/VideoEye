@@ -302,10 +302,16 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     }
 
     // ---- 4. 验证（逐目标轨，R04 / R05 / R09）----
-    // MPEG-TS 需要 Annex B 转换、S08 转码会重建视频帧：两者都让产物载荷与输入
-    // 必然不同，此时不能再用载荷哈希断言"码流未被改动"，否则会把一次合法的
-    // 容器转换 / 画质有损的重编码误判成保真度失败。
-    const bool payload_transformed = paths.extension == "ts" || execution.video_reencoded;
+    // MPEG-TS 需要 Annex B 转换、S08 转码会重建视频帧：两者都让**视频**载荷与
+    // 输入必然不同，此时不能再用视频载荷哈希断言"码流未被改动"，否则会把一次
+    // 合法的容器转换 / 画质有损的重编码误判成保真度失败。
+    // 音频不同：TS 的 AAC 只是给 MP4 的裸访问单元套了 ADTS 头，两侧都先做
+    // 访问单元规范化再累计哈希，仍可正常核对（见 RepairPayloadHash.h）。
+    // 没有规范化能力的编码由验证器明确降级为「原始载荷未验证」，不判 Failed。
+    // 输入是 TS 时同样会做 Annex B → AVCC 转换（TS→MP4），视频包字节也必然变。
+    // 判定必须由 demuxer 的 format name 给出，不能看扩展名（fMP4 分片常叫 *.ts）。
+    const bool input_is_ts = execution.input_is_mpegts;
+    const bool payload_transformed = paths.extension == "ts" || input_is_ts || execution.video_reencoded;
     std::optional<uint64_t> expected_hash;
     if (!payload_transformed) {
         for (const auto& action : execution.executions) {

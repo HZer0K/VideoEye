@@ -72,6 +72,11 @@ struct RepairExecutionOutcome {
     // 源侧声明的可播放时长（容器时长或最长轨道时长），用于恢复比例估算。
     double source_duration_seconds = 0.0;
 
+    // 输入容器确为 MPEG-TS（由 demuxer 的 format name 判定，不看扩展名）。
+    // TS→MP4 会做 Annex B → AVCC 转换，视频包字节必然变化，不能再用原始包
+    // 载荷哈希断言保真；扩展名不可靠：测试里的 fMP4 分片就叫 *_seg.ts。
+    bool input_is_mpegts = false;
+
     std::optional<uint64_t> input_video_payload_hash;
     uint64_t input_video_packet_count = 0;
     // 第一条音频轨的输入包载荷哈希，用于产物音频载荷一致性核对。

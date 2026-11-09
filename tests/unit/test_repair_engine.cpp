@@ -21,20 +21,29 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <random>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "core/domain/model/RepairRequest.h"
 #include "core/media/container/IsobmffParser.h"
+#include "core/repair/RepairBudget.h"
 #include "core/repair/RepairEngine.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairFragmentForensics.h"
+#include "core/repair/RepairIndexRepair.h"
+#include "core/repair/RepairMdatSelfCheck.h"
 #include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPayloadHash.h"
+#include "core/repair/RepairPlainMp4Rebuilder.h"
 #include "core/repair/RepairPlanner.h"
+#include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
 #include "core/reporting/RepairReportExporter.h"
 #include "tests/support/TestMediaFactory.h"
@@ -1172,10 +1181,16 @@ TEST(RepairEngine, CancelKeepsWrittenPrefixWhenRequested) {
 }
 
 // P2-13：救内容模式对可解码的视频帧做容忍式重编码，产物可播放且画质结论有量化口径。
+// F01 门禁：正常输入 40 帧必须 40 帧全出。旧实现第二帧起 av_frame_get_buffer 恒
+// EINVAL，只写 1 帧仍返回成功，而"frame_count > 0"这种断言完全看不出来。
 TEST(RepairEngine, RecoverContentModeTranscodesReadableFrames) {
     const std::string dir = MakeTempDir("p2_transcode");
     const auto media = videoeye_test::CreateTestMedia(dir, "transcode_src");
     ASSERT_TRUE(media.ok) << media.error;
+    const auto source_probe = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(source_probe.opened) << source_probe.error;
+    // 以「实测可解码帧数」为真值：编码器尾部冲刷可能少吐一帧，不要用声明值 40。
+    ASSERT_GT(source_probe.frame_count, 1);
 
     RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
     request.mode = RepairMode::RecoverContent;
@@ -1192,10 +1207,16 @@ TEST(RepairEngine, RecoverContentModeTranscodesReadableFrames) {
     EXPECT_TRUE(transcode->attempted) << transcode->detail;
     EXPECT_TRUE(transcode->succeeded) << transcode->detail;
     EXPECT_GT(transcode->packets_written, 0u);
+    EXPECT_GE(transcode->packets_written, static_cast<uint64_t>(source_probe.frame_count));
 
     const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
     EXPECT_TRUE(probe.opened) << probe.error;
-    EXPECT_GT(probe.frame_count, 0);
+    EXPECT_EQ(probe.frame_count, source_probe.frame_count) << "正常输入的每一帧都必须被重新编码，不能只写第一帧";
+    // 源里可能有 1 个解不出画面的包（40 包 / 39 帧），容忍式转码按「可解码帧」
+    // 重建，所以只能要求产物一帧一包，不能拿源包数硬比。
+    EXPECT_EQ(probe.video_packet_count, probe.frame_count);
+    EXPECT_NEAR(probe.video_duration_seconds, source_probe.video_duration_seconds, 0.20)
+        << "F02：输出 PTS 跨度必须与源时长一致";
 }
 
 // P2-12：普通 MP4 丢失 moov、但单个 mdat 是纯 H.264 AVCC（参数集与 VUI timing
@@ -1281,4 +1302,389 @@ TEST(RepairEngine, FragmentCoverageIsMeasuredPayloadBytesNotBoxSizes) {
     EXPECT_TRUE(coverage.reached_eof) << "缺 moov 的分片序列已实扫到文件尾；用 parse_ok && found_moov 派生会恒 false";
     EXPECT_FALSE(coverage.truncated_by_budget);
     EXPECT_EQ(coverage.time_scanned_seconds, ev.estimated_duration_seconds);
+}
+
+// ============================================================
+// 2026-11-09 审查修复回归：F01..F08
+//
+// 门禁顺序按审查建议：先保证正常媒体的「逐轨帧数 / 包数 / 时长守恒」，再补
+// 跨容器音频哈希、分数帧率、mdat 结构、预算、输出上限与写入失败路径。
+// ============================================================
+
+namespace {
+
+// 造一份「ftyp + 单个 mdat 里全是最小 ADTS AAC 帧」的无 moov MP4。
+// 每帧 7 字节 ADTS 头 + payload_bytes 载荷，帧长字段自洽，能过 ParseAdtsHeader。
+bool WriteAdtsOnlyMp4(const std::string& path, int frames, int payload_bytes) {
+    std::vector<uint8_t> bytes;
+    auto push_u32 = [&bytes](uint32_t value) {
+        bytes.push_back(static_cast<uint8_t>(value >> 24));
+        bytes.push_back(static_cast<uint8_t>(value >> 16));
+        bytes.push_back(static_cast<uint8_t>(value >> 8));
+        bytes.push_back(static_cast<uint8_t>(value));
+    };
+    auto push_4cc = [&bytes](const char* text) {
+        for (int i = 0; i < 4; ++i)
+            bytes.push_back(static_cast<uint8_t>(text[i]));
+    };
+    const uint32_t frame_len = static_cast<uint32_t>(7 + payload_bytes);
+    const uint32_t mdat_size = 8u + static_cast<uint32_t>(frames) * frame_len;
+    push_u32(28);
+    push_4cc("ftyp");
+    push_4cc("isom");
+    push_u32(512);
+    push_4cc("isom");
+    push_4cc("iso2");
+    push_4cc("mp41");
+    push_u32(mdat_size);
+    push_4cc("mdat");
+    for (int n = 0; n < frames; ++n) {
+        std::vector<uint8_t> frame(frame_len, 0);
+        frame[0] = 0xFF;
+        frame[1] = 0xF1; // MPEG-4 / layer 00 / protection_absent=1 → 7 字节头
+        frame[2] = 0x50; // profile=1(AAC LC), sampling_frequency_index=4(44100)
+        frame[3] = static_cast<uint8_t>(0x80 | ((frame_len >> 11) & 0x03)); // channel_config=2
+        frame[4] = static_cast<uint8_t>((frame_len >> 3) & 0xFF);
+        frame[5] = static_cast<uint8_t>(((frame_len & 0x07) << 5) | 0x1F);
+        frame[6] = 0xFC;
+        for (uint32_t i = 7; i < frame_len; ++i)
+            frame[i] = static_cast<uint8_t>((i * 7 + n) & 0xFF);
+        bytes.insert(bytes.end(), frame.begin(), frame.end());
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+        return false;
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+void ExpectRealMdatType(const std::string& path) {
+    videoeye::IsobmffFile parsed;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(path, parsed)) << parsed.error_message;
+    ASSERT_TRUE(parsed.found_mdat) << "产物里必须有类型正确的 mdat 盒";
+    ASSERT_GT(parsed.first_mdat_offset, 0u);
+    std::ifstream in(path, std::ios::binary);
+    ASSERT_TRUE(in.good());
+    in.seekg(static_cast<std::streamoff>(parsed.first_mdat_offset + 4), std::ios::beg);
+    char type[5] = {};
+    in.read(type, 4);
+    EXPECT_EQ(std::string(type, 4), "mdat") << "盒类型必须写在下标 4..7，不能被 size 覆盖成 0";
+}
+
+class TranscodeFaultGuard {
+public:
+    TranscodeFaultGuard() = default;
+    ~TranscodeFaultGuard() {
+        repair::SetTranscodeWriteFailureForTesting(0);
+        repair::SetTranscodeTrailerFailureForTesting(false);
+    }
+    TranscodeFaultGuard(const TranscodeFaultGuard&) = delete;
+    TranscodeFaultGuard& operator=(const TranscodeFaultGuard&) = delete;
+};
+
+} // namespace
+
+// ---- F03：ADTS 头与裸访问单元必须是同一份哈希证据 ----
+TEST(RepairPayloadHashTests, AdtsAndRawAccessUnitsProduceSameHash) {
+    using videoeye::repair::Fnv1a64Begin;
+    using videoeye::repair::Fnv1a64Update;
+    using videoeye::repair::UpdateAudioPayloadHash;
+    constexpr bool kAac = true; // codec_id == AV_CODEC_ID_AAC 时传 true
+
+    std::vector<uint8_t> au1(64), au2(48);
+    for (size_t i = 0; i < au1.size(); ++i)
+        au1[i] = static_cast<uint8_t>(i * 3 + 1);
+    for (size_t i = 0; i < au2.size(); ++i)
+        au2[i] = static_cast<uint8_t>(i * 5 + 7);
+    auto adts = [](const std::vector<uint8_t>& au, bool crc) {
+        const size_t header = crc ? 9 : 7;
+        const size_t total = header + au.size();
+        std::vector<uint8_t> frame(total, 0);
+        frame[0] = 0xFF;
+        frame[1] = crc ? 0xF0 : 0xF1;
+        frame[2] = 0x50;
+        frame[3] = static_cast<uint8_t>(((total >> 11) & 0x03));
+        frame[4] = static_cast<uint8_t>((total >> 3) & 0xFF);
+        frame[5] = static_cast<uint8_t>(((total & 0x07) << 5) | 0x1F);
+        frame[6] = 0xFC;
+        std::copy(au.begin(), au.end(), frame.begin() + static_cast<std::ptrdiff_t>(header));
+        return frame;
+    };
+
+    const uint64_t raw = Fnv1a64Update(Fnv1a64Update(Fnv1a64Begin(), au1.data(), au1.size()), au2.data(), au2.size());
+    const auto one = adts(au1, false);
+    const auto two = adts(au2, false);
+    EXPECT_EQ(UpdateAudioPayloadHash(Fnv1a64Begin(), one.data(), one.size(), kAac),
+              Fnv1a64Update(Fnv1a64Begin(), au1.data(), au1.size()));
+    // 一个 PES 包装两个 ADTS 帧，必须与 MP4 侧「两个裸 AU 包」逐字节等价。
+    std::vector<uint8_t> combined = one;
+    combined.insert(combined.end(), two.begin(), two.end());
+    EXPECT_EQ(UpdateAudioPayloadHash(Fnv1a64Begin(), combined.data(), combined.size(), kAac), raw);
+    // 带 CRC 的 9 字节头同样只比访问单元。
+    const auto with_crc = adts(au1, true);
+    EXPECT_EQ(UpdateAudioPayloadHash(Fnv1a64Begin(), with_crc.data(), with_crc.size(), kAac),
+              Fnv1a64Update(Fnv1a64Begin(), au1.data(), au1.size()));
+}
+
+TEST(RepairPayloadHashTests, NonAacAndFalseSyncAreNeverStripped) {
+    using videoeye::repair::Fnv1a64Begin;
+    using videoeye::repair::Fnv1a64Update;
+    using videoeye::repair::UpdateAudioPayloadHash;
+    std::vector<uint8_t> data(32);
+    for (size_t i = 0; i < data.size(); ++i)
+        data[i] = static_cast<uint8_t>(0xF0 + i);
+    // 非 AAC 编码：原样累计（结论层会标为「无规范化能力」）。
+    EXPECT_EQ(UpdateAudioPayloadHash(Fnv1a64Begin(), data.data(), data.size(), false),
+              Fnv1a64Update(Fnv1a64Begin(), data.data(), data.size()));
+    // 以 0xFF 0xF1 开头但帧长字段不自洽的裸 AU：不得误剥 7 字节。
+    data[0] = 0xFF;
+    data[1] = 0xF1;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    EXPECT_EQ(UpdateAudioPayloadHash(Fnv1a64Begin(), data.data(), data.size(), true),
+              Fnv1a64Update(Fnv1a64Begin(), data.data(), data.size()));
+}
+
+// ---- F05：盒头的普通 / 扩展分支都要把 'mdat' 写到下标 4..7 ----
+TEST(RepairMdatTests, MakeMdatHeaderWritesTypeInBothBranches) {
+    uint8_t header[16] = {};
+    EXPECT_EQ(videoeye::repair::MakeMdatHeader(100, header), 8u);
+    EXPECT_EQ(std::string(reinterpret_cast<char*>(header + 4), 4), "mdat");
+    EXPECT_EQ((static_cast<uint32_t>(header[0]) << 24) | (static_cast<uint32_t>(header[1]) << 16) |
+                  (static_cast<uint32_t>(header[2]) << 8) | header[3],
+              108u);
+
+    const uint64_t huge_payload = 0xFFFFFFFFull - 7ull; // 迫使进入 largesize 分支
+    EXPECT_EQ(videoeye::repair::MakeMdatHeader(huge_payload, header), 16u);
+    EXPECT_EQ(header[3], 1);
+    EXPECT_EQ(std::string(reinterpret_cast<char*>(header + 4), 4), "mdat");
+    uint64_t large_size = 0;
+    for (int i = 0; i < 8; ++i)
+        large_size = (large_size << 8) | header[8 + i];
+    EXPECT_EQ(large_size, huge_payload + 16u);
+}
+
+TEST(RepairMdatTests, SelfCheckRejectsZeroTypeAndOutOfRangeSamples) {
+    videoeye::IsobmffFile file;
+    file.ok = true;
+    file.file_size = 108;
+    file.found_mdat = true;
+    videoeye::IsobmffBox box;
+    box.offset = 0;
+    box.size = 108;
+    box.header_size = 8;
+    box.type = std::string("\0\0\0\0", 4); // 旧 bug 的产物
+    file.top_level.push_back(box);
+    std::string error;
+    EXPECT_FALSE(videoeye::repair::VerifyRebuiltMdat(file, 8, 108, 100, &error)) << error;
+    EXPECT_NE(error.find("mdat"), std::string::npos);
+
+    file.top_level[0].type = "mdat";
+    EXPECT_TRUE(videoeye::repair::VerifyRebuiltMdat(file, 8, 108, 100, &error)) << error;
+    EXPECT_FALSE(videoeye::repair::VerifyRebuiltMdat(file, 8, 200, 100, &error)) << "样本越界必须判红";
+    EXPECT_FALSE(videoeye::repair::VerifyRebuiltMdat(file, 8, 108, 99, &error)) << "载荷长度不符必须判红";
+}
+
+TEST(RepairMdatTests, RebuiltPlainAndIndexMp4HaveRealMdat) {
+    const std::string plain_source = RealCorpusSample("real_h264_inband_missing_moov.mp4");
+    if (!std::filesystem::exists(plain_source))
+        GTEST_SKIP() << "缺真实样本，先跑 tests/corpus/generate_real_corpus.py";
+    const std::string dir = MakeTempDir("mdat_header");
+
+    const std::string plain_out = dir + "/plain.mp4";
+    const auto plain = repair::RepairPlainMp4Rebuilder::Rebuild(plain_source, plain_out, nullptr);
+    ASSERT_TRUE(plain.ok) << plain.error;
+    ExpectRealMdatType(plain_out);
+
+    const auto media = videoeye_test::CreateTestMedia(dir, "index_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const std::string broken = dir + "/shifted.mp4";
+    ASSERT_TRUE(PrependFreeBox(media.path, broken, 1024u));
+    const std::string index_out = dir + "/index.mp4";
+    const auto index = repair::RepairIndexRepair::Rebuild(broken, index_out, nullptr);
+    ASSERT_TRUE(index.ok) << index.error;
+    ExpectRealMdatType(index_out);
+}
+
+// ---- F06：扫描循环必须真的响应取消与共享预算 ----
+TEST(RepairPlainMp4RebuilderTests, ScanLoopHonorsCancelAndSharedBudget) {
+    const std::string dir = MakeTempDir("plain_cancel");
+    const std::string path = dir + "/adts_only.mp4";
+    ASSERT_TRUE(WriteAdtsOnlyMp4(path, 4096, 8)); // 每帧 15 字节，pos 从不落在 1 MiB 边界前一字节
+
+    std::atomic<bool> cancel_true{true};
+    const auto canceled = repair::RepairPlainMp4Rebuilder::Probe(path, &cancel_true);
+    EXPECT_FALSE(canceled.attemptable);
+    EXPECT_NE(canceled.reason.find("已取消"), std::string::npos) << canceled.reason;
+
+    const auto canceled_via_budget = repair::RepairPlainMp4Rebuilder::Probe(path, &cancel_true, nullptr);
+    EXPECT_FALSE(canceled_via_budget.attemptable);
+
+    std::atomic<bool> cancel_false{false};
+    repair::RepairRunBudget budget(&cancel_false, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1150));
+    const auto timed_out = repair::RepairPlainMp4Rebuilder::Probe(path, &cancel_false, &budget);
+    EXPECT_FALSE(timed_out.attemptable);
+    EXPECT_NE(timed_out.reason.find("预算"), std::string::npos) << timed_out.reason;
+
+    // 反向守护：没取消、没预算时必须能扫出 ADTS 单轨，避免把「一律拒绝」当修复。
+    const auto healthy = repair::RepairPlainMp4Rebuilder::Probe(path, nullptr);
+    EXPECT_TRUE(healthy.attemptable) << healthy.reason;
+    EXPECT_EQ(healthy.kind, "aac");
+}
+
+// ---- F03：默认 V2 下合法 MP4→TS / TS→MP4 不能被音频载荷哈希误拒 ----
+TEST(RepairEngine, MpegTsRemuxWithDefaultV2VerifiesNormalizedAudio) {
+    const std::string dir = MakeTempDir("f03_ts_audio");
+    const auto media = videoeye_test::CreateTestMedia(dir, "ts_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest forward = MakeRequest(media.path, dir + "/out"); // 默认 V2 全量解码
+    forward.output_container = RepairOutputContainer::Ts;
+    const RepairResult ts_result = repair::RepairEngine::Run(forward, nullptr, nullptr);
+    ASSERT_TRUE(ts_result.output_published) << ts_result.summary << " | " << ts_result.error;
+    EXPECT_NE(ts_result.verification.status, RepairCheckStatus::Failed);
+    EXPECT_EQ(ts_result.fidelity.audio, RepairFidelityStatus::VerifiedMatch)
+        << "剥离 ADTS 头后 AAC 访问单元必须逐包一致";
+
+    // 反向：TS 输入带 ADTS 头、MP4 输出是裸 AU，同样不能判不一致。
+    RepairRequest backward = MakeRequest(ts_result.output_path, dir + "/back");
+    backward.output_container = RepairOutputContainer::Mp4;
+    const RepairResult mp4_result = repair::RepairEngine::Run(backward, nullptr, nullptr);
+    ASSERT_TRUE(mp4_result.output_published) << mp4_result.summary << " | " << mp4_result.error;
+    EXPECT_NE(mp4_result.verification.status, RepairCheckStatus::Failed);
+    EXPECT_EQ(mp4_result.fidelity.audio, RepairFidelityStatus::VerifiedMatch);
+}
+
+// ---- F02：30000/1001、24000/1001 的帧数与时长守恒 ----
+TEST(RepairEngine, RecoverContentKeepsFractionalFrameRateTimeline) {
+    struct Case {
+        int num;
+        int den;
+        const char* tag;
+    };
+    for (const Case& item : {Case{30000, 1001, "ntsc30"}, Case{24000, 1001, "ntsc24"}}) {
+        const std::string dir = MakeTempDir(std::string("f02_") + item.tag);
+        videoeye_test::TestMediaSpec spec;
+        spec.fps = item.num;
+        spec.fps_den = item.den;
+        spec.frame_count = 40;
+        const auto media = videoeye_test::CreateTestMedia(dir, "frac_src", spec);
+        ASSERT_TRUE(media.ok) << item.tag << ": " << media.error;
+        const auto src = videoeye_test::ProbeMediaFile(media.path);
+        ASSERT_TRUE(src.opened) << item.tag << ": " << src.error;
+        ASSERT_EQ(src.frame_count, spec.frame_count);
+
+        RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+        request.mode = RepairMode::RecoverContent;
+        const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+        ASSERT_TRUE(result.output_published) << item.tag << ": " << result.summary << " | " << result.error;
+        const auto out = videoeye_test::ProbeMediaFile(result.output_path);
+        ASSERT_TRUE(out.opened) << item.tag << ": " << out.error;
+        EXPECT_EQ(out.frame_count, src.frame_count) << item.tag;
+        EXPECT_NEAR(out.video_duration_seconds, src.video_duration_seconds, 0.20)
+            << item.tag << "：旧时基 {1,fps.num} 会把 1001 s 压成 1 s";
+        EXPECT_NEAR(out.duration_seconds, src.duration_seconds, 0.25) << item.tag;
+    }
+}
+
+// ---- F04：保留音轨必须回放首帧探测期的包、默认参与逐轨验证 ----
+TEST(RepairEngine, RecoverContentRetainsAudioAndVerifiesEveryTrack) {
+    const std::string dir = MakeTempDir("f04_audio");
+    videoeye_test::TestMediaSpec spec;
+    spec.max_b_frames = 2; // 首帧解码被推迟，之前会出现音频包
+    const auto media = videoeye_test::CreateTestMedia(dir, "audio_src", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+    const auto src = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(src.opened) << src.error;
+    ASSERT_GT(src.audio_packet_count, 0);
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V2_FullDecode);
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const auto out = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(out.opened) << out.error;
+    EXPECT_EQ(out.audio_streams, src.audio_streams);
+    EXPECT_EQ(out.audio_packet_count, src.audio_packet_count) << "首帧探测期间的音频包必须被回放，不能静默丢弃";
+    EXPECT_NEAR(out.audio_start_seconds, 0.0, 0.15) << "音频起点应与重建的视频起点对齐";
+
+    bool audio_required = false;
+    bool audio_verified = false;
+    for (const auto& track : result.verification.per_track) {
+        if (track.kind != "audio")
+            continue;
+        audio_required = true;
+        audio_verified = audio_verified || track.verified;
+        EXPECT_NE(track.status, RepairCheckStatus::NotRun) << "S08 保留音轨不能再被固定标为不验证";
+    }
+    EXPECT_TRUE(audio_required && audio_verified) << "全部保留媒体轨都必须有实测解码证据";
+    EXPECT_TRUE(result.verification.av_sync_checked) << "音画同步检查不能排除 S08 音轨";
+    EXPECT_LT(result.verification.av_sync_start_delta_seconds, 0.5);
+}
+
+// ---- F07：S08 与重封装路径一样遵守输出字节上限 ----
+TEST(RepairEngine, RecoverContentRespectsMaxOutputBytes) {
+    const std::string dir = MakeTempDir("f07_cap");
+    const auto media = videoeye_test::CreateTestMedia(dir, "cap_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const auto src = videoeye_test::ProbeMediaFile(media.path);
+    ASSERT_TRUE(src.opened) << src.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.mode = RepairMode::RecoverContent;
+    request.limits.max_output_bytes = 10000;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_TRUE(HasResidualFinding(result, "output.size_capped")) << "S08 命中上限必须留痕";
+    EXPECT_EQ(result.fidelity.content_completeness, "partial");
+
+    const auto out = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(out.opened) << out.error;
+    EXPECT_GT(out.frame_count, 0) << "上限内仍应交付可播放前缀";
+    EXPECT_LT(out.frame_count, src.frame_count) << "命中上限后必须停止继续写入";
+}
+
+// ---- F08：部分写入后的写包 / 收尾失败绝不能记为成功 ----
+// 直接调 S08 执行器：走 RepairEngine 会在转码失败后自动回退保码流重封装，
+// 那会把"转码失败"掩盖成一次成功的 remux，测不到我们要钉的那段收尾逻辑。
+TEST(RepairTolerantTranscodeTests, WriteFailureAfterPartialWriteIsNotSuccess) {
+    struct Case {
+        int nth_write;
+        bool trailer;
+        const char* tag;
+    };
+    for (const Case& item : {Case{3, false, "packet"}, Case{0, true, "trailer"}}) {
+        TranscodeFaultGuard guard;
+        repair::SetTranscodeWriteFailureForTesting(item.nth_write);
+        repair::SetTranscodeTrailerFailureForTesting(item.trailer);
+
+        const std::string dir = MakeTempDir(std::string("f08_") + item.tag);
+        const auto media = videoeye_test::CreateTestMedia(dir, "write_src");
+        ASSERT_TRUE(media.ok) << item.tag << ": " << media.error;
+        RepairRequest request = MakeRequest(media.path, dir, RepairVerificationLevel::V1_FrameSample);
+        request.mode = RepairMode::RecoverContent;
+        const auto paths = repair::RepairOutputWriter::Resolve(request, "transcode-fault-test");
+        ASSERT_TRUE(paths.valid) << paths.error;
+        model::RepairDiagnosis diagnosis;
+        model::RepairPlan plan;
+        const auto outcome =
+            repair::RepairTolerantTranscode::Execute(request, diagnosis, plan, paths, nullptr, nullptr, nullptr);
+        repair::RepairOutputWriter::Discard(paths.part_path);
+
+        EXPECT_FALSE(outcome.ok) << item.tag << "：写过包也不能把写入 / 封装失败报成成功转码";
+        EXPECT_FALSE(outcome.error.empty()) << item.tag;
+        EXPECT_GT(outcome.packets_written, 0u) << item.tag << "：必须真的写过部分包，才测得到旧 bug";
+        bool has_failure_finding = false;
+        for (const auto& finding : outcome.residual_findings) {
+            if (finding.code == "output.transcode_write_failed")
+                has_failure_finding = true;
+        }
+        EXPECT_TRUE(has_failure_finding) << item.tag << "：写入失败要作为残留问题传出";
+        for (const auto& execution : outcome.executions)
+            EXPECT_FALSE(execution.action == RepairAction::S08_TolerantTranscode && execution.succeeded)
+                << item.tag << "：不能伪造一条成功的转码执行记录";
+    }
 }
