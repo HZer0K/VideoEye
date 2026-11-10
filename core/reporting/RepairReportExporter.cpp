@@ -373,6 +373,54 @@ JsonValue BuildRecoveredSegments(const std::vector<model::RepairRecoveredSegment
     return array;
 }
 
+// 损失区间：与 recovered_segments 一一对应的「跳过段」视图。字节边界拿不到时不写
+// 这两个键，绝不填 0 冒充起点。
+JsonValue BuildLostRanges(const std::vector<model::RepairLostRange>& ranges) {
+    JsonValue array = JsonValue::MakeArray();
+    for (const auto& range : ranges) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("input_start_seconds", JNum(range.input_start_seconds));
+        node.Set("input_end_seconds", JNum(range.input_end_seconds));
+        node.Set("duration_seconds", JNum(range.DurationSeconds()));
+        if (range.byte_start.has_value())
+            node.Set("byte_start", J64(*range.byte_start));
+        if (range.byte_end.has_value())
+            node.Set("byte_end", J64(*range.byte_end));
+        node.Set("reason", JText(range.reason));
+        node.Set("evidence", JText(range.evidence));
+        node.Set("recoverable", JsonValue(range.recoverable));
+        array.PushBack(node);
+    }
+    return array;
+}
+
+// 样本层摘要：total_samples / total_bytes 是全量实测值，retained_detail 只是
+// 明细缓存保留条数。available=false 表示本次执行没有接入账本，不能读成「零样本」。
+JsonValue BuildSampleLedger(const model::RepairSampleLedgerSummary& ledger, const std::vector<std::string>& problems) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("available", JsonValue(ledger.available));
+    object.Set("total_samples", J64(ledger.total_samples));
+    object.Set("total_bytes", J64(ledger.total_bytes));
+    object.Set("retained_detail", J64(ledger.retained_detail));
+    object.Set("dropped_detail", J64(ledger.dropped_detail));
+    object.Set("detail_truncated", JsonValue(ledger.detail_truncated));
+    object.Set("by_track_count", J64(ledger.by_track_count));
+    object.Set("by_segment_count", J64(ledger.by_segment_count));
+    object.Set("verified_samples", J64(ledger.verified_samples));
+    object.Set("inferred_samples", J64(ledger.inferred_samples));
+    object.Set("decoded_ok_samples", J64(ledger.decoded_ok_samples));
+    object.Set("damaged_samples", J64(ledger.damaged_samples));
+    JsonValue limitations = JsonValue::MakeArray();
+    for (const auto& text : ledger.limitations)
+        limitations.PushBack(JText(text));
+    object.Set("limitations", limitations);
+    JsonValue issues = JsonValue::MakeArray();
+    for (const auto& text : problems)
+        issues.PushBack(JText(text));
+    object.Set("conservation_problems", issues);
+    return object;
+}
+
 JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("attempted", JsonValue(repair.attempted));
@@ -479,7 +527,9 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("verification", BuildVerification(result.verification));
     root.Set("fidelity", BuildFidelity(result.fidelity));
     root.Set("track_conservation", BuildTrackConservationArray(result.track_conservation));
+    root.Set("sample_ledger", BuildSampleLedger(result.sample_ledger, result.sample_conservation_problems));
     root.Set("recovered_segments", BuildRecoveredSegments(result.recovered_segments));
+    root.Set("lost_ranges", BuildLostRanges(result.lost_ranges));
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
@@ -661,6 +711,29 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     ReportSection recovery;
     recovery.title = "恢复区间与时间轴";
     recovery.rows.emplace_back("恢复区间数量", std::to_string(result.recovered_segments.size()));
+    recovery.rows.emplace_back("样本层实测样本数", result.sample_ledger.available
+                                                       ? std::to_string(result.sample_ledger.total_samples)
+                                                       : "未接入");
+    if (result.sample_ledger.available) {
+        std::ostringstream ledger_line;
+        ledger_line << "样本账本: 全量 " << result.sample_ledger.total_samples << " 个样本 / "
+                    << result.sample_ledger.total_bytes << " 字节；明细保留 " << result.sample_ledger.retained_detail
+                    << " 条";
+        if (result.sample_ledger.detail_truncated)
+            ledger_line << "（缓存达上限，聚合计数仍为全量实测值）";
+        recovery.items.push_back(ledger_line.str());
+        for (const auto& problem : result.sample_conservation_problems)
+            recovery.items.push_back("样本守恒不一致: " + problem);
+    }
+    // 只写「确实损失」的区间：没有跳段时一行都不出，避免空表被读成「检查过且无损」。
+    recovery.rows.emplace_back("损失区间数量", std::to_string(result.lost_ranges.size()));
+    for (const auto& lost : result.lost_ranges) {
+        std::ostringstream line;
+        line << "损失: 输入 " << FixedSeconds(lost.input_start_seconds) << "–" << FixedSeconds(lost.input_end_seconds)
+             << "s（" << FixedSeconds(lost.DurationSeconds()) << "s，" << lost.reason << "，"
+             << (lost.recoverable ? "有其它副本可恢复" : "无其它副本") << "） — " << lost.evidence;
+        recovery.items.push_back(line.str());
+    }
     if (result.recovered_segments.empty()) {
         recovery.items.push_back("未发生跳段恢复：产物由单一连续区段组成");
     } else {

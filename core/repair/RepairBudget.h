@@ -8,7 +8,12 @@
 // 结果是界面上设了 60 秒，任务可能跑几分钟。
 //
 // 这里把「取消标志 + steady_clock 绝对截止时间」合成一个只读值对象，由引擎在
-// 入口创建，贯穿诊断 / 规划 / 执行 / 验证 / 发布。所有 CPU 循环用 Checkpoint()，
+// 入口创建。覆盖范围（2026-11-10 校准，别再写成「贯穿所有环节」）：
+//   * 引擎在诊断 / 规划 / 执行 / 验证 / 发布之间做阶段间 Checkpoint()；
+//   * 诊断内部的长循环（分片取证、参考初始化段读取 / 自建、输入快照的内容摘要
+//     分块读）逐迭代检查同一个 budget；
+//   * 瞬时操作（路径解析、产物预留、rename 发布）不单独武装，由相邻检查点覆盖。
+// ❗ 头注释代替不了实参：新加的长循环必须真的把 budget 传下去并调用 Checkpoint()。
 // 所有阻塞式 FFmpeg IO 用 RemainingUs() 重新武装中断回调的截止时间。
 //
 // ⚠️ 预算不是硬实时：单次 avcodec_send_packet/receive_frame、单次 read 系统调用
@@ -17,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace videoeye {
 namespace repair {
@@ -72,6 +78,14 @@ private:
     bool has_deadline_ = false;
     Clock::time_point deadline_{};
 };
+
+// 命中预算时返回统一措辞，供各阶段写进 error / 结论；没命中或没传 budget 返回空串。
+// 把「取消」和「超时」分开写，别让调用方各自猜字符串。
+inline std::string BudgetStopMessage(const RepairRunBudget* budget, const char* stage) {
+    if (budget == nullptr || !budget->Checkpoint())
+        return {};
+    return std::string(stage) + (budget->Canceled() ? "被取消" : "超出本次修复预算");
+}
 
 } // namespace repair
 } // namespace videoeye

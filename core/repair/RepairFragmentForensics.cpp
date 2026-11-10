@@ -195,8 +195,14 @@ uint64_t DataStart(const IsobmffFragment& fragment, uint64_t fallback) {
 } // namespace
 
 RepairFragmentEvidence RepairFragmentForensics::Analyze(const std::string& path, const IsobmffFile& parsed,
-                                                        const std::atomic<bool>* cancel) {
+                                                        const std::atomic<bool>* cancel,
+                                                        const RepairRunBudget* budget) {
     RepairFragmentEvidence evidence;
+    // 入口就命中时还没有任何取证事实，analyzed 必须保持 false，不能产出半张真值表。
+    if (const std::string stop = BudgetStopMessage(budget, "分片取证阶段"); !stop.empty()) {
+        evidence.error = stop;
+        return evidence;
+    }
     std::ifstream in(ToNativePath(path), std::ios::binary);
     if (!in) {
         evidence.error = "无法打开源文件做分片取证";
@@ -265,7 +271,13 @@ RepairFragmentEvidence RepairFragmentForensics::Analyze(const std::string& path,
     std::vector<uint64_t> sidx_times;
 
     for (const SegmentRef& segment : segments) {
+        if (const std::string stop = BudgetStopMessage(budget, "分片取证阶段"); !stop.empty()) {
+            evidence.reached_eof = false;
+            evidence.limitations.push_back(stop + "，后续分段未读取");
+            return evidence;
+        }
         if (infrastructure::Checkpoint(cancel)) {
+            evidence.reached_eof = false;
             evidence.limitations.push_back("分片取证被取消，后续分段未读取");
             return evidence;
         }
@@ -495,7 +507,12 @@ RepairFragmentEvidence RepairFragmentForensics::Analyze(const std::string& path,
             span = static_cast<uint64_t>(sidx_times.size()) * evidence.subsegment_duration;
         evidence.estimated_duration_seconds = static_cast<double>(span) / static_cast<double>(evidence.sidx_timescale);
     }
-    evidence.reached_eof = !infrastructure::Checkpoint(cancel) && !segments.empty();
+    if (const std::string stop = BudgetStopMessage(budget, "分片取证阶段"); !stop.empty()) {
+        evidence.reached_eof = false;
+        evidence.limitations.push_back(stop + "，取证未完成");
+    } else {
+        evidence.reached_eof = !infrastructure::Checkpoint(cancel) && !segments.empty();
+    }
     evidence.limitations.push_back("只读取 mdat 载荷的 NAL 头与长度前缀，未解码、未校验 Slice 语法");
     evidence.limitations.push_back("编码判定是基于 NAL 头合法性的结构启发式，不是解码器确认");
     evidence.limitations.push_back("载荷若被 DRM/加密保护，NAL 头仍可解析但不能据此断言可解码");

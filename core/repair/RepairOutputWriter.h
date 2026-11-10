@@ -16,6 +16,7 @@
 
 #include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
+#include "core/repair/RepairBudget.h"
 
 namespace videoeye {
 namespace repair {
@@ -44,11 +45,13 @@ public:
     static bool Reserve(const RepairOutputPaths& paths, std::string* error);
 
     // 输入快照：size / mtime / 内容摘要。signature 由调用方按需补充。
-    static model::RepairInputSnapshot MakeSnapshot(const std::string& path);
+    // budget：内容摘要是分块读，命中取消/超时时 content_hash 为空（method=unavailable），
+    // 下游必须把它当成「没核对完」而不是「内容没变」。
+    static model::RepairInputSnapshot MakeSnapshot(const std::string& path, const RepairRunBudget* budget = nullptr);
 
     // 与快照比对。method 回填本次实际使用的核对方法及其局限（可为空）。
     static bool SourceUnchanged(const model::RepairInputSnapshot& snapshot, std::string* error,
-                                std::string* method = nullptr);
+                                std::string* method = nullptr, const RepairRunBudget* budget = nullptr);
 
     static bool Publish(const std::string& part_path, const std::string& final_path, std::string* error);
 

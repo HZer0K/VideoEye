@@ -168,11 +168,14 @@ bool CreateExclusiveFile(const std::string& path) {
     return true;
 }
 
-std::string ComputeContentHash(const std::string& path, std::string* method, uint64_t* hashed_bytes) {
+std::string ComputeContentHash(const std::string& path, std::string* method, uint64_t* hashed_bytes,
+                               const RepairRunBudget* budget) {
     if (method)
         *method = "unavailable";
     if (hashed_bytes)
         *hashed_bytes = 0;
+    if (budget != nullptr && budget->Checkpoint())
+        return {};
     std::error_code ec;
     const std::filesystem::path native = ToNativePath(path);
     const uint64_t size = std::filesystem::file_size(native, ec);
@@ -201,6 +204,9 @@ std::string ComputeContentHash(const std::string& path, std::string* method, uin
             return false;
         uint64_t left = length;
         while (left > 0) {
+            // 逐块检查：256 MiB 全量摘要不打断的话，取消要等整个文件读完才生效。
+            if (budget != nullptr && budget->Checkpoint())
+                return false;
             const std::size_t want = static_cast<std::size_t>(std::min<uint64_t>(left, buffer.size()));
             in.read(buffer.data(), static_cast<std::streamsize>(want));
             const std::streamsize got = in.gcount();

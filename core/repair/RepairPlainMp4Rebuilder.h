@@ -16,10 +16,12 @@
 // 产物是一个完整的、带样本表的普通 MP4，之后仍需走重新封装与验证流程。
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "core/domain/model/RecoveredSample.h"
 #include "core/domain/model/RepairTypes.h"
 
 namespace videoeye {
@@ -45,19 +47,23 @@ struct RepairPlainMp4RebuildResult {
     uint64_t samples_rebuilt = 0;
     uint32_t rebuilt_tracks = 0;
     uint64_t output_bytes = 0;
+    // 扫描阶段由统一账本实测的样本事实（不是再统计一遍；samples_rebuilt 直接取它的总数）。
+    model::RepairSampleLedgerSummary sample_ledger;
 };
 
 class RepairPlainMp4Rebuilder {
 public:
     // 轻量探测：扫描 mdat 载荷判断能否在无 moov 的情况下重建；带取消 + 共享预算检查。
     // budget 为空时退回只看取消标志（独立调用 / 旧用例）。
+    // scan_chunk_bytes 只影响分块大小，不影响样本边界：0 = 默认块。验收时用不同块大小
+    // 重建同一文件，产物必须逐字节一致；载荷永不整段读入内存。
     static RepairPlainMp4Probe Probe(const std::string& source_path, const std::atomic<bool>* cancel,
-                                     const RepairRunBudget* budget = nullptr);
+                                     const RepairRunBudget* budget = nullptr, std::size_t scan_chunk_bytes = 0);
 
     // 重建：写出带 ftyp+moov+mdat 的完整普通 MP4 到 output_path。
     static RepairPlainMp4RebuildResult Rebuild(const std::string& source_path, const std::string& output_path,
-                                               const std::atomic<bool>* cancel,
-                                               const RepairRunBudget* budget = nullptr);
+                                               const std::atomic<bool>* cancel, const RepairRunBudget* budget = nullptr,
+                                               std::size_t scan_chunk_bytes = 0);
 };
 
 } // namespace repair

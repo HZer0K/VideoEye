@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/media/container/IsobmffParser.h"
+#include "core/repair/RepairBudget.h"
 #include "core/repair/RepairFragmentForensics.h"
 #include "core/repair/RepairInitSegment.h"
 
@@ -37,8 +38,10 @@ struct RepairSynthesizedInit {
 class RepairInitSegmentBuilder {
 public:
     // source_path：源分片；parsed / forensics 复用 Inspector 已完成的解析与取证。
+    // budget：共享执行预算，逐 NAL 扫描期间命中时 ok=false 且 error 写明取消/超时。
     static RepairSynthesizedInit Build(const std::string& source_path, const IsobmffFile& parsed,
-                                       const RepairFragmentEvidence& forensics, const std::atomic<bool>* cancel);
+                                       const RepairFragmentEvidence& forensics, const std::atomic<bool>* cancel,
+                                       const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

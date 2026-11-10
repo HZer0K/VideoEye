@@ -9,7 +9,8 @@
 - **要改代码** → 先读 [`ARCHITECTURE.md`](ARCHITECTURE.md)。它是分层与依赖边界的唯一
   权威说明，§7「新增代码放哪」和 §7.1「加一个分析维度要动哪些文件」是入口。
 - **要看某个分析维度怎么实现的** → 在下面「按分析维度」里找对应那篇。
-- **想知道这个项目踩过哪些坑** → `audit/` 下两篇。
+- **想知道这个项目踩过哪些坑** → `audit/` 下三篇。
+- **要推进修复能力** → 先读 [`REPAIR_ROADMAP.md`](REPAIR_ROADMAP.md)（活文档，有进度表）。
 
 ## 架构（随代码演进，保持更新）
 
@@ -41,6 +42,7 @@
 | [`REPORTING_BATCH_QC.md`](REPORTING_BATCH_QC.md) | 报告导出与批量 QC：模板、批处理、对比、接入 CI |
 | [`FFMPEG_COMMAND_WORKBENCH.md`](FFMPEG_COMMAND_WORKBENCH.md) | FFmpeg 命令工作台：为什么它不是终端，以及这条边界带来的设计约束 |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | 长视频与 UI 性能：指标口径与预算、增长上限、表格/曲线的模型化与抽稀、取消的两个延迟预算 |
+| [`REPAIR_ROADMAP.md`](REPAIR_ROADMAP.md) | 修复能力增强路线图：目标与四个可计算度量、统一已恢复样本层、第一轮四切片、架构前置与风险（**活文档**，随切片更新） |
 
 ## 审计快照（`audit/`，只读）
 
@@ -63,3 +65,5 @@
 3. **新加一个分析维度**时，除 `ARCHITECTURE.md` §7.1 列的那些代码文件外，还要在
    「按分析维度」这张表里加一行。
 4. **新做一轮审计**时，写进 `audit/` 并按 `审计-YYYY-MM-DD.md` 命名，不要覆盖旧的。
+5. **推进修复路线图**时更新 `REPAIR_ROADMAP.md` 第 8 节的进度表。它是**活文档**（会随
+   切片演进），与 `audit/` 下「某一时刻的只读快照」性质不同，不要归到 `audit/`。

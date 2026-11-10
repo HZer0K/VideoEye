@@ -2676,6 +2676,22 @@ target_link_libraries(test_repair_safety PRIVATE
 add_test(NAME RepairSafetyTests COMMAND test_repair_safety)
 
 # =================================================
+# 测试：统一样本恢复层（RecoveredSample + 分块扫描 + 有界账本）
+#
+# 覆盖「分块与整块逐字节一致」「预算在下一块就停」「明细双上限溢出如实记账」
+# 「样本层到区间/轨/总量三层守恒，无样本时不得谎报有区间」。样本序列换序 /
+# 改时间戳 / 少一个样本都必须让规范化摘要变化，作为上层守恒判据的判别力守护。
+# =================================================
+videoeye_add_test(test_repair_sample_scan
+    unit/test_repair_sample_scan.cpp
+)
+target_link_libraries(test_repair_sample_scan PRIVATE
+    VideoEyeRepair
+    VideoEyeDomain
+    VideoEyeInfrastructure)
+add_test(NAME RepairSampleScanTests COMMAND test_repair_sample_scan)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

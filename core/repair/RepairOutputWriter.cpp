@@ -185,7 +185,7 @@ bool RepairOutputWriter::Reserve(const RepairOutputPaths& paths, std::string* er
     return true;
 }
 
-model::RepairInputSnapshot RepairOutputWriter::MakeSnapshot(const std::string& path) {
+model::RepairInputSnapshot RepairOutputWriter::MakeSnapshot(const std::string& path, const RepairRunBudget* budget) {
     model::RepairInputSnapshot snapshot;
     snapshot.path = path;
     std::error_code ec;
@@ -202,12 +202,20 @@ model::RepairInputSnapshot RepairOutputWriter::MakeSnapshot(const std::string& p
         snapshot.mtime_epoch_seconds =
             static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(mtime.time_since_epoch()).count());
     }
-    snapshot.content_hash = ComputeContentHash(path, &snapshot.hash_method, &snapshot.hashed_bytes);
+    snapshot.content_hash = ComputeContentHash(path, &snapshot.hash_method, &snapshot.hashed_bytes, budget);
     return snapshot;
 }
 
 bool RepairOutputWriter::SourceUnchanged(const model::RepairInputSnapshot& snapshot, std::string* error,
-                                         std::string* method) {
+                                         std::string* method, const RepairRunBudget* budget) {
+    // 预算在这里命中时不能继续「凭 size/mtime 判未变」：那会把没核对完伪装成核对通过。
+    if (const std::string stop = BudgetStopMessage(budget, "发布前输入复核阶段"); !stop.empty()) {
+        if (error)
+            *error = "发布前校验失败：" + stop + "，未完成输入一致性核对: " + snapshot.path;
+        if (method)
+            *method = "unavailable";
+        return false;
+    }
     std::error_code ec;
     const std::filesystem::path native = ToNativePath(snapshot.path);
     if (!std::filesystem::exists(native, ec)) {
@@ -256,7 +264,15 @@ bool RepairOutputWriter::SourceUnchanged(const model::RepairInputSnapshot& snaps
     std::string hash_method;
     if (!snapshot.content_hash.empty() && snapshot.hash_method != "unavailable") {
         uint64_t hashed_bytes = 0;
-        const std::string now_hash = ComputeContentHash(snapshot.path, &hash_method, &hashed_bytes);
+        const std::string now_hash = ComputeContentHash(snapshot.path, &hash_method, &hashed_bytes, budget);
+        // 摘要没算完（取消 / 超时 / 读失败）与「内容变了」是两种结论，措辞要分开。
+        if (budget != nullptr && budget->Checkpoint()) {
+            if (error)
+                *error = "发布前校验失败：" + BudgetStopMessage(budget, "内容摘要读取") + ": " + snapshot.path;
+            if (method)
+                *method = "unavailable";
+            return false;
+        }
         if (now_hash.empty() || now_hash != snapshot.content_hash) {
             if (error)
                 *error = "发布前校验失败：输入文件内容摘要已变化: " + snapshot.path;

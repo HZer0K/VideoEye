@@ -34,6 +34,7 @@
 #include "core/domain/model/RepairRequest.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBudget.h"
+#include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairEngine.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairFragmentForensics.h"
@@ -46,6 +47,7 @@
 #include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
 #include "core/reporting/RepairReportExporter.h"
+#include "tests/support/MediaSequenceFingerprint.h"
 #include "tests/support/TestMediaFactory.h"
 
 bool HasResidualFinding(const videoeye::model::RepairResult& result, const std::string& code);
@@ -326,6 +328,208 @@ TEST(RepairEngine, IntactMp4IsRemuxedAndVerified) {
     // 64 位字段以字符串写出，避免下游按 double 截断。
     EXPECT_NE(json.find("\"size_bytes\": \""), std::string::npos);
     EXPECT_NE(json.find("\"bytes_scanned\": \""), std::string::npos);
+}
+
+// ---- 切片 A-1：正常媒体的序列级守恒门禁 ----
+//
+// ProbeMediaFile 只回答「能不能打开、有几帧、时长多少」；帧数一致完全可能掩盖
+// 「包顺序被换」「PTS 间隔被改写」「解出来的画面不是同一批」。修复链自己的 S01
+// remux 此前只有聚合级守恒，这里用 MediaSequenceFingerprint 逐包 / 逐帧配对补上。
+// 判据本身（空事实 / 换序 / 回退 / 画面改写必须判红）由 test_export_roundtrip.cpp
+// 的 CompareGuards* 用例守护，下面再留一条本地守护证明本测试接的是同一把尺子。
+std::string JoinSequenceDiffs(const std::vector<std::string>& diffs) {
+    std::string out;
+    for (const auto& line : diffs) {
+        if (!out.empty())
+            out += "\n";
+        out += line;
+    }
+    return out;
+}
+
+void ExpectRepairSequenceClean(const char* context, const std::vector<std::string>& diffs) {
+    EXPECT_TRUE(diffs.empty()) << context << "\n" << JoinSequenceDiffs(diffs);
+}
+
+// 覆盖守护：取证必须真的拿到事实，否则「两边都空」会伪装成完全一致。
+void AssertSequenceHasFacts(const videoeye_test::MediaSequence& seq, const char* tag) {
+    ASSERT_TRUE(seq.opened) << tag << ": " << seq.error;
+    ASSERT_TRUE(videoeye_test::HasDecodableVideo(seq)) << tag << ": " << seq.error;
+    ASSERT_GE(seq.streams.size(), 2u) << tag << "：视频 + 音频两条轨都要参与逐流配对";
+    ASSERT_GE(seq.total_packets, 40u) << tag << "：样本量太小，差异会被掩盖";
+    for (const auto& stream : seq.streams) {
+        if (stream.codec_type != "video")
+            continue;
+        ASSERT_GT(stream.display_pts_samples, 0u) << tag << "：没取到显示顺序事实，不得算「一致」";
+        ASSERT_FALSE(stream.frame_sequence_hash.empty()) << tag << "：没取到逐帧亮度序列";
+    }
+}
+
+void VerifyIntactSequencePreserved(const std::string& source_path, const char* tag) {
+    const std::string dir = MakeTempDir(std::string("seq_") + tag);
+    ASSERT_TRUE(std::filesystem::exists(source_path)) << tag << ": 基准语料缺失";
+
+    const auto expected = videoeye_test::CaptureMediaSequence(source_path);
+    AssertSequenceHasFacts(expected, tag);
+
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(source_path, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << tag << ": " << result.summary << " | " << result.error;
+    ASSERT_EQ(result.status, RepairBusinessStatus::Repaired) << tag;
+    EXPECT_FALSE(result.fidelity.timeline_modified) << tag << "：保码流路径不得改写时间轴";
+
+    const auto actual = videoeye_test::CaptureMediaSequence(result.output_path);
+    AssertSequenceHasFacts(actual, tag);
+    ExpectRepairSequenceClean((std::string(tag) + "：修复产物逐包/逐帧序列").c_str(),
+                              videoeye_test::CompareExactSequence(expected, actual));
+}
+
+// 基准用仓内 ffmpeg 生成的健康原片（H.264+AAC，含 B 帧，faststart）。
+// ❗ 不要用 TestMediaSpec 默认的无 B 帧样本当逐帧基准：那个生成器尾部冲刷后
+// 源只解出 39 帧，而保码流 remux 产物解出 40 帧 —— 两边逐包载荷序列完全一致，
+// 是「解码可见性」边界而不是修复链丢了内容。拿它做基准会让门禁恒红。
+TEST(RepairEngine, IntactMediaSequenceIsPreservedExactly) {
+    const std::string source = std::string(VIDEOEYE_CONTAINER_CORPUS_DIR) + "/real_h264_aac_faststart.mp4";
+    if (!std::filesystem::is_regular_file(source))
+        GTEST_SKIP() << "仓内真实语料缺失: " << source;
+    VerifyIntactSequencePreserved(source, "real_corpus");
+}
+
+// B 帧 + 30000/1001：解码顺序 ≠ 显示顺序，逐包 PTS 天然锯齿；判据必须看解码
+// 输出的显示顺序，既不能把合法重排误报成缺陷，也不能漏掉真的丢帧 / 改帧率。
+TEST(RepairEngine, BFrameFractionalRateSequenceIsPreservedExactly) {
+    const std::string dir = MakeTempDir("seq_frac");
+    videoeye_test::TestMediaSpec spec;
+    spec.fps = 30000;
+    spec.fps_den = 1001;
+    spec.max_b_frames = 2;
+    const auto media = videoeye_test::CreateTestMedia(dir, "frac_seq_src", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+    VerifyIntactSequencePreserved(media.path, "bframe_ntsc");
+}
+
+// 守护：本门禁依赖的判据必须真的有判别力，不能因为将来改动指纹实现而恒绿。
+// 拿真实取证事实换一下序，逐包载荷序列必须报错。
+TEST(RepairEngine, SequenceConservationGateRejectsReorderedPackets) {
+    const std::string dir = MakeTempDir("seq_guard");
+    const auto media = videoeye_test::CreateTestMedia(dir, "seq_guard_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const auto base = videoeye_test::CaptureMediaSequence(media.path);
+    AssertSequenceHasFacts(base, "guard");
+    ExpectRepairSequenceClean("自比对应无差异", videoeye_test::CompareExactSequence(base, base));
+
+    auto reordered = base;
+    for (auto& stream : reordered.streams) {
+        if (stream.codec_type != "video" || stream.packets.size() < 3)
+            continue;
+        std::swap(stream.packets[1].payload_hash, stream.packets[2].payload_hash);
+        // CompareExactSequence 比的是滚动哈希字符串，不是逐包 payload_hash 数组：
+        // 只换数组不重算等于没换，这条守护会恒绿。
+        uint64_t rolling = videoeye_test::Fnv1a64(14695981039346656037ULL, nullptr, 0);
+        for (const auto& p : stream.packets)
+            rolling = videoeye_test::Fnv1a64(rolling, &p.payload_hash, sizeof(p.payload_hash));
+        stream.payload_sequence_hash = videoeye_test::HexHash(rolling);
+    }
+    const auto diffs = videoeye_test::CompareExactSequence(base, reordered);
+    EXPECT_FALSE(diffs.empty()) << "换序必须判红";
+    EXPECT_NE(JoinSequenceDiffs(diffs).find("逐包载荷序列"), std::string::npos) << JoinSequenceDiffs(diffs);
+
+    videoeye_test::MediaSequence empty;
+    EXPECT_FALSE(videoeye_test::CompareExactSequence(base, empty).empty()) << "空产物必须判红";
+}
+
+// ---- 切片 A-2：名实相符守护 ----
+//
+// 能力契约与「未启用动作」的描述会进 JSON / TXT / HTML 三份报告，是错误结论率的
+// 直接来源：一边跑着 S08，一边告诉用户「当前版本未实现」，比不写更糟。
+TEST(RepairEngine, CapabilityContractsDescribeImplementedScopeAccurately) {
+    const auto& all = repair::AllCapabilityBoundaries();
+    ASSERT_EQ(all.size(), 3u);
+    const auto& moov = all[0];
+    const auto& params = all[1];
+    const auto& gop = all[2];
+
+    EXPECT_NE(moov.evidence.find("RepairPlainMp4Rebuilder"), std::string::npos)
+        << "moov_rebuild 必须写明已有受限版无参考重建器";
+    EXPECT_EQ(moov.evidence.find("不反推普通 MP4 的 moov"), std::string::npos) << moov.evidence;
+    EXPECT_NE(params.evidence.find("RepairInitSegmentBuilder"), std::string::npos)
+        << "参数集恢复必须写明已有 in-band 自建路径";
+
+    EXPECT_NE(gop.evidence.find("已实现并可运行"), std::string::npos) << gop.evidence;
+    EXPECT_EQ(gop.evidence.find("明确标记 unavailable"), std::string::npos) << gop.evidence;
+    EXPECT_EQ(gop.evidence.find("尚无解码-编码链"), std::string::npos) << gop.evidence;
+    EXPECT_NE(gop.timeline_impact.find("不插入"), std::string::npos) << "合成帧目前是空能力，契约不能声称会插入并记账";
+}
+
+TEST(RepairEngine, PreserveBitstreamPlanDoesNotClaimTranscodeIsUnimplemented) {
+    const std::string dir = MakeTempDir("plan_truth");
+    const auto media = videoeye_test::CreateTestMedia(dir, "plan_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const auto result = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    bool saw_s08 = false;
+    for (const auto& action : result.plan.actions) {
+        if (action.action != RepairAction::S08_TolerantTranscode)
+            continue;
+        saw_s08 = true;
+        EXPECT_FALSE(action.available) << "保码流模式下 S08 不应被选中执行";
+        EXPECT_EQ(action.expected_effect.find("当前版本未实现"), std::string::npos) << action.expected_effect;
+        EXPECT_NE(action.expected_effect.find("本次未启用"), std::string::npos) << action.expected_effect;
+    }
+    EXPECT_TRUE(saw_s08) << "覆盖守护：计划里必须真的列出 S08 的未启用状态，否则循环空转也绿";
+}
+
+// ---- 切片 A-4：损失区间结构化 + 三格式一致 ----
+//
+// 之前「跳过了多少」只藏在每段前的 skipped_before_seconds 和一个残留 finding 里，
+// 报告读者无法逐段回答「哪段时间没了、有没有其它副本」。这里把它落成显式区间。
+TEST(RepairEngine, LostRangesAreStructuredAndVisibleInAllReportFormats) {
+    const std::string dir = MakeTempDir("lost_ranges");
+    const auto media = videoeye_test::CreateTestMedia(dir, "lost_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const std::string broken = dir + "/lost_broken.mp4";
+    std::string patch_error;
+    ASSERT_TRUE(PatchStcoChunkOffset(media.path, broken, 0.5, &patch_error)) << patch_error;
+
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(broken, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    ASSERT_GE(result.recovered_segments.size(), 2u) << result.summary;
+
+    ASSERT_FALSE(result.lost_ranges.empty()) << "有跳段就必须有结构化损失区间";
+    for (const auto& lost : result.lost_ranges) {
+        EXPECT_GT(lost.DurationSeconds(), 0.0);
+        EXPECT_EQ(lost.reason, "container.damaged_segment_skipped");
+        EXPECT_FALSE(lost.recoverable) << "没有其它副本时不能写成可恢复";
+        EXPECT_FALSE(lost.evidence.empty());
+        EXPECT_FALSE(lost.byte_start.has_value()) << "没测到字节边界就留空，不填 0";
+    }
+    EXPECT_NE(result.summary.find("损失区间"), std::string::npos) << result.summary;
+
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    const std::string json = ReadText(dir + "/r.json");
+    const std::string text = ReadText(dir + "/r.txt");
+    const std::string html = ReadText(dir + "/r.html");
+    EXPECT_NE(json.find("\"lost_ranges\""), std::string::npos);
+    EXPECT_NE(json.find("container.damaged_segment_skipped"), std::string::npos);
+    for (const auto& body : {text, html}) {
+        EXPECT_NE(body.find("损失区间"), std::string::npos) << "TXT / HTML 必须显式展示损失区间";
+        EXPECT_NE(body.find("无其它副本"), std::string::npos);
+    }
+}
+
+// 反向守护：正常文件没有跳段时不得凭空报损失（「无事实时不得谎报」）。
+TEST(RepairEngine, HealthyMediaReportsNoLostRanges) {
+    const std::string dir = MakeTempDir("lost_none");
+    const auto media = videoeye_test::CreateTestMedia(dir, "lost_none_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    EXPECT_TRUE(result.lost_ranges.empty()) << result.summary;
+    EXPECT_EQ(result.summary.find("损失区间"), std::string::npos) << result.summary;
 }
 
 TEST(RepairEngine, TruncatedTailIsSalvagedAsPartial) {
@@ -1686,5 +1890,86 @@ TEST(RepairTolerantTranscodeTests, WriteFailureAfterPartialWriteIsNotSuccess) {
         for (const auto& execution : outcome.executions)
             EXPECT_FALSE(execution.action == RepairAction::S08_TolerantTranscode && execution.succeeded)
                 << item.tag << "：不能伪造一条成功的转码执行记录";
+    }
+}
+
+// ---- B 切片：样本层事实落到三份报告，且上三层计数确实由它派生 ----
+TEST(RepairEngine, SampleLedgerIsPublishedInAllReportFormatsAndMatchesUpperLayers) {
+    const std::string dir = MakeTempDir("sample_ledger");
+    const auto media = videoeye_test::CreateTestMedia(dir, "ledger_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    ASSERT_TRUE(result.sample_ledger.available) << "保码流路径必须接入样本账本";
+    EXPECT_GT(result.sample_ledger.total_samples, 0u) << "有产物内容时账本不得为空";
+    EXPECT_EQ(result.sample_ledger.by_track_count, result.sample_ledger.total_samples);
+    uint64_t track_sum = 0;
+    for (const auto& track : result.track_conservation)
+        track_sum += track.packets_written;
+    EXPECT_EQ(track_sum, result.sample_ledger.total_samples) << "逐轨包数必须由样本层求和";
+    const std::string first_problem =
+        result.sample_conservation_problems.empty() ? std::string() : result.sample_conservation_problems.front();
+    EXPECT_TRUE(result.sample_conservation_problems.empty()) << first_problem;
+
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    const std::string json = ReadText(dir + "/r.json");
+    for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
+        EXPECT_NE(body.find("样本账本"), std::string::npos);
+        EXPECT_NE(body.find("样本层实测样本数"), std::string::npos);
+        EXPECT_NE(body.find(std::to_string(result.sample_ledger.total_samples)), std::string::npos);
+    }
+    EXPECT_NE(json.find("\"sample_ledger\""), std::string::npos);
+    EXPECT_NE(json.find("\"total_samples\""), std::string::npos);
+    EXPECT_NE(json.find("\"conservation_problems\""), std::string::npos);
+}
+
+// ---- B 切片：分块大小不影响样本边界，两个 producer 的产物逐字节一致 ----
+TEST(RepairPlainMp4RebuilderTests, ChunkSizeDoesNotChangeRebuiltOutputForBothProducers) {
+    auto read_bytes = [](const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    struct Case {
+        const char* tag;
+        std::string source;
+        std::vector<std::size_t> chunks;
+    };
+
+    const std::string dir = MakeTempDir("plain_chunks");
+    const std::string adts = dir + "/adts_only.mp4";
+    ASSERT_TRUE(WriteAdtsOnlyMp4(adts, 3072, 8));
+
+    const std::vector<Case> cases = {
+        {"adts", adts, {0, 7, 13, 64, 4096, 65536}},
+        {"h264", RealCorpusSample("real_h264_inband_missing_moov.mp4"), {0, 13, 4096, 65536}},
+    };
+    for (const auto& item : cases) {
+        if (!std::filesystem::exists(item.source)) {
+            GTEST_SKIP() << "缺受控语料 " << item.source;
+        }
+        std::vector<uint8_t> baseline;
+        uint64_t baseline_samples = 0;
+        for (const std::size_t chunk : item.chunks) {
+            const std::string out = dir + "/" + item.tag + "_" + std::to_string(chunk) + ".mp4";
+            const auto rebuilt = repair::RepairPlainMp4Rebuilder::Rebuild(item.source, out, nullptr, nullptr, chunk);
+            ASSERT_TRUE(rebuilt.ok) << item.tag << " chunk=" << chunk << ": " << rebuilt.error;
+            ASSERT_TRUE(rebuilt.sample_ledger.available);
+            EXPECT_EQ(rebuilt.samples_rebuilt, rebuilt.sample_ledger.total_samples)
+                << item.tag << " chunk=" << chunk << "：样本数必须由账本求和";
+            EXPECT_GT(rebuilt.sample_ledger.total_bytes, 0u);
+            const auto bytes = read_bytes(out);
+            ASSERT_FALSE(bytes.empty());
+            if (chunk == 0) {
+                baseline = bytes;
+                baseline_samples = rebuilt.samples_rebuilt;
+            } else {
+                EXPECT_EQ(bytes, baseline) << item.tag << " chunk=" << chunk << "：产物必须逐字节一致";
+                EXPECT_EQ(rebuilt.samples_rebuilt, baseline_samples);
+            }
+        }
+        EXPECT_GT(baseline_samples, 0u);
     }
 }

@@ -42,7 +42,10 @@ model::RepairCapabilityBoundary MakeMoovRebuild() {
         "没有原始完整视频作参考，无法给出恢复比例，也不能断言无失真",
     };
     b.evidence = "普通 MP4 的样本表、时基与解码配置全部位于 moov；moov 丢失后文件里只剩 mdat 裸载荷。"
-                 "当前版本只在「fMP4 缺初始化段 + 同源参考初始化段」时重建索引，不反推普通 MP4 的 moov。";
+                 "当前版本已实现受限版无参考重建（RepairPlainMp4Rebuilder：ftyp + 恰好一个 mdat + "
+                 "纯 AVCC H.264 或纯 ADTS AAC 单轨，且 SPS VUI 提供时基证据）。"
+                 "本契约的 unsupported 指的是尚未覆盖的范围：音视频交织 mdat、HEVC、多 mdat、多轨、"
+                 "以及 B 帧显示顺序 / edts / ctts 的原始取值 —— 这些仍不能安全反推。";
     return b;
 }
 
@@ -74,7 +77,9 @@ model::RepairCapabilityBoundary MakeParameterSetRecovery() {
     b.evidence =
         "RepairFragmentForensics 逐 NAL 实测 + RepairInitSegmentReader 逐轨 trun/tfdt 时长交叉核对；"
         "TamperedTimescaleActuallyHalvesPlaybackDuration / TamperedNonFirstTrackTimescaleDoesNotPublishCleanResult "
-        "在真实媒体上复现过时基篡改。";
+        "在真实媒体上复现过时基篡改。当前版本已能借同源初始化段（含 R03 时基核验）或由 in-band "
+        "SPS/PPS(VPS) 自建视频初始化段（RepairInitSegmentBuilder）；本契约的 unsupported 指参数集"
+        "完全缺失、裸 AAC 无 AudioSpecificConfig、音频轨自建等仍物理不可恢复的部分。";
     return b;
 }
 
@@ -92,19 +97,22 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
         "原始码流字节、原始时间戳精度、moov 元数据与原始画质都不可恢复",
         "音频轨损坏必须独立判定，不能由「视频 GOP 可解码」推断音频完整",
     };
-    b.timeline_impact = "必然改写：丢弃不可解码段会留下时间轴缺口；重编码为恒定帧率会插入重复/合成帧"
-                        "（synthetic_frames_inserted）；起点、时长与音画同步都要重算。"
-                        "content_completeness 只能是 partial，timeline_status=modified，"
-                        "salvage_end_seconds 之后的内容明确丢失。";
+    b.timeline_impact = "必然改写：丢弃不可解码段会留下时间轴缺口；S08 按源声明帧率推定为恒定帧率，"
+                        "起点、时长与音画同步都要重算。content_completeness 只能是 partial，"
+                        "timeline_status=modified，salvage_end_seconds 之后的内容明确丢失。"
+                        "⚠️ 当前 S08 不插入黑帧 / 重复 / 合成帧，synthetic_frames_inserted 恒为 false；"
+                        "若将来启用填补策略，必须与恢复出的原始内容分开记账，不能计入恢复率分子。";
     b.quality_risks = {
         "重编码代际损失（二次压缩），低码率下块效应与细节丢失明显",
         "丢帧导致卡顿、合成帧导致画面冻结或抖动；GOP 边界判断错误会让段首花屏",
         "音画不同步：视频时间轴重算后音频若按原时间戳复制，偏差会越积越大",
         "无参考样片时 perceptual_fidelity 只能是 unknown_without_reference，不能声称画质无损",
     };
-    b.evidence = "当前版本 S08_TolerantTranscode 明确标记 unavailable，RecoverContent 模式仍按保码流执行；"
-                 "诊断层已能用 decode.sample_failed / track.sample_out_of_bounds 定位不可解码边界，"
-                 "但尚无解码-编码链与画质评估。";
+    b.evidence = "S08_TolerantTranscode 已实现并可运行：RecoverContent 模式下解码可读视频帧、"
+                 "以 libx264 重编码、音频尽量按原码流复制，并做抽帧 PSNR 画质评估"
+                 "（RepairTolerantTranscode / RepairExecutor）。本契约的 unsupported 指尚未覆盖的"
+                 "GOP 级局部重编码：按可解码 GOP 精确界定重编码范围、验证拼接边界兼容性，"
+                 "以及原始码流字节与原始时间戳精度的恢复；这些能力仍需单独验证后才能上线。";
     return b;
 }
 

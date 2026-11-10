@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "core/domain/model/DiagnosticIssue.h"
+#include "core/domain/model/RecoveredSample.h"
 
 namespace videoeye {
 namespace model {
@@ -527,6 +528,26 @@ struct RepairRecoveredSegment {
     std::string recovery_point;          // 恢复点依据，如 "av_seek_frame resync"
 };
 
+// ---- 损失区间（执行期实测）----
+//
+// ⚠️ 与 diagnosis.coverage.skipped_ranges 不是一回事：后者是「没敢扫的内容类别」
+// 的文字说明（如 "mdat 载荷未逐字节扫描"），这里是源时间轴上确实没进入产物的区间。
+// 它由 recovered_segments 派生，不另起一份真值表；没有其它副本时 recoverable=false，
+// 绝不能把合成 / 补帧写成「已恢复」。
+struct RepairLostRange {
+    double input_start_seconds = 0.0;
+    double input_end_seconds = 0.0;
+    std::optional<uint64_t> byte_start; // 拿不到字节边界就留空，不填 0
+    std::optional<uint64_t> byte_end;
+    std::string reason;   // 稳定机读码，如 "container.damaged_segment_skipped"
+    std::string evidence; // 实测依据（跳过秒数 / 恢复点）
+    bool recoverable = false;
+
+    double DurationSeconds() const {
+        return input_end_seconds > input_start_seconds ? input_end_seconds - input_start_seconds : 0.0;
+    }
+};
+
 // ---- 时间轴修复记录（S03）----
 //
 // 只做有证据的修复：重复 / 回退的时间戳会被显式重写并计数；缺失时间戳只统计，
@@ -584,8 +605,14 @@ struct RepairResult {
 
     std::vector<RepairActionExecution> executions;
     std::vector<RepairTrackConservation> track_conservation;
+    // 样本层实测摘要：上三层计数的事实源。available=false 表示本次执行没有
+    // 接入样本账本（例如尚未改造的转码路径），不能当成「零样本」。
+    RepairSampleLedgerSummary sample_ledger;
+    std::vector<std::string> sample_conservation_problems;
     // S04 / S03 的实测记录：报告必须能解释保留了哪些区间、时间轴改了什么。
     std::vector<RepairRecoveredSegment> recovered_segments;
+    // S04 跳过的源时间区间：由 recovered_segments 派生，供报告逐段说明损失。
+    std::vector<RepairLostRange> lost_ranges;
     RepairTimelineRepair timeline_repair;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;

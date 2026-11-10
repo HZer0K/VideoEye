@@ -559,9 +559,11 @@ void WriteTrack(RepairBoxWriter* writer, const VideoTrackModel& track, uint64_t 
 
 RepairSynthesizedInit RepairInitSegmentBuilder::Build(const std::string& source_path, const IsobmffFile& parsed,
                                                       const RepairFragmentEvidence& forensics,
-                                                      const std::atomic<bool>* cancel) {
+                                                      const std::atomic<bool>* cancel, const RepairRunBudget* budget) {
     RepairSynthesizedInit out;
-    if (cancel != nullptr && cancel->load())
+    if (const std::string stop = BudgetStopMessage(budget, "初始化段自建阶段"); !stop.empty())
+        out.error = stop;
+    else if (cancel != nullptr && cancel->load())
         out.error = "已取消";
     else if (!forensics.analyzed || forensics.tracks.empty())
         out.error = "源分片取证未完成或没有轨道证据";
@@ -574,6 +576,11 @@ RepairSynthesizedInit RepairInitSegmentBuilder::Build(const std::string& source_
 
     std::vector<VideoTrackModel> tracks;
     for (const auto& evidence : forensics.tracks) {
+        if (const std::string stop = BudgetStopMessage(budget, "初始化段自建阶段"); !stop.empty()) {
+            out.ok = false;
+            out.error = stop;
+            return out;
+        }
         if (evidence.payload_layout != "nal_length_prefixed" ||
             (evidence.bitstream != "h264" && evidence.bitstream != "hevc")) {
             out.ok = false;

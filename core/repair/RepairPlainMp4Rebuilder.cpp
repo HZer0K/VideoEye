@@ -14,6 +14,7 @@
 #include "core/repair/RepairBoxWriter.h"
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairMdatSelfCheck.h"
+#include "core/repair/RepairSampleScan.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
@@ -21,6 +22,9 @@ namespace repair {
 namespace {
 
 constexpr uint32_t kMaxAuBytes = 256u * 1024u * 1024u; // 单帧上限，防止坏长度字段把扫描拖死
+// 语法解析只需 NAL 前缀：ADTS 头 ≤ 9 字节，slice 首宏块 / SPS / PPS 都在前 64 KiB 内。
+// 视频帧载荷本身不进内存，AU 边界靠长度前缀推进。
+constexpr std::size_t kParsedNalBytes = 64u * 1024u;
 
 bool Cancelled(const std::atomic<bool>* cancel) {
     return cancel != nullptr && cancel->load();
@@ -93,6 +97,9 @@ struct ScanResult {
     std::uint8_t audio_sfi = 0;
     std::vector<std::string> limitations;
     std::string codec_summary;
+    // 样本层事实源：samples 只是写 moov 需要的 (offset,size,sync) 视图，
+    // 样本数 / 逐轨 / 逐区间统计一律由这个账本求和。
+    RepairSampleLedger ledger;
 };
 
 bool ScanTopLevel(const std::string& path, std::vector<PlainBox>* boxes, MdatInfo* mdat, std::uint64_t* file_size,
@@ -360,33 +367,21 @@ bool ParseAdtsHeader(const std::uint8_t* data, std::size_t available, std::uint3
     return true;
 }
 
-ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel,
+ScanResult ScanAdts(SampleByteSource& src, const ScanWindow& window, const std::atomic<bool>* cancel,
                     const RepairRunBudget* budget) {
     ScanResult result;
     result.audio = true;
     result.kind = "aac";
 
-    constexpr std::uint64_t kMaxPayloadBytes = 1024ull * 1024ull * 1024ull;
-    if (mdat.payload_size > kMaxPayloadBytes) {
-        result.error = "mdat 载荷超过 1 GiB，拒绝整段扫描";
-        result.audio = false;
-        return result;
-    }
-
-    std::vector<std::uint8_t> data;
-    data.resize(static_cast<std::size_t>(mdat.payload_size));
-    if (!ReadAt(in, mdat.payload, data.data(), data.size())) {
-        result.error = "读取 mdat 载荷失败";
-        return result;
-    }
-
-    std::size_t pos = 0;
+    // 载荷按有界分块读取：帧头只需 16 字节窗口，帧体不进内存。
+    // 旧的「整个 mdat 读入 + 1 GiB 上限」在这里被彻底去掉。
+    std::uint64_t pos = 0;
     std::uint8_t header_len = 0;
     std::uint8_t object_type = 0;
     std::uint8_t sfi = 0;
     std::uint8_t channels = 0;
     std::uint32_t first_rate = 0;
-    while (pos < data.size()) {
+    while (pos < src.Size()) {
         // 旧判据 pos/1MiB != (pos+1)/1MiB 只在 pos 恰好停在块边界前一字节时成立；
         // pos 按整帧 / 整 NAL 长度跳跃，实测 2 MiB、每帧 8 字节的 ADTS 样本
         // 预置 cancel=true 仍跑完全程。改成逐迭代检查点（最严格的迭代式判据），
@@ -394,8 +389,16 @@ ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
         if (Stopped(cancel, budget, &result.error))
             return result;
         std::uint32_t frame_len = 0;
-        if (!ParseAdtsHeader(data.data() + pos, data.size() - pos, &frame_len, &header_len, &object_type, &sfi,
-                             &channels)) {
+        std::array<std::uint8_t, 16> header{};
+        const std::size_t header_bytes =
+            static_cast<std::size_t>(std::min<std::uint64_t>(header.size(), src.Size() - pos));
+        if (!src.Read(pos, header.data(), header_bytes)) {
+            result.error = src.Error().empty() ? std::string("读取 ADTS 帧头失败") : src.Error();
+            result.samples.clear();
+            result.audio = false;
+            return result;
+        }
+        if (!ParseAdtsHeader(header.data(), header_bytes, &frame_len, &header_len, &object_type, &sfi, &channels)) {
             result.error = "载荷不是连续的 ADTS AAC 帧（offset=" + std::to_string(pos) + "）";
             result.samples.clear();
             result.audio = false;
@@ -410,16 +413,38 @@ ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
             result.audio = false;
             return result;
         }
-        if (frame_len > data.size() - pos) {
+        if (frame_len > src.Size() - pos) {
             result.error = "ADTS 帧长度越界（offset=" + std::to_string(pos) + "）";
             result.samples.clear();
             result.audio = false;
             return result;
         }
-        result.samples.push_back(PlainSample{mdat.payload + pos + header_len, frame_len - header_len, true});
+        const std::uint64_t sample_offset = window.file_offset + pos + header_len;
+        const std::uint32_t sample_size = frame_len - header_len;
+        result.samples.push_back(PlainSample{sample_offset, sample_size, true});
+
+        model::RecoveredSample sample;
+        sample.source_offset = sample_offset;
+        sample.size = sample_size;
+        sample.track_id = window.track_id;
+        sample.stream_index = window.stream_index;
+        sample.segment_index = window.segment_index;
+        sample.config_id = window.config_id;
+        sample.decode_ordinal = result.ledger.Total();
+        sample.display_ordinal = result.ledger.Total(); // AAC 无重排，解码序即显示序
+        sample.is_rap = true;
+        sample.rap_evidence = "adts_sync";
+        const double step = first_rate > 0 ? 1024.0 / static_cast<double>(first_rate) : 0.0;
+        sample.dts_seconds = static_cast<double>(result.ledger.Total()) * step;
+        sample.pts_seconds = sample.dts_seconds;
+        sample.duration_seconds = step;
+        sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+        sample.inference_basis = "ADTS 恒定 1024 采样/帧 + 帧头采样率";
+        sample.confidence = model::SampleConfidence::Inferred;
+        result.ledger.Add(sample);
         pos += frame_len;
     }
-    if (result.samples.size() < 2) {
+    if (result.ledger.Total() < 2) {
         result.error = "ADTS 帧数量过少，无法确认是完整音频载荷";
         result.samples.clear();
         result.audio = false;
@@ -433,39 +458,28 @@ ScanResult ScanAdts(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     result.channels = channels;
     result.aac_object_type = object_type;
     result.audio_sfi = sfi;
-    for (const auto& sample : result.samples)
-        result.total_bytes += sample.size;
+    result.total_bytes = result.ledger.TotalBytes();
     std::ostringstream summary;
     summary << "ADTS AAC（" << first_rate << " Hz / " << static_cast<int>(channels) << " 声道，AOT "
             << static_cast<int>(object_type) << "）";
     result.codec_summary = summary.str();
+    for (const auto& limitation : result.ledger.Limitations())
+        result.limitations.push_back(limitation);
+    result.limitations.push_back("mdat 载荷按有界分块扫描，帧体不整段读入内存");
     result.limitations.push_back("AAC 样本按 ADTS 帧边界切分；CRC 校验位所在帧头已剥离");
     result.limitations.push_back("未重建 edts/ctts，时间轴为恒定 1024 采样/帧");
     return result;
 }
 
-ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<bool>* cancel,
+ScanResult ScanAvcc(SampleByteSource& src, const ScanWindow& window, const std::atomic<bool>* cancel,
                     const RepairRunBudget* budget) {
     ScanResult result;
     result.video = true;
     result.kind = "h264";
 
-    // 当前实现需要整段载荷在内存里扫描；超过上限时明确拒绝，避免拖垮进程。
-    constexpr std::uint64_t kMaxPayloadBytes = 1024ull * 1024ull * 1024ull;
-    if (mdat.payload_size > kMaxPayloadBytes) {
-        result.error = "mdat 载荷超过 1 GiB，当前无参考重建需要整段扫描，拒绝执行";
-        result.video = false;
-        return result;
-    }
-
-    std::vector<std::uint8_t> data;
-    data.resize(static_cast<std::size_t>(mdat.payload_size));
-    if (!ReadAt(in, mdat.payload, data.data(), data.size())) {
-        result.error = "读取 mdat 载荷失败";
-        return result;
-    }
-
-    std::size_t pos = 0;
+    // 每个 NAL 只读语法解析所需的前缀；视频帧载荷本身不进内存，
+    // AU 边界靠 length-prefix 推进，所以窗口多大都不会把整段 mdat 读进来。
+    std::uint64_t pos = 0;
     std::uint64_t au_start = 0;
     std::uint32_t au_size = 0;
     bool au_has_vcl = false;
@@ -473,10 +487,33 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     bool has_sps = false;
     bool has_pps = false;
 
-    auto close_au = [&](std::size_t boundary) {
+    auto close_au = [&](std::uint64_t boundary) {
         if (au_size > 0) {
-            result.samples.push_back(PlainSample{mdat.payload + au_start, au_size, au_sync});
-            result.total_bytes += au_size;
+            const std::uint64_t sample_offset = window.file_offset + au_start;
+            result.samples.push_back(PlainSample{sample_offset, au_size, au_sync});
+
+            model::RecoveredSample sample;
+            sample.source_offset = sample_offset;
+            sample.size = au_size;
+            sample.track_id = window.track_id;
+            sample.stream_index = window.stream_index;
+            sample.segment_index = window.segment_index;
+            sample.config_id = window.config_id;
+            sample.decode_ordinal = result.ledger.Total();
+            // 无 ctts / POC 证据，显示顺序保持 unknown，绝不填成解码序。
+            sample.is_rap = au_sync;
+            if (au_sync)
+                sample.rap_evidence = "idr_nal";
+            const double step = result.timescale > 0
+                                    ? static_cast<double>(result.sample_delta) / static_cast<double>(result.timescale)
+                                    : 0.0;
+            sample.dts_seconds = static_cast<double>(result.ledger.Total()) * step;
+            sample.duration_seconds = step;
+            sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+            sample.inference_basis = "SPS VUI 帧率 + 恒定样本时长，未重建 ctts";
+            sample.confidence = model::SampleConfidence::Inferred;
+            result.ledger.Add(sample);
+            result.total_bytes = result.ledger.TotalBytes();
         }
         au_size = 0;
         au_has_vcl = false;
@@ -484,37 +521,54 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
         au_start = boundary;
     };
 
-    while (pos < data.size()) {
+    while (pos < src.Size()) {
         // 旧判据 pos/1MiB != (pos+1)/1MiB 只在 pos 恰好停在块边界前一字节时成立；
         // pos 按整帧 / 整 NAL 长度跳跃，实测 2 MiB、每帧 8 字节的 ADTS 样本
         // 预置 cancel=true 仍跑完全程。改成逐迭代检查点（最严格的迭代式判据），
         // 并同时吃共享预算，而不是只在外层重建结束后才补查一次。
         if (Stopped(cancel, budget, &result.error))
             return result;
-        if (data.size() - pos < 4) {
+        if (src.Size() - pos < 4) {
             result.error = "载荷尾部长度前缀不完整（offset=" + std::to_string(pos) + "）";
             result.video = false;
             result.samples.clear();
             return result;
         }
+        std::array<std::uint8_t, 4> length_bytes{};
+        if (!src.Read(pos, length_bytes.data(), length_bytes.size())) {
+            result.error = src.Error().empty() ? std::string("读取 NAL 长度前缀失败") : src.Error();
+            result.video = false;
+            result.samples.clear();
+            return result;
+        }
         const std::uint32_t nal_size =
-            (static_cast<std::uint32_t>(data[pos]) << 24) | (static_cast<std::uint32_t>(data[pos + 1]) << 16) |
-            (static_cast<std::uint32_t>(data[pos + 2]) << 8) | static_cast<std::uint32_t>(data[pos + 3]);
-        if (nal_size == 0 || nal_size > data.size() - pos - 4 || nal_size > kMaxAuBytes) {
+            (static_cast<std::uint32_t>(length_bytes[0]) << 24) | (static_cast<std::uint32_t>(length_bytes[1]) << 16) |
+            (static_cast<std::uint32_t>(length_bytes[2]) << 8) | static_cast<std::uint32_t>(length_bytes[3]);
+        if (nal_size == 0 || nal_size > src.Size() - pos - 4 || nal_size > kMaxAuBytes) {
             result.error =
                 "NAL 长度非法（offset=" + std::to_string(pos) + "，length=" + std::to_string(nal_size) + "）";
             result.video = false;
             result.samples.clear();
             return result;
         }
-        const std::uint8_t* nal = data.data() + pos + 4;
+        // 只取语法前缀：slice 的 first_mb_in_slice、SPS / PPS 都在这里面。
+        const std::size_t parse_len =
+            static_cast<std::size_t>(std::min<std::uint32_t>(nal_size, static_cast<std::uint32_t>(kParsedNalBytes)));
+        std::vector<std::uint8_t> nal_buffer(parse_len);
+        if (!src.Read(pos + 4, nal_buffer.data(), parse_len)) {
+            result.error = src.Error().empty() ? std::string("读取 NAL 语法前缀失败") : src.Error();
+            result.video = false;
+            result.samples.clear();
+            return result;
+        }
+        const std::uint8_t* nal = nal_buffer.data();
         const std::uint8_t nal_type = nal[0] & 0x1F;
 
         if (nal_type == 9) { // AUD：只有当前 AU 已有 VCL 时才切分
             if (au_has_vcl)
                 close_au(pos);
         } else if (nal_type == 1 || nal_type == 5) {
-            const bool first_mb_zero = SliceFirstMbIsZero(nal, nal_size);
+            const bool first_mb_zero = SliceFirstMbIsZero(nal, parse_len);
             if (first_mb_zero && au_has_vcl)
                 close_au(pos);
             au_has_vcl = true;
@@ -524,7 +578,13 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
             if (au_has_vcl)
                 close_au(pos);
             if (nal_type == 7 && !has_sps) {
-                std::vector<std::uint8_t> sps(nal, nal + nal_size);
+                if (parse_len < nal_size) {
+                    result.error = "SPS 超过有界解析上限，拒绝用截断参数集重建 avcC";
+                    result.video = false;
+                    result.samples.clear();
+                    return result;
+                }
+                std::vector<std::uint8_t> sps(nal_buffer.begin(), nal_buffer.end());
                 std::string sps_error;
                 if (!ParsePlainSps(sps, &result, &sps_error)) {
                     result.error = sps_error;
@@ -534,7 +594,13 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
                 }
                 has_sps = true;
             } else if (nal_type == 8) {
-                std::vector<std::uint8_t> pps(nal, nal + nal_size);
+                if (parse_len < nal_size) {
+                    result.error = "PPS 超过有界解析上限，拒绝用截断参数集重建 avcC";
+                    result.video = false;
+                    result.samples.clear();
+                    return result;
+                }
+                std::vector<std::uint8_t> pps(nal_buffer.begin(), nal_buffer.end());
                 bool duplicate = false;
                 for (const auto& existing : result.pps) {
                     if (existing == pps)
@@ -568,6 +634,9 @@ ScanResult ScanAvcc(std::ifstream& in, const MdatInfo& mdat, const std::atomic<b
     summary << "H.264（profile " << static_cast<int>(result.profile) << " / level " << static_cast<int>(result.level)
             << "，时基 " << result.timescale << " ticks，样本时长 " << result.sample_delta << "）";
     result.codec_summary = summary.str();
+    for (const auto& limitation : result.ledger.Limitations())
+        result.limitations.push_back(limitation);
+    result.limitations.push_back("mdat 载荷按有界分块扫描，每个 NAL 只读语法前缀，帧体不整段读入内存");
     result.limitations.push_back("样本边界由 NAL length-prefix 与 first_mb_in_slice 推断，不是原始 stsz");
     result.limitations.push_back("未重建 edts/ctts；若源流含 B 帧，显示顺序可能不完全等价");
     return result;
@@ -949,7 +1018,7 @@ void WriteMdatHeader(std::ofstream& out, std::uint64_t payload_size) {
 
 ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
                        MdatInfo* mdat_out, std::uint64_t* file_size_out, std::vector<PlainBox>* boxes_out,
-                       std::vector<std::uint8_t>* ftyp_out, std::string* error) {
+                       std::vector<std::uint8_t>* ftyp_out, std::string* error, std::size_t scan_chunk_bytes) {
     ScanResult result;
     std::vector<PlainBox> boxes;
     MdatInfo mdat;
@@ -982,21 +1051,32 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
         }
     }
 
-    std::ifstream in(ToNativePath(source_path), std::ios::binary);
-    if (!in) {
-        *error = "无法读取源文件";
+    ScanWindow window;
+    window.file_offset = mdat.payload;
+    window.size = mdat.payload_size;
+    window.track_id = 1;
+    window.stream_index = 0;
+    window.segment_index = 0;
+    window.config_id = "plain_mp4_mdat_scan";
+
+    // 两个 producer 各用独立的分块字节源：第一次扫描因「码流类型不匹配」失败时，
+    // 不该把它的读取状态带进第二次扫描。
+    ChunkedByteSource audio_source(source_path, window, scan_chunk_bytes, budget, cancel);
+    if (!audio_source.Error().empty()) {
+        *error = audio_source.Error();
         return result;
     }
 
     // 先试 ADTS 纯音频，再试 AVCC 纯视频；两者都失败才拒绝。
-    ScanResult audio = ScanAdts(in, mdat, cancel, budget);
+    ScanResult audio = ScanAdts(audio_source, window, cancel, budget);
     if (audio.ok) {
         *mdat_out = mdat;
         *file_size_out = file_size;
         *boxes_out = std::move(boxes);
         return audio;
     }
-    ScanResult video = ScanAvcc(in, mdat, cancel, budget);
+    ChunkedByteSource video_source(source_path, window, scan_chunk_bytes, budget, cancel);
+    ScanResult video = ScanAvcc(video_source, window, cancel, budget);
     if (video.ok) {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
@@ -1019,23 +1099,24 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
 } // namespace
 
 RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_path, const std::atomic<bool>* cancel,
-                                                   const RepairRunBudget* budget) {
+                                                   const RepairRunBudget* budget, std::size_t scan_chunk_bytes) {
     RepairPlainMp4Probe probe;
     MdatInfo mdat;
     std::uint64_t file_size = 0;
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp;
     std::string error;
-    const ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp, &error);
+    const ScanResult scan =
+        ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp, &error, scan_chunk_bytes);
     if (!scan.ok) {
         probe.reason = error;
         return probe;
     }
     if (scan.width > 0 && scan.height > 0) {
         probe.codec_summary = scan.codec_summary + " / " + std::to_string(scan.width) + "x" +
-                              std::to_string(scan.height) + " / " + std::to_string(scan.samples.size()) + " 个样本";
+                              std::to_string(scan.height) + " / " + std::to_string(scan.ledger.Total()) + " 个样本";
     } else {
-        probe.codec_summary = scan.codec_summary + " / " + std::to_string(scan.samples.size()) + " 个样本";
+        probe.codec_summary = scan.codec_summary + " / " + std::to_string(scan.ledger.Total()) + " 个样本";
     }
     probe.attemptable = true;
     probe.kind = scan.kind;
@@ -1046,7 +1127,8 @@ RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_pat
 RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& source_path,
                                                              const std::string& output_path,
                                                              const std::atomic<bool>* cancel,
-                                                             const RepairRunBudget* budget) {
+                                                             const RepairRunBudget* budget,
+                                                             std::size_t scan_chunk_bytes) {
     RepairPlainMp4RebuildResult result;
     result.attempted = true;
     if (Stopped(cancel, budget, &result.error))
@@ -1057,7 +1139,8 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp_source;
     std::string error;
-    const ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error);
+    const ScanResult scan =
+        ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error, scan_chunk_bytes);
     if (!scan.ok) {
         result.error = error.empty() ? "无法从 mdat 重建样本表" : error;
         return result;
@@ -1074,8 +1157,7 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
 
     std::vector<std::uint8_t> ftyp_bytes = MakeFtyp(std::move(ftyp_source));
     const std::uint32_t track_id = 1;
-    const std::uint64_t media_duration =
-        static_cast<std::uint64_t>(scan.sample_delta) * static_cast<std::uint64_t>(scan.samples.size());
+    const std::uint64_t media_duration = static_cast<std::uint64_t>(scan.sample_delta) * scan.ledger.Total();
 
     // moov 大小依赖 stco/co64 的选择，后者又依赖载荷起点；迭代到尺寸收敛。
     const std::uint64_t total_payload = scan.total_bytes;
@@ -1149,11 +1231,13 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
         return result;
 
     result.ok = true;
-    result.samples_rebuilt = scan.samples.size();
+    // 上层样本数直接取样本层总数，不再从 scan.samples 另数一遍。
+    result.samples_rebuilt = scan.ledger.Total();
+    result.sample_ledger = scan.ledger.Summary();
     result.rebuilt_tracks = 1;
     result.output_bytes = ftyp_bytes.size() + moov_bytes.size() + mdat_header_size + total_payload;
     result.note = "无 moov，按 mdat 扫描重建 " + scan.codec_summary + " 单轨，样本 " +
-                  std::to_string(scan.samples.size()) + " 个；时基 " + std::to_string(scan.timescale) +
+                  std::to_string(scan.ledger.Total()) + " 个；时基 " + std::to_string(scan.timescale) +
                   " ticks，样本时长 " + std::to_string(scan.sample_delta);
     result.probe.limitations.push_back("重建产物仍需重新封装与解码验证");
     if (mdat.payload_size != total_payload)

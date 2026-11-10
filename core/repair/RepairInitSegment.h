@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "core/repair/RepairBudget.h"
+
 namespace videoeye {
 namespace repair {
 
@@ -78,12 +80,14 @@ public:
     // 参考文件必须是 ISOBMFF、含 ftyp+moov、moov/mvex 含 trex（分片初始化段），
     // 且轨道号覆盖 required_track_ids；任何一条不满足都返回 ok=false 并写明原因。
     static RepairInitSegment Read(const std::string& reference_path, const std::vector<uint32_t>& required_track_ids,
-                                  const std::atomic<bool>* cancel);
+                                  const std::atomic<bool>* cancel, const RepairRunBudget* budget = nullptr);
 
     // 带源侧证据的版本：用于引擎主链路。默认重载按"无证据"处理，结果必然是
     // unverified —— 保证任何"只按 track_id 判定兼容"的调用都拿不到 verified。
+    // budget：共享执行预算，命中时 ok=false 且 error 写明取消/超时，不返回半成品初始化段。
     static RepairInitSegment Read(const std::string& reference_path, const std::vector<uint32_t>& required_track_ids,
-                                  const RepairSourceCompatibilityEvidence& evidence, const std::atomic<bool>* cancel);
+                                  const RepairSourceCompatibilityEvidence& evidence, const std::atomic<bool>* cancel,
+                                  const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

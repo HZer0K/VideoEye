@@ -18,6 +18,7 @@
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPayloadHash.h"
 #include "core/repair/RepairPlainMp4Rebuilder.h"
+#include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
@@ -562,7 +563,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     std::string failure;
     double last_resync_seconds = -1.0;
     double last_resync_from = -1.0;
-    std::vector<uint64_t> per_output_packets(mapped_streams.size(), 0);
+    // 样本层是逐轨 / 逐区间 / 写入总量统计的唯一事实源：明细有界，聚合计数精确。
+    // 原来各自 ++ 的 per_output_packets / current_segment.packets_written 全部改由它求和。
+    RepairSampleLedger sample_ledger;
     // MPEG-TS 要求 H.264/HEVC 使用 Annex B 码流；MP4 内是 length-prefixed，
     // 必须在写入前经比特流过滤器转换，否则产物在播放器里无法解码。
     std::vector<AVBSFContext*> bsf_contexts(mapped_streams.size(), nullptr);
@@ -852,6 +855,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     last_resync_from = resync_from;
                     ++resync_count;
                     if (current_segment_active) {
+                        current_segment.packets_written = sample_ledger.CountForSegment(current_segment.index);
                         segments.push_back(current_segment);
                         current_segment_active = false;
                     }
@@ -1060,6 +1064,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             // av_interleaved_write_frame 会接管并 unref packet，所以先把需要统计的
             // 字段取出来 —— 写完再读 packet->size 拿到的是 0。
             const int written_size = to_write->size;
+            // av_interleaved_write_frame 会 unref packet，写完再读 flags 拿到的是 0。
+            const bool written_is_key = (to_write->flags & AV_PKT_FLAG_KEY) != 0;
             const int write_ret = av_interleaved_write_frame(out, to_write);
             if (write_ret < 0) {
                 write_failed = true;
@@ -1071,10 +1077,33 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             av_packet_free(&filtered);
 
             ++packets_seen;
-            ++outcome.packets_written;
-            if (out_index >= 0 && out_index < static_cast<int>(per_output_packets.size()))
-                ++per_output_packets[static_cast<std::size_t>(out_index)];
             outcome.bytes_written += static_cast<uint64_t>(std::max(written_size, 0));
+
+            // 每个成功写入的包是样本层的一条事实。上层三个计数全部由账本求和，
+            // 不再各自 ++ —— 两处统计靠断言对齐正是「第二份真值」的来源。
+            model::RecoveredSample sample;
+            // demuxer 读包时 packet->pos 已被置 -1：源字节偏移拿不到就留空，不填 0。
+            sample.size = static_cast<uint64_t>(std::max(written_size, 0));
+            sample.track_id = src_stream->id >= 0 ? static_cast<uint32_t>(src_stream->id) : 0;
+            sample.stream_index = out_index;
+            sample.config_id = "remux_passthrough";
+            sample.decode_ordinal = sample_ledger.CountForTrack(out_index);
+            // AV_PKT_FLAG_KEY 只是容器标记，不是「可解码」结论：decode_status
+            // 保持 NotAttempted，rap_evidence 写明来源，等 D 阶段试解码再升级。
+            sample.is_rap = written_is_key;
+            if (written_is_key)
+                sample.rap_evidence = "container_key_flag";
+            if (input_seconds.has_value()) {
+                sample.pts_seconds = *input_seconds;
+                sample.timestamp_evidence = model::SampleTimestampEvidence::ContainerBox;
+                // 尚未创建区间时，下标就是 segments.size()，与下面的创建逻辑一致。
+                sample.segment_index =
+                    current_segment_active ? current_segment.index : static_cast<uint32_t>(segments.size());
+            } else {
+                sample.timestamp_evidence = model::SampleTimestampEvidence::Unknown;
+            }
+            sample.confidence = model::SampleConfidence::Probable;
+            sample_ledger.Add(sample);
 
             if (input_seconds.has_value()) {
                 stream_covered_seconds[static_cast<std::size_t>(in_index)] =
@@ -1098,7 +1127,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 }
                 current_segment.input_end_seconds = std::max(current_segment.input_end_seconds, *input_seconds);
                 current_segment.output_end_seconds = std::max(current_segment.output_end_seconds, output_seconds);
-                ++current_segment.packets_written;
+                // packets_written 在段收尾时由样本层求和，不在这里 ++。
 
                 if (!outcome.output_start_seconds.has_value())
                     outcome.output_start_seconds = output_seconds;
@@ -1125,11 +1154,14 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             av_packet_unref(packet);
         }
 
-        if (current_segment_active)
+        if (current_segment_active) {
+            current_segment.packets_written = sample_ledger.CountForSegment(current_segment.index);
             segments.push_back(current_segment);
+        }
 
         av_packet_free(&packet);
         outcome.packets_read = packets_seen;
+        outcome.packets_written = sample_ledger.Total();
         outcome.recovered_segments = segments;
         outcome.timeline_repair.attempted = request.repair_timeline;
         outcome.timeline_repair.gap_removed = gap_removed;
@@ -1193,6 +1225,10 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     avformat_free_context(out);
     avformat_close_input(&in);
 
+    // 所有返回路径都要带上样本层实测值：取消 / 超时 / 写失败时账本同样存在，
+    // 只是总数可能是部分值，不能事后伪装成「完整扫描」。
+    outcome.sample_ledger = sample_ledger.Summary();
+
     if (!failure.empty()) {
         outcome.error = failure;
         return outcome;
@@ -1215,13 +1251,19 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         record.input_stream_index = target.input_stream_index;
         record.output_stream_index = target.output_stream_index;
         record.kind = target.kind;
-        if (target.output_stream_index >= 0 && target.output_stream_index < static_cast<int>(per_output_packets.size()))
-            record.packets_written = per_output_packets[static_cast<std::size_t>(target.output_stream_index)];
+        if (target.output_stream_index >= 0 && target.output_stream_index < static_cast<int>(mapped_streams.size()))
+            record.packets_written = sample_ledger.CountForTrack(target.output_stream_index);
         record.status = "unknown"; // expected_samples 需引擎用源侧基线逐轨填
         record.relation = "unknown";
         record.note = target.note;
         outcome.track_conservation.push_back(std::move(record));
     }
+
+    // 守恒核对只报错、不静默修正：三个上层级计数都由账本填，这里验证没有
+    // 哪一层偷偷另起了一份统计。
+    const auto conservation = CheckUpperLayerConservation(sample_ledger, outcome.recovered_segments,
+                                                          outcome.track_conservation, outcome.packets_written);
+    outcome.sample_conservation_problems = conservation.problems;
 
     model::RepairActionExecution remux;
     remux.action = model::RepairAction::S01_Remux;

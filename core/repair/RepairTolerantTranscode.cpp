@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -753,8 +754,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     }
 
     uint64_t encoded_frames = 0;
-    uint64_t video_packets = 0;
-    uint64_t audio_packets = 0;
+    // 样本账本：S08 产物是「视频重编码 + 音频码流复制」的混合。源字节偏移不可得，
+    // 时间戳按首包归零重建，一律标 Inferred，不与保码流路径的容器原值混淆。
+    // 报告里的写入包数 / 逐轨包数全部由它求和，不再另设计数器。
+    RepairSampleLedger sample_ledger;
     uint64_t bytes_written = 0;
     bool write_failed = false;
     std::string write_error;
@@ -819,7 +822,18 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 write_error = "写入编码包失败";
                 return false;
             }
-            ++video_packets;
+            {
+                model::RecoveredSample sample;
+                sample.size = static_cast<uint64_t>(std::max(written, 0));
+                sample.track_id = 0; // 重编码产物以输出流下标归属，轨号未映射
+                sample.stream_index = video_out_index;
+                sample.config_id = "s08_reencoded_video";
+                sample.decode_ordinal = sample_ledger.CountForTrack(video_out_index);
+                sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+                sample.inference_basis = "S08 视频重编码，时间戳按首包归零重建";
+                sample.confidence = model::SampleConfidence::Inferred;
+                sample_ledger.Add(sample);
+            }
             bytes_written += static_cast<uint64_t>(std::max(written, 0));
             if (max_output_bytes > 0 && bytes_written > max_output_bytes)
                 size_capped = true;
@@ -884,7 +898,18 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             write_error = "写入音频包失败";
             return false;
         }
-        ++audio_packets;
+        {
+            model::RecoveredSample sample;
+            sample.size = static_cast<uint64_t>(std::max(written, 0));
+            sample.track_id = 0;
+            sample.stream_index = out_index;
+            sample.config_id = "s08_copied_audio";
+            sample.decode_ordinal = sample_ledger.CountForTrack(out_index);
+            sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+            sample.inference_basis = "S08 音频码流复制，PTS 按首包归零重写";
+            sample.confidence = model::SampleConfidence::Inferred;
+            sample_ledger.Add(sample);
+        }
         bytes_written += static_cast<uint64_t>(std::max(written, 0));
         if (max_output_bytes > 0 && bytes_written > max_output_bytes)
             size_capped = true;
@@ -937,7 +962,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             av_packet_unref(packet);
             if (write_failed || resource_failed || size_capped)
                 break;
-            if ((video_packets + audio_packets) % 200 == 0)
+            if (sample_ledger.Total() % 200 == 0)
                 Emit(progress, 80, "已转码 " + std::to_string(encoded_frames) + " 帧");
         }
     }
@@ -977,10 +1002,14 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     avcodec_free_context(&decoder);
     avformat_close_input(&in);
 
+    // 覆盖所有写包过的返回路径（取消 / 超时 / 写失败 / 达上限）：账本里是
+    // 实测的部分值，不能事后伪装成完整扫描。
+    outcome.sample_ledger = sample_ledger.Summary();
+
     outcome.canceled = stop.canceled;
     outcome.timed_out = stop.timed_out;
     outcome.packets_read = encoded_frames + dropped_decode_packets;
-    outcome.packets_written = video_packets + audio_packets;
+    outcome.packets_written = sample_ledger.Total();
     outcome.bytes_written = bytes_written;
     outcome.output_size_capped = size_capped;
     outcome.transcoded_frames = encoded_frames;
@@ -1079,7 +1108,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     record.output_end_seconds = outcome.output_end_seconds;
     std::ostringstream detail;
     detail << "容忍式转码：解码并编码 " << encoded_frames << " 帧（" << std::string(encoder_codec->name) << "），跳过 "
-           << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 " << audio_packets << " 个";
+           << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 "
+           << (sample_ledger.Total() - sample_ledger.CountForTrack(video_out_index)) << " 个";
     if (size_capped)
         detail << "；超过输出字节上限 " << max_output_bytes << " 字节，仅交付可播放前缀，其余源内容未恢复";
     if (psnr.samples > 0)
@@ -1121,12 +1151,16 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         video_record.input_stream_index = video_index;
         video_record.output_stream_index = video_out_index;
         video_record.kind = "video";
-        video_record.packets_written = video_packets;
+        video_record.packets_written = sample_ledger.CountForTrack(video_out_index);
         video_record.status = "unknown";
         video_record.relation = "reencoded";
         video_record.note = "转码后样本数与源不可直接比对";
         outcome.track_conservation.push_back(std::move(video_record));
     }
+
+    const auto conservation = CheckUpperLayerConservation(sample_ledger, outcome.recovered_segments,
+                                                          outcome.track_conservation, outcome.packets_written);
+    outcome.sample_conservation_problems = conservation.problems;
 
     if (outcome.dropped_video_frames > 0) {
         model::DamageFinding finding;

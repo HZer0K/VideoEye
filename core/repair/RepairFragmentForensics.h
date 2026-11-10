@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "core/media/container/IsobmffParser.h"
+#include "core/repair/RepairBudget.h"
 
 namespace videoeye {
 namespace repair {
@@ -94,10 +95,11 @@ struct RepairFragmentEvidence {
 class RepairFragmentForensics {
 public:
     // parsed：Inspector 已经解析过的盒树（复用 top_level / fragments，不重复解析）。
-    // 每读完一个分段检查一次 cancel；被取消时 analyzed 仍可能为 true，
-    // 但 reached_eof=false 且 limitations 会写明停止点。
+    // 每读完一个分段检查一次 cancel 与共享预算；被取消 / 超时时 reached_eof=false，
+    // limitations 写明停止点，入口就命中时 analyzed=false（还没有任何取证事实）。
+    // budget 默认 nullptr 只供单元测试直接调用；生产链传引擎创建的共享预算。
     static RepairFragmentEvidence Analyze(const std::string& path, const IsobmffFile& parsed,
-                                          const std::atomic<bool>* cancel);
+                                          const std::atomic<bool>* cancel, const RepairRunBudget* budget = nullptr);
 };
 
 } // namespace repair

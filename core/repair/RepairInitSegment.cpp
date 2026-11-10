@@ -94,16 +94,20 @@ TimescaleCheckOutcome CheckTrackTimescales(const std::vector<RepairReferenceTrac
 
 RepairInitSegment RepairInitSegmentReader::Read(const std::string& reference_path,
                                                 const std::vector<uint32_t>& required_track_ids,
-                                                const std::atomic<bool>* cancel) {
-    return Read(reference_path, required_track_ids, RepairSourceCompatibilityEvidence{}, cancel);
+                                                const std::atomic<bool>* cancel, const RepairRunBudget* budget) {
+    return Read(reference_path, required_track_ids, RepairSourceCompatibilityEvidence{}, cancel, budget);
 }
 
 RepairInitSegment RepairInitSegmentReader::Read(const std::string& reference_path,
                                                 const std::vector<uint32_t>& required_track_ids,
                                                 const RepairSourceCompatibilityEvidence& evidence,
-                                                const std::atomic<bool>* cancel) {
+                                                const std::atomic<bool>* cancel, const RepairRunBudget* budget) {
     RepairInitSegment result;
     result.reference_path = reference_path;
+    if (const std::string stop = BudgetStopMessage(budget, "参考初始化段读取阶段"); !stop.empty()) {
+        result.error = stop;
+        return result;
+    }
 
     std::error_code ec;
     if (!std::filesystem::exists(ToNativePath(reference_path), ec) ||
@@ -119,6 +123,10 @@ RepairInitSegment RepairInitSegmentReader::Read(const std::string& reference_pat
     options.cancel = cancel;
     if (!IsobmffParser::Parse(reference_path, parsed, options)) {
         result.error = "参考文件不是可解析的 ISOBMFF: " + parsed.error_message;
+        return result;
+    }
+    if (const std::string stop = BudgetStopMessage(budget, "参考初始化段读取阶段"); !stop.empty()) {
+        result.error = stop;
         return result;
     }
     if (infrastructure::Checkpoint(cancel)) {

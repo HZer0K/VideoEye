@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "core/domain/model/RecoveredSample.h"
 #include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
 #include "core/repair/RepairBudget.h"
@@ -94,6 +95,10 @@ struct RepairExecutionOutcome {
     // 输入 → 输出轨道映射与逐轨写入包数（R04 / R07）。
     std::vector<model::RepairTrackVerificationTarget> verification_targets;
     std::vector<model::RepairTrackConservation> track_conservation;
+    // 样本层事实源摘要：明细可能有界抽样，total_samples / total_bytes 是全量实测值。
+    model::RepairSampleLedgerSummary sample_ledger;
+    // 上三层守恒核对发现的不一致，原样上报，不静默修正。
+    std::vector<std::string> sample_conservation_problems;
     // 被省略的轨道 / 元数据 / 章节，逐项列出（R11）。
     std::vector<std::string> omitted_items;
     std::string ffmpeg_version;

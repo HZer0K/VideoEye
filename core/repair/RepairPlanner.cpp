@@ -21,7 +21,10 @@ model::RepairActionPlan MakeAction(model::RepairAction action, const std::string
 
 void AddUnavailable(model::RepairPlan& plan, model::RepairAction action, const std::string& description,
                     const std::string& reason) {
-    model::RepairActionPlan entry = MakeAction(action, description, "（当前版本未实现）", "无法评估");
+    // 「本次未启用」≠「当前版本未实现」：S08 已有解码-编码链，保码流模式下只是
+    // 用户没选。写成「未实现」会让报告一边执行了 S08、一边声称没有这个能力。
+    model::RepairActionPlan entry =
+        MakeAction(action, description, "（本次未启用此策略，不产生效果）", "不适用：本次未执行该策略");
     entry.available = false;
     entry.unavailable_reason = reason;
     const char* boundary = BoundaryCodeForAction(action);
@@ -93,12 +96,23 @@ void AddFirstStageActions(model::RepairPlan& plan, const model::RepairRequest& r
 
 RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, const model::RepairDiagnosis& diagnosis,
                                           const std::optional<double>& salvage_end_seconds, int target_stream_index,
-                                          const RepairInitSegment* reference_init) {
+                                          const RepairInitSegment* reference_init, const RepairRunBudget* budget) {
     RepairPlanOutcome outcome;
     model::RepairPlan& plan = outcome.plan;
     plan.diagnosis_id = diagnosis.diagnosis_id;
     plan.plan_id = "plan-" + FormatLocalRunId();
     plan.mode = request.mode;
+
+    // 规划阶段本身很短，但它是「诊断已耗时」之后的第一道门：预算在这里就该生效，
+    // 否则一次已经超时的修复仍会拿到可执行计划继续写产物。
+    if (const std::string stop = BudgetStopMessage(budget, "规划阶段"); !stop.empty()) {
+        outcome.can_execute = false;
+        outcome.early_status =
+            budget->Canceled() ? model::RepairBusinessStatus::Canceled : model::RepairBusinessStatus::TimedOut;
+        plan.feasible = false;
+        plan.infeasible_reason = stop;
+        return outcome;
+    }
     switch (request.output_container) {
     case model::RepairOutputContainer::Mkv:
         plan.expected_output_extension = "mkv";

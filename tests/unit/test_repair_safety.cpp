@@ -40,8 +40,11 @@
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairEngine.h"
+#include "core/repair/RepairFragmentForensics.h"
 #include "core/repair/RepairInitSegment.h"
+#include "core/repair/RepairInitSegmentBuilder.h"
 #include "core/repair/RepairOutputWriter.h"
+#include "core/repair/RepairPlanner.h"
 #include "core/repair/RepairSampleBounds.h"
 #include "core/repair/RepairUtils.h"
 #include "core/repair/RepairVerifier.h"
@@ -267,6 +270,57 @@ TEST(RepairSafety, SharedBudgetStopsSampleScan) {
     EXPECT_TRUE(bounds.truncated_by_budget);
     EXPECT_EQ(bounds.samples_examined, 0u) << "诊断一开始就取消，不该再逐样本扫一遍";
     EXPECT_NE(bounds.note.find("预算"), std::string::npos) << bounds.note;
+}
+
+// ---- 切片 A-3：共享预算必须真的贯穿诊断内部环节 ----
+//
+// 只把 budget 写进函数签名不算数：逐个传入「已取消」的预算，要求每个长循环环节
+// 都明确拒绝；再用「未取消」的预算做反向守护，防止有人把检查写成恒返回取消。
+TEST(RepairSafety, SharedBudgetStopsPlanningForensicsAndSnapshotStages) {
+    std::atomic<bool> cancel{true};
+    const repair::RepairRunBudget stopped(&cancel, 0);
+    const repair::RepairRunBudget live(nullptr, 0);
+
+    model::RepairDiagnosis diagnosis;
+    const auto plan = repair::RepairPlanner::MakePlan(RepairRequest{}, diagnosis, std::nullopt, 0, nullptr, &stopped);
+    EXPECT_FALSE(plan.can_execute);
+    EXPECT_EQ(plan.early_status, RepairBusinessStatus::Canceled);
+    EXPECT_NE(plan.plan.infeasible_reason.find("规划阶段被取消"), std::string::npos) << plan.plan.infeasible_reason;
+
+    const std::string dir = MakeTempDir("budget_stage");
+    const auto media = videoeye_test::CreateTestMedia(dir, "budget_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    IsobmffFile parsed;
+
+    const auto ev = repair::RepairFragmentForensics::Analyze(media.path, parsed, nullptr, &stopped);
+    EXPECT_FALSE(ev.analyzed) << "入口就取消时不该产出半张取证真值表";
+    EXPECT_NE(ev.error.find("被取消"), std::string::npos) << ev.error;
+
+    const auto init = repair::RepairInitSegmentReader::Read(media.path, {}, nullptr, &stopped);
+    EXPECT_FALSE(init.ok);
+    EXPECT_NE(init.error.find("被取消"), std::string::npos) << init.error;
+
+    const auto synth = repair::RepairInitSegmentBuilder::Build(media.path, parsed, ev, nullptr, &stopped);
+    EXPECT_FALSE(synth.ok);
+    EXPECT_NE(synth.error.find("被取消"), std::string::npos) << synth.error;
+
+    const auto snapshot = repair::RepairOutputWriter::MakeSnapshot(media.path, &stopped);
+    EXPECT_TRUE(snapshot.content_hash.empty());
+    EXPECT_EQ(snapshot.hash_method, "unavailable");
+
+    std::string error;
+    std::string method;
+    EXPECT_FALSE(repair::RepairOutputWriter::SourceUnchanged(snapshot, &error, &method, &stopped));
+    EXPECT_NE(error.find("未完成输入一致性核对"), std::string::npos) << error;
+
+    // 反向守护：预算没命中时这些环节必须照常工作。
+    const auto live_snapshot = repair::RepairOutputWriter::MakeSnapshot(media.path, &live);
+    EXPECT_FALSE(live_snapshot.content_hash.empty());
+    EXPECT_NE(live_snapshot.hash_method, "unavailable");
+    std::string live_error;
+    EXPECT_TRUE(repair::RepairOutputWriter::SourceUnchanged(live_snapshot, &live_error, nullptr, &live)) << live_error;
+    const auto live_plan = repair::RepairPlanner::MakePlan(RepairRequest{}, diagnosis, std::nullopt, 0, nullptr, &live);
+    EXPECT_EQ(live_plan.plan.infeasible_reason.find("被取消"), std::string::npos) << live_plan.plan.infeasible_reason;
 }
 
 // ---------------- R03 / R07：结论判据 ----------------

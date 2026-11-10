@@ -86,9 +86,10 @@ model::RepairCheckStatus WorstStatus(const std::vector<model::RepairCheck>& chec
     return worst;
 }
 
-model::RepairInputSnapshot SnapshotFile(const std::string& path) {
+model::RepairInputSnapshot SnapshotFile(const std::string& path, const RepairRunBudget* budget) {
     // size + mtime + 内容摘要一起取；只比大小挡不住同大小原位改写（R08）。
-    model::RepairInputSnapshot snapshot = RepairOutputWriter::MakeSnapshot(path);
+    // 摘要是分块读，把共享预算传进去，取消时不能把「没算完」当成「内容没变」。
+    model::RepairInputSnapshot snapshot = RepairOutputWriter::MakeSnapshot(path, budget);
     const FileHeaderInfo header = ProbeFileHeader(path);
     snapshot.signature = header.first_box_type;
     return snapshot;
@@ -155,11 +156,12 @@ int PickTargetStream(const AVFormatContext* fmt, const std::vector<int>& request
 // 取证不改变业务结论 —— 可修 / 不可修仍由 RepairPlanner 决定。
 bool ApplyFragmentForensics(const model::RepairRequest& request, const IsobmffFile& parsed,
                             const std::atomic<bool>* cancel, const RepairProgress& progress,
-                            model::RepairDiagnosis& diagnosis, RepairSourceCompatibilityEvidence* source_evidence,
+                            const RepairRunBudget* budget, model::RepairDiagnosis& diagnosis,
+                            RepairSourceCompatibilityEvidence* source_evidence,
                             RepairFragmentEvidence* fragment_evidence) {
     const auto start = Clock::now();
     Emit(progress, 52, stage::Inspecting(), "取证媒体分片结构与码流参数集");
-    const RepairFragmentEvidence ev = RepairFragmentForensics::Analyze(request.source_path, parsed, cancel);
+    const RepairFragmentEvidence ev = RepairFragmentForensics::Analyze(request.source_path, parsed, cancel, budget);
     if (fragment_evidence != nullptr)
         *fragment_evidence = ev;
     if (!ev.analyzed) {
@@ -526,7 +528,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     // **且 ec 为空**，中文路径的源文件会被判成"不存在"——修复入口直接拒绝。
     const std::filesystem::path source_native = ToNativePath(request.source_path);
     if (!std::filesystem::exists(source_native, ec) || !std::filesystem::is_regular_file(source_native, ec)) {
-        diagnosis.input = SnapshotFile(request.source_path);
+        diagnosis.input = SnapshotFile(request.source_path, budget);
         diagnosis.summary = "输入文件不存在或不是普通文件";
         diagnosis.blocking_reasons.push_back("输入文件不存在或不是普通文件");
         AddCheck(diagnosis, "file.identity", model::DamageLayer::File, model::RepairCheckStatus::Failed,
@@ -534,7 +536,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
         return outcome;
     }
 
-    diagnosis.input = SnapshotFile(request.source_path);
+    diagnosis.input = SnapshotFile(request.source_path, budget);
     AddCheck(diagnosis, "file.identity", model::DamageLayer::File, model::RepairCheckStatus::Passed,
              "存在且可读, size=" + std::to_string(diagnosis.input.size_bytes) +
                  ", signature=" + (diagnosis.input.signature.empty() ? "unknown" : diagnosis.input.signature));
@@ -712,7 +714,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
 
             // 先取证：源侧 sidx 时基 / 逐 NAL 码流是核对参考段的独立证据（R03）。
             // 旧顺序把取证放在参考段之后，Reader 只能看到 track_id。
-            fragment_forensics_applied = ApplyFragmentForensics(request, parsed, cancel, progress, diagnosis,
+            fragment_forensics_applied = ApplyFragmentForensics(request, parsed, cancel, progress, budget, diagnosis,
                                                                 &source_evidence, &fragment_evidence);
             outcome.source_evidence = source_evidence;
 
@@ -796,7 +798,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                     const auto synth_start = Clock::now();
                     Emit(progress, 55, stage::Inspecting(), "尝试从 in-band 参数集自建初始化段");
                     const RepairSynthesizedInit synthesized =
-                        RepairInitSegmentBuilder::Build(request.source_path, parsed, fragment_evidence, cancel);
+                        RepairInitSegmentBuilder::Build(request.source_path, parsed, fragment_evidence, cancel, budget);
                     if (synthesized.ok) {
                         RepairInitSegment init;
                         init.ok = true;
@@ -839,7 +841,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                     const auto reference_start = Clock::now();
                     Emit(progress, 55, stage::Inspecting(), "校验参考样片/初始化段");
                     RepairInitSegment init = RepairInitSegmentReader::Read(request.reference_path, required_track_ids,
-                                                                           source_evidence, cancel);
+                                                                           source_evidence, cancel, budget);
                     if (init.ok) {
                         AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
                                  init.compatibility == "verified" ? model::RepairCheckStatus::Passed
@@ -848,7 +850,7 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                                      "；兼容性=" + init.compatibility + "（" + init.compatibility_reason + "）",
                                  ElapsedMs(reference_start));
                         // R08：执行时拼进去的必须是诊断时读到的同一份参考文件。
-                        outcome.reference_snapshot = RepairOutputWriter::MakeSnapshot(request.reference_path);
+                        outcome.reference_snapshot = RepairOutputWriter::MakeSnapshot(request.reference_path, budget);
                         outcome.reference_snapshot_valid = true;
                         outcome.reference_init = std::move(init);
                     } else {

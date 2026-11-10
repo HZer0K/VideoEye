@@ -30,6 +30,25 @@ void FinishEarly(model::RepairResult& result, model::RepairBusinessStatus status
     result.fidelity.perceptual_fidelity = "unknown_without_reference";
 }
 
+// 损失区间是 recovered_segments 的派生视图，不是第二份真值表：
+// 只有「跳段恢复且确实跳过了一段时间」的段才产生一条，正向 / 反向都由实测值决定。
+std::vector<model::RepairLostRange> BuildLostRanges(const std::vector<model::RepairRecoveredSegment>& segments) {
+    std::vector<model::RepairLostRange> out;
+    for (const auto& segment : segments) {
+        if (!segment.resumed_after_damage || segment.skipped_before_seconds <= 0.0)
+            continue;
+        model::RepairLostRange range;
+        range.input_end_seconds = segment.input_start_seconds;
+        range.input_start_seconds = std::max(0.0, segment.input_start_seconds - segment.skipped_before_seconds);
+        range.reason = "container.damaged_segment_skipped";
+        range.evidence = "跳段恢复实测：本段前跳过 " + FormatSeconds(segment.skipped_before_seconds) + " s；恢复点 " +
+                         (segment.recovery_point.empty() ? "未记录" : segment.recovery_point);
+        range.recoverable = false;
+        out.push_back(std::move(range));
+    }
+    return out;
+}
+
 std::string BuildSummary(const model::RepairResult& result) {
     std::ostringstream summary;
     summary << model::DisplayName(result.status);
@@ -56,6 +75,8 @@ std::string BuildSummary(const model::RepairResult& result) {
             summary << "（跳过约 " << FormatSeconds(skipped) << " s）";
         }
     }
+    if (!result.lost_ranges.empty())
+        summary << "；损失区间 " << result.lost_ranges.size() << " 段";
     if (!result.plan.dropped_input_streams.empty())
         summary << "；单轨抢救省略 " << result.plan.dropped_input_streams.size() << " 条轨";
     if (!result.verification.per_track.empty())
@@ -151,7 +172,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     Emit(progress, 72, stage::Planning(), "制定修复计划");
     RepairPlanOutcome planning =
         RepairPlanner::MakePlan(request, inspect.diagnosis, inspect.salvage_end_seconds, inspect.target_stream_index,
-                                inspect.reference_init ? &*inspect.reference_init : nullptr);
+                                inspect.reference_init ? &*inspect.reference_init : nullptr, &budget);
     result.plan = planning.plan;
     result.plan_id = planning.plan.plan_id;
 
@@ -171,13 +192,14 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     Emit(progress, 75, stage::Executing(), "开始重封装");
     std::string source_error;
     std::string source_method;
-    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &source_error, &source_method))
+    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &source_error, &source_method, &budget))
         return finish_failed(model::RepairBusinessStatus::Failed, source_error);
     result.input_check_method = "源文件: " + source_method;
     if (inspect.reference_snapshot_valid) {
         std::string reference_error;
         std::string reference_method;
-        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &reference_error, &reference_method))
+        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &reference_error, &reference_method,
+                                                 &budget))
             return finish_failed(model::RepairBusinessStatus::Failed, reference_error);
         result.input_check_method += "；参考文件: " + reference_method;
     }
@@ -190,7 +212,10 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.ffmpeg_version = execution.ffmpeg_version;
     result.residual_findings = execution.residual_findings;
     result.track_conservation = execution.track_conservation;
+    result.sample_ledger = execution.sample_ledger;
+    result.sample_conservation_problems = execution.sample_conservation_problems;
     result.recovered_segments = execution.recovered_segments;
+    result.lost_ranges = BuildLostRanges(result.recovered_segments);
     result.timeline_repair = execution.timeline_repair;
     result.fidelity.omitted_items = execution.omitted_items;
 
@@ -374,12 +399,13 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
                                                : "发布前超出本次修复预算，未发布完整产物");
     }
     std::string publish_error;
-    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &publish_error, &source_method))
+    if (!RepairOutputWriter::SourceUnchanged(inspect.diagnosis.input, &publish_error, &source_method, &budget))
         return finish_failed(model::RepairBusinessStatus::Failed, publish_error);
     result.input_check_method = "源文件: " + source_method;
     if (inspect.reference_snapshot_valid) {
         std::string reference_method;
-        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &publish_error, &reference_method))
+        if (!RepairOutputWriter::SourceUnchanged(inspect.reference_snapshot, &publish_error, &reference_method,
+                                                 &budget))
             return finish_failed(model::RepairBusinessStatus::Failed, publish_error);
         result.input_check_method += "；参考文件: " + reference_method;
     }

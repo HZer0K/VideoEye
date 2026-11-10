@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 
+#include "core/repair/RepairBudget.h"
+
 namespace videoeye {
 namespace repair {
 
@@ -44,7 +46,10 @@ bool CreateExclusiveFile(const std::string& path);
 //
 // 只比大小挡不住"同大小改写"。这里取内容摘要，并如实写明覆盖范围：
 // 大文件只取头尾 + 长度，是弱证据，不能当作全文件摘要。
-std::string ComputeContentHash(const std::string& path, std::string* method, uint64_t* hashed_bytes);
+// budget：大文件摘要是分块全盘读，必须能被取消 / 超时打断。命中时返回空 hash、
+// method 回落 "unavailable"（绝不能把「没算完」当成「内容没变」）。
+std::string ComputeContentHash(const std::string& path, std::string* method, uint64_t* hashed_bytes,
+                               const RepairRunBudget* budget = nullptr);
 
 std::string FormatSeconds(double seconds);
 
