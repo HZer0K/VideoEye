@@ -56,6 +56,8 @@ struct RepairExecutionOutcome {
     uint64_t moov_rebuilt_samples = 0;
     std::string moov_rebuild_note;
     std::string moov_rebuild_error;
+    // 切片 C：参考样片辅助重建时借了什么、布局线索如何在源侧自证。
+    model::RepairReferenceAssist reference_assist;
 
     // P2-13：S08 容忍式转码的实测结果。
     bool video_reencoded = false;

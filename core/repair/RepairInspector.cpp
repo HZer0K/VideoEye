@@ -20,6 +20,7 @@
 #include "core/repair/RepairInitSegmentBuilder.h"
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPlainMp4Rebuilder.h"
+#include "core/repair/RepairReferenceMoovRebuilder.h"
 #include "core/repair/RepairSampleBounds.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
@@ -782,6 +783,53 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                     AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
                              model::RepairCheckStatus::Passed, "可无参考重建样本表：" + probe.codec_summary,
                              ElapsedMs(probe_start));
+                } else if (!request.reference_path.empty() && !SamePath(request.reference_path, request.source_path)) {
+                    // 切片 C：无参考扫描失败（参数集只在 moov 里 / 音视频交织）时，
+                    // 用同源完整样片只借解码配置与布局线索，在损坏文件里重扫样本表。
+                    const auto reference_probe = RepairReferenceMoovRebuilder::ProbeWithReference(
+                        request.source_path, request.reference_path, cancel, budget);
+                    if (reference_probe.attemptable) {
+                        model::DamageFinding plain;
+                        plain.code = "container.mdat_unindexed";
+                        plain.detector = kInspector;
+                        plain.layer = model::DamageLayer::Container;
+                        plain.severity = model::IssueSeverity::Warning;
+                        plain.confidence = model::DamageConfidence::Confirmed;
+                        plain.location.precision = model::DamagePrecision::Bounded;
+                        plain.location.provenance = "reference-assisted mdat scan (layout hints + NAL boundaries)";
+                        plain.evidence = "缺少 moov；参考样片辅助可重建双轨样本表：" + reference_probe.codec_summary;
+                        plain.limitations = reference_probe.limitations;
+                        plain.candidate_actions.push_back(model::RepairAction::S01_Remux);
+                        diagnosis.findings.push_back(std::move(plain));
+
+                        model::DamageFinding assisted;
+                        assisted.code = "container.mdat_reference_assisted";
+                        assisted.detector = kInspector;
+                        assisted.layer = model::DamageLayer::Container;
+                        assisted.severity = model::IssueSeverity::Info;
+                        assisted.confidence = model::DamageConfidence::Probable;
+                        assisted.location.precision = model::DamagePrecision::Bounded;
+                        assisted.location.provenance = "reference sample layout hints verified in damaged mdat";
+                        assisted.evidence = reference_probe.codec_summary;
+                        assisted.limitations = reference_probe.limitations;
+                        assisted.candidate_actions.push_back(model::RepairAction::S01_Remux);
+                        diagnosis.findings.push_back(std::move(assisted));
+
+                        AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
+                                 model::RepairCheckStatus::Passed,
+                                 "参考样片辅助重建可行：" + reference_probe.codec_summary, ElapsedMs(probe_start));
+                        // R08：执行时读到的参考文件必须与诊断时是同一份。
+                        outcome.reference_snapshot = RepairOutputWriter::MakeSnapshot(request.reference_path, budget);
+                        outcome.reference_snapshot_valid = true;
+                    } else {
+                        AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
+                                 model::RepairCheckStatus::Unsupported,
+                                 "无参考重建不可行，参考样片辅助亦不可用: " + reference_probe.reason,
+                                 ElapsedMs(probe_start));
+                        diagnosis.blocking_reasons.push_back("缺少 moov（索引/元数据），自动无参考重建不可行（" +
+                                                             probe.reason + "），参考样片辅助重建也不可用：" +
+                                                             reference_probe.reason);
+                    }
                 } else {
                     AddCheck(diagnosis, "container.mdat_unindexed", model::DamageLayer::Container,
                              model::RepairCheckStatus::Unsupported, "无参考重建不可行: " + probe.reason,

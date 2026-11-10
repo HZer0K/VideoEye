@@ -217,6 +217,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.recovered_segments = execution.recovered_segments;
     result.lost_ranges = BuildLostRanges(result.recovered_segments);
     result.timeline_repair = execution.timeline_repair;
+    result.reference_assist = execution.reference_assist;
     result.fidelity.omitted_items = execution.omitted_items;
 
     // P2-14b：取消 / 超预算时按需保留已经写入的产物前缀。

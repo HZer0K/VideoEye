@@ -421,6 +421,27 @@ JsonValue BuildSampleLedger(const model::RepairSampleLedgerSummary& ledger, cons
     return object;
 }
 
+// 切片 C：参考样片辅助重建的借用清单与核验结论。三格式必须同一结论，
+// 不能只在 JSON 里说「借了参数」而 TXT/HTML 只报「已修复」。
+JsonValue BuildReferenceAssist(const model::RepairReferenceAssist& assist) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("used", JsonValue(assist.used));
+    object.Set("reference_name", JOptString(assist.reference_name));
+    object.Set("compatibility", JOptString(assist.compatibility));
+    object.Set("compatibility_reason", JOptString(assist.compatibility_reason));
+    object.Set("layout_evidence", JOptString(assist.layout_evidence));
+    object.Set("timescale_check", JOptString(assist.timescale_check));
+    JsonValue borrowed = JsonValue::MakeArray();
+    for (const auto& text : assist.borrowed_parameters)
+        borrowed.PushBack(JText(text));
+    object.Set("borrowed_parameters", borrowed);
+    JsonValue limitations = JsonValue::MakeArray();
+    for (const auto& text : assist.limitations)
+        limitations.PushBack(JText(text));
+    object.Set("limitations", limitations);
+    return object;
+}
+
 JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("attempted", JsonValue(repair.attempted));
@@ -530,6 +551,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("sample_ledger", BuildSampleLedger(result.sample_ledger, result.sample_conservation_problems));
     root.Set("recovered_segments", BuildRecoveredSegments(result.recovered_segments));
     root.Set("lost_ranges", BuildLostRanges(result.lost_ranges));
+    root.Set("reference_assist", BuildReferenceAssist(result.reference_assist));
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
@@ -724,6 +746,23 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         recovery.items.push_back(ledger_line.str());
         for (const auto& problem : result.sample_conservation_problems)
             recovery.items.push_back("样本守恒不一致: " + problem);
+    }
+    // 参考样片辅助重建：借了哪些解码配置、布局线索如何在损坏文件里自证、
+    // 时基有没有独立证据。三格式同一结论，不能只在 JSON 里说明。
+    if (result.reference_assist.used) {
+        const model::RepairReferenceAssist& assist = result.reference_assist;
+        recovery.rows.emplace_back("参考样片辅助重建",
+                                   assist.reference_name + "（兼容性 " + assist.compatibility + "）");
+        recovery.rows.emplace_back("借用的参数 / 布局线索", std::to_string(assist.borrowed_parameters.size()) + " 项");
+        recovery.items.push_back("参考样片核验: " + assist.compatibility_reason);
+        for (const auto& text : assist.borrowed_parameters)
+            recovery.items.push_back("借用: " + text);
+        if (!assist.layout_evidence.empty())
+            recovery.items.push_back("源侧布局核验: " + assist.layout_evidence);
+        if (!assist.timescale_check.empty())
+            recovery.items.push_back("时基核对: " + assist.timescale_check);
+        for (const auto& text : assist.limitations)
+            recovery.items.push_back("限制: " + text);
     }
     // 只写「确实损失」的区间：没有跳段时一行都不出，避免空表被读成「检查过且无损」。
     recovery.rows.emplace_back("损失区间数量", std::to_string(result.lost_ranges.size()));

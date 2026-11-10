@@ -2692,6 +2692,27 @@ target_link_libraries(test_repair_sample_scan PRIVATE
 add_test(NAME RepairSampleScanTests COMMAND test_repair_sample_scan)
 
 # =================================================
+# 切片 C：参考样片辅助 moov 重建
+#
+# 参考片自身自洽（stts/stsz/stsc 守恒、无 ctts、ASC 与采样率一致、时基冲突）
+# + 损坏文件逐块字节守恒 + 逐轨序列/时间轴守恒 + 不同源/截断反向守护 +
+# 不同分块大小产物二进制一致。
+# =================================================
+videoeye_add_test(test_repair_reference_moov
+    unit/test_repair_reference_moov.cpp
+)
+target_link_libraries(test_repair_reference_moov PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory)
+target_compile_definitions(test_repair_reference_moov PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container")
+add_test(NAME RepairReferenceMoovTests COMMAND test_repair_reference_moov)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

@@ -534,6 +534,20 @@ struct RepairRecoveredSegment {
 // 的文字说明（如 "mdat 载荷未逐字节扫描"），这里是源时间轴上确实没进入产物的区间。
 // 它由 recovered_segments 派生，不另起一份真值表；没有其它副本时 recoverable=false，
 // 绝不能把合成 / 补帧写成「已恢复」。
+// 参考样片辅助重建的记账（切片 C）。
+// 「借了什么、怎么核验的、哪些结论是推断」必须与恢复结果同进三格式报告：
+// 只报「已修复」而不说参数来自另一份文件，等于把推断伪装成实测。
+struct RepairReferenceAssist {
+    bool used = false;
+    std::string reference_name;
+    std::string compatibility; // verified / unverified / rejected
+    std::string compatibility_reason;
+    std::vector<std::string> borrowed_parameters;
+    std::string layout_evidence; // 布局线索如何在损坏文件里被逐块自证
+    std::string timescale_check;
+    std::vector<std::string> limitations;
+};
+
 struct RepairLostRange {
     double input_start_seconds = 0.0;
     double input_end_seconds = 0.0;
@@ -614,6 +628,8 @@ struct RepairResult {
     // S04 跳过的源时间区间：由 recovered_segments 派生，供报告逐段说明损失。
     std::vector<RepairLostRange> lost_ranges;
     RepairTimelineRepair timeline_repair;
+    // 参考样片辅助重建（切片 C）：借了哪些解码配置、布局线索如何在源侧自证。
+    RepairReferenceAssist reference_assist;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

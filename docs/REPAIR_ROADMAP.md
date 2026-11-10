@@ -342,9 +342,48 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | 切片 | 状态 | 提交 | 验证摘要 |
 |---|---|---|---|
 | 核对（本轮） | 完成 | — | 只读核对；结论同步到 `.workbuddy/memory/2026-11-09.md` |
-| A 基线收口 | 完成（未提交） | | 163/163 全绿；新增 8 个用例；判别力 m1/m2/m3 全部精确判红后恢复复跑绿。A-4 按「保留扫描盲区 + 新增损失区间」实现，见 §4.1 |
-| B 样本层 + 分块扫描 | 完成（未提交） | | 164/164 全绿；新增 13 个用例（11 单测 + 2 产品）；判别力 m1–m4 全部精确判红后字节写回 + `os.utime` 恢复复跑绿；1 GiB 整段读入已删除；门禁全绿、离屏 rc=124。首次并行全量出现 1 个与修复链无关的既有 flaky（`AudioOutputStabilityTest.StopClearsBacklogAndAllowsReopen` 用假后端指针相等判重开，堆地址复用），单跑与二次全量均绿 |
-| C 参考样片辅助 moov 重建 | 未开始 | | |
+| A 基线收口 | 完成 | `2cec64c` | 163/163 全绿；新增 8 个用例；判别力 m1/m2/m3 全部精确判红后恢复复跑绿。A-4 按「保留扫描盲区 + 新增损失区间」实现，见 §4.1 |
+| B 样本层 + 分块扫描 | 完成 | `2cec64c` | 164/164 全绿；新增 13 个用例（11 单测 + 2 产品）；判别力 m1–m4 全部精确判红后字节写回 + `os.utime` 恢复复跑绿；1 GiB 整段读入已删除；门禁全绿、离屏 rc=124。首次并行全量出现 1 个与修复链无关的既有 flaky（`AudioOutputStabilityTest.StopClearsBacklogAndAllowsReopen` 用假后端指针相等判重开，堆地址复用），单跑与二次全量均绿 |
+| C 参考样片辅助 moov 重建 | 实现完成（未提交） | | 见下方「切片 C 验收记录」 |
 | D 直接扫描 + GOP 恢复 | 未开始 | | |
 | 阶段 5 时间轴 / 音画同步 | 未开始 | | |
 | 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
+
+### 切片 C 验收记录（2026-11-11）
+
+**范围与约束**（§4.3）：第一版只认「H.264 + AAC、单 `mdat`、无 `moov` / `moof`、
+4 字节 NAL 长度前缀、AAC 恒定 1024 采样/帧、采样率恒定、无 `ctts` / B 帧」这一种
+录制格式。三不借仍然成立：不把 `stts` / `ctts` / `stsz` / `stco` 任何取值当真值、
+不把 `mdhd timescale` 当真值、不借 `duration`；只借 `stsd` 解码配置（`avc1` / `avcC`、
+`mp4a` / `esds`）、NAL 长度前缀、track→codec 映射、`ftyp` brands。样本大小、偏移、
+时间表一律从损坏文件重扫。
+
+- **参考自洽**：ASC 采样率 / 声道与 `mp4a` 声明一致、音频 `timescale == sample_rate`、
+  `sample_delta == 1024`、`stts` / `stsz` / `stsc` / `stco` 逐轨守恒、chunk 偏移落在
+  参考 `mdat` 载荷内且无重叠、按 `relative_start` 排序后能完整解释载荷。
+- **源侧自证**：按 chunk 相对起点逐块推进；视频 AU 由 4 字节 NAL 长度链 +
+  `first_mb_in_slice` 实测且必须覆盖 chunk 硬边界；音频候选长度必须等于该 chunk 的
+  源侧实际字节数；收尾要求消费字节数 == `mdat` 载荷大小、逐轨样本数守恒。
+- **报告**：`RepairReferenceAssist` 同时进 JSON / TXT / HTML，列出借用参数、兼容性、
+  源侧布局核验、时基核对与限制；样本层把推断时间戳标为 `Inferred`，不与实测混写。
+
+**验证**：
+
+- 新增 9 个 gtest 用例（`RepairReferenceMoovTests`）：参考片自洽 / B 帧与时基篡改拒绝 /
+  Probe 正反 / 逐轨序列与时间轴守恒 / 不同源与截断反向守护 / 载荷裁剪反向守护 /
+  端到端引擎 + 三格式报告 / 引擎拒绝异源参考 / 分块大小产物二进制一致。
+- 全量：`cmake --build build/_recheck_test` rc=0，`ctest` **165/165 全绿**，
+  离屏启动 `rc=124`；clang-format 18.1.8、AUTOMOC 9/145、分层、命名空间、
+  README 快照（146 / 146 / 1856 / 19）、`git diff --check` 全绿。
+- 判别力 8 组变异：M1 时基交叉核验、M2 音频 chunk 字节守恒、M4 TXT/HTML 报告、
+  M5 引擎结果透传、M6 JSON 字段、M7 诊断 finding 接线、M8 整类布局守卫，
+  预期用例均精确判红；M3 单独拆「视频 NAL 链覆盖」不判红 —— 该守卫与下一 chunk
+  起点对齐 / 收尾字节守恒互为冗余，属防御性断言，已由复合变异 M8 验证整体有效。
+  全部按字节写回 + `os.utime` 恢复，复跑 9/9 全绿。
+- 首轮并行全量出现 1 例既有时序 flaky：`ContainerCancelPathTest.DashCancelYieldsNoResult`
+  按 `elapsed_ms` 折算取消点，单跑 16.9 s 全绿、二次全量 165/165 全绿，与修复链无关。
+- 全量构建曾挂在本机 vcpkg `z-applocal` 依赖部署子进程（CPU≈0 持续 8 分钟）；
+  终止挂起链后 `-j 2` 重跑 rc=0，属文件占用类环境 flake。
+
+**未覆盖（留后续）**：HEVC、多 `mdat`、多轨、B 帧 / `ctts` / VFR、分片 MP4、
+源侧独立时基证据，以及阶段 5 的时间轴 / 音画同步恢复。

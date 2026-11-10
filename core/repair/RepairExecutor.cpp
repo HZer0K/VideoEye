@@ -18,6 +18,7 @@
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPayloadHash.h"
 #include "core/repair/RepairPlainMp4Rebuilder.h"
+#include "core/repair/RepairReferenceMoovRebuilder.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
@@ -342,24 +343,51 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         const std::string rebuilt_path = part_path + ".plain-moov";
         if (CreateExclusiveFile(rebuilt_path)) {
             plain_guard = std::make_unique<TempFileGuard>(rebuilt_path);
-            RepairPlainMp4RebuildResult rebuilt =
-                RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel, budget);
+            // 诊断阶段按能力分了两条路：载荷自带参数集且是单轨时走无参考扫描；
+            // 参数集只在 moov 里 / 音视频交织时，用同源参考样片只借解码配置。
+            // 两条路的产物格式相同（ftyp+moov+mdat），后续重封装无需分支。
+            const bool reference_assisted = HasFinding(diagnosis, "container.mdat_reference_assisted");
+            bool rebuild_attempted = false;
+            bool rebuild_ok = false;
+            std::string rebuild_error;
+            std::string rebuild_note;
+            std::uint64_t rebuild_samples = 0;
+            if (reference_assisted) {
+                const RepairReferenceRebuildResult rebuilt = RepairReferenceMoovRebuilder::Rebuild(
+                    input_path, request.reference_path, rebuilt_path, cancel, budget);
+                rebuild_attempted = rebuilt.attempted;
+                rebuild_ok = rebuilt.ok;
+                rebuild_error = rebuilt.error;
+                rebuild_note = rebuilt.note;
+                rebuild_samples = rebuilt.samples_rebuilt;
+                if (rebuilt.ok)
+                    outcome.reference_assist = rebuilt.assist;
+            } else {
+                const RepairPlainMp4RebuildResult rebuilt =
+                    RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel, budget);
+                rebuild_attempted = rebuilt.attempted;
+                rebuild_ok = rebuilt.ok;
+                rebuild_error = rebuilt.error;
+                rebuild_note = rebuilt.note;
+                rebuild_samples = rebuilt.samples_rebuilt;
+            }
             const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
             if (stopped) {
                 outcome.canceled = budget != nullptr ? budget->Canceled() : true;
                 outcome.timed_out = budget != nullptr && !outcome.canceled;
                 return outcome;
             }
-            outcome.moov_rebuild_attempted = rebuilt.attempted;
-            if (rebuilt.ok) {
+            outcome.moov_rebuild_attempted = rebuild_attempted;
+            if (rebuild_ok) {
                 input_path = rebuilt_path;
                 outcome.moov_rebuilt = true;
-                outcome.moov_rebuilt_samples = rebuilt.samples_rebuilt;
-                outcome.moov_rebuild_note = rebuilt.note;
+                outcome.moov_rebuilt_samples = rebuild_samples;
+                outcome.moov_rebuild_note = rebuild_note;
             } else {
                 outcome.moov_rebuild_attempted = true;
-                outcome.moov_rebuild_error = rebuilt.error;
-                outcome.error = "无参考 moov 重建失败：" + rebuilt.error;
+                outcome.moov_rebuild_error = rebuild_error;
+                outcome.error =
+                    (reference_assisted ? "参考样片辅助 moov 重建失败：" : "无参考 moov 重建失败：") + rebuild_error;
                 return outcome;
             }
         } else {
