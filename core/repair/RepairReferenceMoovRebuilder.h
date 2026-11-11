@@ -13,8 +13,9 @@
 // ⚠️ 第一版格式指纹（不满足一律 unverified + 拒绝，绝不猜）：
 //   * 恰好一个 mdat、无 moov、无 moof；
 //   * 恰好一条 H.264(avc1) 视频轨 + 一条 AAC(mp4a) 音频轨，4 字节 NAL 长度前缀；
-//   * 参考文件是普通 MP4（非分片）、两轨都没有 ctts（含 B 帧的显示顺序重排
-//     属于阶段 5，本版不生成 ctts，有重排就必须拒绝）；
+//   * 参考文件是普通 MP4（非分片）；参考可以含 ctts（B 帧重排），但
+//     **合成偏移一律不借**：显示顺序由损坏文件自身的码流 POC 实测后写进产物
+//     的 ctts（切片 H）。参考只借 stsd 解码配置与待核对的时基；
 //   * 两轨 stts 都是单条恒定 delta，音频恒为 1024 采样/帧、采样率恒定；
 //   * 布局线索（chunk 顺序 + 每 chunk 样本数 + 裸 AAC AU 长度候选）必须在
 //     损坏文件的 mdat 里逐块字节守恒自证，视频 AU 边界由 NAL 长度前缀实测。
@@ -57,6 +58,10 @@ struct RepairReferenceTrackProfile {
     // 布局线索候选：参考文件该轨的 stsz 序列。仅用于无自描述边界的裸 AAC AU，
     // 必须在损坏文件里逐块守恒验证；视频轨只用来做「线索是否自洽」的对照。
     std::vector<uint32_t> candidate_sizes;
+    // 参考片含 ctts（B 帧显示顺序重排）。**只记录、不借用**：合成偏移必须由
+    // 损坏文件自身的码流 POC 实测得到（切片 E/G 的链路），照抄参考的 ctts
+    // 等于把另一份文件的显示顺序按到本片上。
+    bool has_ctts = false;
 };
 
 struct RepairReferenceProfile {
@@ -95,6 +100,8 @@ struct RepairReferenceRebuildResult {
     model::RepairSampleLedgerSummary sample_ledger;
     RepairReferenceProfile profile;
     model::RepairReferenceAssist assist;
+    // 切片 H：显示顺序实测结论（POC → ctts）。analyzed=false 表示这次没做测量。
+    model::RepairDisplayOrderSummary display_order;
 };
 
 class RepairReferenceMoovRebuilder {

@@ -421,6 +421,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 rebuild_samples = rebuilt.samples_rebuilt;
                 if (rebuilt.ok) {
                     outcome.reference_assist = rebuilt.assist;
+                    // 切片 H：参考辅助重建也会实测显示顺序并写 ctts，结论必须原样上报。
+                    outcome.display_order = rebuilt.display_order;
                     // 显式帧率只对"无参考扫描"这条路有意义：参考辅助重建的时基来自
                     // 参考初始化段并与源侧证据交叉核验过，不能用用户输入覆盖它。
                     // 但要说话 —— 否则用户设了 25 fps 却什么都没发生。

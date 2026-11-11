@@ -3,16 +3,19 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBoxWriter.h"
 #include "core/repair/RepairBudget.h"
+#include "core/repair/RepairDisplayOrder.h"
 #include "core/repair/RepairMdatSelfCheck.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairUtils.h"
@@ -88,6 +91,28 @@ const IsobmffBox* FindChild(const IsobmffBox& parent, const std::string& type) {
             return &child;
     }
     return nullptr;
+}
+
+// 从 sample entry 的原始字节里取出某个子盒的载荷（这里只要 avcC）。
+// sample entry 是逐字节借来的（不重新序列化），所以不能靠 IsobmffParser 再解析
+// 一遍 —— 那个解析器要的是文件。只接受「四字符码前 4 字节就是盒大小」的合法布局，
+// 大小越界直接判失败，不做启发式搜索。
+bool ExtractBoxPayload(const std::vector<std::uint8_t>& container, const char* type, std::vector<std::uint8_t>* out) {
+    if (container.size() < 8)
+        return false;
+    for (std::size_t i = 4; i + 4 <= container.size(); ++i) {
+        if (std::memcmp(container.data() + i, type, 4) != 0)
+            continue;
+        const std::uint32_t size = Be32(container.data() + i - 4);
+        const std::size_t payload_start = i + 4;
+        if (size < 8 || size > container.size() - (i - 4))
+            return false;
+        const std::size_t payload_size = size - 8;
+        out->assign(container.begin() + static_cast<std::ptrdiff_t>(payload_start),
+                    container.begin() + static_cast<std::ptrdiff_t>(payload_start + payload_size));
+        return true;
+    }
+    return false;
 }
 
 // MPEG-4 descriptor 的规整递归：ES_Descriptor(0x03) 前 3 字节是 ES_ID + flags，
@@ -321,9 +346,15 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
             return profile;
         }
         if (track.has_ctts) {
-            profile.error = "参考文件轨道 " + std::to_string(track.track_id) +
-                            " 含 ctts（存在 B 帧显示顺序重排）；第一版不生成 ctts，拒绝以免静默改变显示顺序";
-            return profile;
+            // 含 ctts 说明参考片有 B 帧重排。**不再拒绝**，但绝不借用它的合成偏移：
+            // 偏移是「这份文件的帧」的属性，照抄等于把别人的显示顺序按到本片上。
+            // 显示顺序由损坏文件自身的码流 POC 实测后写入产物 ctts（切片 H）。
+            if (is_video)
+                profile.video.has_ctts = true;
+            else
+                profile.audio.has_ctts = true;
+            profile.limitations.push_back("参考样片轨道 " + std::to_string(track.track_id) +
+                                          " 含 ctts：不借用其合成偏移，显示顺序改由损坏文件码流实测");
         }
         // 尾帧不是恒定样本时长的例外，两种真实来源：
         //   * AAC 编码器留一个不足 1024 采样的短帧，如 [(57,1024),(1,1023)]；
@@ -450,8 +481,9 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
 
     profile.compatibility = "verified";
     profile.compatibility_reason =
-        "参考样片自身自洽：两轨 stts/stsz/stsc 守恒、无 ctts、AudioSpecificConfig 与 mp4a 采样率/声道一致、"
-        "音频 mdhd timescale 等于采样率、样本时长 1024；布局线索还须在损坏文件里逐块字节守恒自证";
+        "参考样片自身自洽：两轨 stts/stsz/stsc 守恒、AudioSpecificConfig 与 mp4a 采样率/声道一致、"
+        "音频 mdhd timescale 等于采样率、样本时长 1024；布局线索还须在损坏文件里逐块字节守恒自证"
+        "（参考含 ctts 时不借用其合成偏移，见 limitations）";
     profile.timescale_check = "视频 " + std::to_string(profile.video.sample_delta) + "/" +
                               std::to_string(profile.video.timescale) + " s，音频 1024/" +
                               std::to_string(profile.audio.timescale) +
@@ -463,7 +495,10 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
     profile.borrowed_parameters.push_back("chunk 布局线索：全局顺序 + 每 chunk 样本数 + 裸 AAC AU 长度候选");
     profile.limitations.push_back("裸 AAC AU 无自描述边界；音频样本长度取自参考 stsz 候选，须在损坏文件逐块守恒验证");
     profile.limitations.push_back("视频时基 / 帧率来自参考，源侧 moov 丢失后没有独立时基证据");
-    profile.limitations.push_back("第一版不支持 B 帧 / ctts / VFR / 多 mdat / 分片 MP4 / HEVC");
+    profile.limitations.push_back("不支持 VFR / 多 mdat / 分片 MP4 / HEVC");
+    if (profile.video.has_ctts)
+        profile.limitations.push_back("参考视频轨含 ctts：产物 ctts 由损坏文件码流 POC 实测生成，"
+                                      "不是从参考复制；POC 不可用时产物不写 ctts 并如实标注");
     profile.ok = true;
     return profile;
 }
@@ -573,6 +608,10 @@ struct SourceScan {
     std::vector<ScannedSample> samples;
     std::uint64_t total_bytes = 0;
     RepairSampleLedger ledger;
+    // 切片 H：视频访问单元边界 + 显示顺序实测结论。AU 范围由本函数的 NAL 链
+    // 实测给出，不在显示顺序层重扫一遍（两处各扫迟早会不一致）。
+    std::vector<RepairAuRange> video_access_units;
+    RepairDisplayOrderPlan display_plan;
 };
 
 // end 是布局线索给出的该 chunk 硬边界。视频样本绝不能越界扫到下一个音频
@@ -678,6 +717,7 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
                     return scan;
                 }
                 scan.samples.push_back(ScannedSample{0, top.payload + cursor, size, sync, 0});
+                scan.video_access_units.push_back(RepairAuRange{cursor, size});
                 cursor += size;
                 ++video_index;
             }
@@ -723,7 +763,37 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
         return scan;
     }
 
+    // 切片 H：显示顺序必须在**损坏文件自身的码流**里实测。参考片的 ctts 一律不借
+    // —— 合成偏移是「这份文件的帧」的属性，照抄等于把别人的显示顺序按到本片上。
+    // 参数集可以借（那是解码配置，且已在源侧按 chunk 守恒核验过同源）。
+    if (scan.video_access_units.size() >= 2) {
+        RepairFrameDurationEvidence duration;
+        duration.source = "stts_constant";
+        duration.timescale = profile.video.timescale;
+        duration.sample_delta = profile.video.sample_delta;
+        duration.constant = profile.video.timescale > 0 && profile.video.sample_delta > 0;
+        duration.detail = "参考 stts 恒定样本时长 " + std::to_string(profile.video.sample_delta) + "/" +
+                          std::to_string(profile.video.timescale) + " s（源侧 moov 已丢失，时基无独立证据）";
+        std::vector<std::uint8_t> avcc;
+        if (ExtractBoxPayload(profile.video.sample_entry, "avcC", &avcc)) {
+            scan.display_plan =
+                MeasureDisplayOrder(src, scan.video_access_units, avcc, "h264", duration, cancel, budget);
+        } else {
+            scan.display_plan.unavailable_reason = "参考 sample entry 里没有可解析的 avcC 参数集";
+        }
+        if (!scan.display_plan.available && !scan.display_plan.unavailable_reason.empty())
+            scan.limitations.push_back("显示顺序未实测: " + scan.display_plan.unavailable_reason);
+    } else {
+        scan.display_plan.unavailable_reason = "视频访问单元不足两个，无法判定显示顺序";
+    }
+
     // 账本：每个样本都落在样本层，上三层计数由它派生。
+    // 显示序号只在「实测帧数 == 视频 AU 数」时才敢用；否则退回解码序并保持
+    // display_ordinal 未核验的语义（不拿解码序冒充显示序写进 ctts）。
+    const bool display_index_usable =
+        scan.display_plan.available && scan.display_plan.frames.size() == scan.video_access_units.size();
+    const bool offsets_usable =
+        display_index_usable && scan.display_plan.composition_offsets.size() == scan.video_access_units.size();
     std::size_t per_track_index[2] = {0, 0};
     for (const auto& sample : scan.samples) {
         RecoveredSample rec;
@@ -734,7 +804,10 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
         rec.segment_index = 0;
         rec.config_id = window.config_id;
         rec.decode_ordinal = per_track_index[sample.track];
-        rec.display_ordinal = per_track_index[sample.track]; // 第一版无 ctts，解码序即显示序
+        rec.display_ordinal = per_track_index[sample.track];
+        const std::size_t decode_index = per_track_index[sample.track];
+        if (sample.track == 0 && display_index_usable)
+            rec.display_ordinal = scan.display_plan.frames[decode_index].display_index;
         rec.is_rap = sample.sync || sample.track == 1;
         rec.rap_evidence = sample.track == 1 ? "adts_equivalent_all_access" : (sample.sync ? "idr_nal" : "");
         const double step = sample.track == 0
@@ -742,10 +815,18 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
                                 : 1024.0 / profile.audio.timescale;
         rec.dts_seconds = per_track_index[sample.track] * step;
         rec.pts_seconds = rec.dts_seconds;
+        if (sample.track == 0 && offsets_usable) {
+            // 合成偏移来自本文件码流 POC，单位是 mdhd timescale。
+            const double shift =
+                static_cast<double>(scan.display_plan.composition_offsets[decode_index]) / profile.video.timescale;
+            rec.pts_seconds = rec.dts_seconds.value_or(0.0) + shift;
+        }
         rec.duration_seconds = step;
         rec.timestamp_evidence = SampleTimestampEvidence::Inferred;
         rec.inference_basis = sample.track == 0 ? "参考 stts 恒定样本时长 + 源侧 NAL 边界实测"
                                                 : "AAC 恒定 1024 采样/帧 + 参考采样率经源侧 chunk 守恒核对";
+        if (sample.track == 0 && offsets_usable)
+            rec.inference_basis += " + 显示顺序由源侧码流 POC 实测";
         rec.confidence = SampleConfidence::Inferred;
         rec.decode_status = model::SampleDecodeStatus::NotAttempted;
         scan.ledger.Add(rec);
@@ -788,6 +869,9 @@ struct TrackOutput {
     std::vector<std::uint32_t> sizes;
     std::vector<std::uint64_t> offsets;
     std::vector<std::uint32_t> sync_samples;
+    // 切片 H：与 sizes 一一对应的有符号合成时间偏移（timescale tick）。
+    // 条数不等于样本数时调用方必须留空 —— 宁可不写 ctts，也不写半张表。
+    std::vector<std::int64_t> composition_offsets;
 };
 
 std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const TrackOutput& video,
@@ -897,6 +981,28 @@ std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const
                         writer.U32(static_cast<std::uint32_t>(out.sizes.size()));
                         writer.U32(out.profile->sample_delta);
                         writer.EndBox(stts);
+                    }
+                    if (!out.composition_offsets.empty() && out.composition_offsets.size() == out.sizes.size()) {
+                        // version 1（有符号）：B 帧的第一帧通常需要负偏移，
+                        // version 0 的无符号偏移只能靠「整体平移 + elst」表达，
+                        // 那会把整条时间轴推后一段。这里做 run-length 压缩。
+                        const std::size_t ctts = writer.BeginFullBox("ctts", 1, 0);
+                        std::vector<std::pair<std::uint32_t, std::int32_t>> runs;
+                        for (const std::int64_t offset : out.composition_offsets) {
+                            const auto value = static_cast<std::int32_t>(std::max<std::int64_t>(
+                                std::numeric_limits<std::int32_t>::min(),
+                                std::min<std::int64_t>(std::numeric_limits<std::int32_t>::max(), offset)));
+                            if (!runs.empty() && runs.back().second == value)
+                                ++runs.back().first;
+                            else
+                                runs.emplace_back(1u, value);
+                        }
+                        writer.U32(static_cast<std::uint32_t>(runs.size()));
+                        for (const auto& run : runs) {
+                            writer.U32(run.first);
+                            writer.U32(static_cast<std::uint32_t>(run.second));
+                        }
+                        writer.EndBox(ctts);
                     }
                     {
                         // 每个样本一个 chunk：stco 直接给出逐样本绝对偏移，
@@ -1030,6 +1136,17 @@ RepairReferenceMoovRebuilder::Rebuild(const std::string& source_path, const std:
         if (sample.track == 0 && sample.sync)
             out.sync_samples.push_back(static_cast<std::uint32_t>(out.sizes.size()));
     }
+    // 切片 H：合成偏移只有在「实测帧数 == 视频样本数」时才敢写；
+    // 否则宁可不写 ctts（播放顺序保持解码序），也不写半张表。
+    if (scan.display_plan.available && scan.display_plan.ctts_required &&
+        scan.display_plan.composition_offsets.size() == video.sizes.size()) {
+        video.composition_offsets = scan.display_plan.composition_offsets;
+    }
+    result.display_order = SummarizeDisplayOrder(scan.display_plan, !video.composition_offsets.empty());
+    if (scan.display_plan.available && scan.display_plan.ctts_required && video.composition_offsets.empty()) {
+        result.display_order.limitations.push_back("实测合成偏移条数与视频样本数不符，产物未写 ctts");
+        result.display_order.ctts_written = false;
+    }
 
     const std::uint64_t total_payload = scan.total_bytes;
     std::uint8_t mdat_header[16] = {};
@@ -1137,6 +1254,11 @@ RepairReferenceMoovRebuilder::Rebuild(const std::string& source_path, const std:
     result.note = "参考样片辅助重建双轨 moov：" + result.profile.layout_fingerprint + "；样本 " +
                   std::to_string(scan.ledger.Total()) + " 个（视频 " + std::to_string(video.sizes.size()) + " / 音频 " +
                   std::to_string(audio.sizes.size()) + "）；" + scan.layout_evidence;
+    if (!video.composition_offsets.empty()) {
+        result.note += "；显示顺序由源侧码流 POC 实测，已写入 ctts（version 1 有符号，" +
+                       std::to_string(result.display_order.reordered_frames) + " 帧重排）";
+        result.assist.limitations.push_back("视频 ctts 由损坏文件码流 POC 实测生成，未借用参考片的合成偏移");
+    }
     return result;
 }
 

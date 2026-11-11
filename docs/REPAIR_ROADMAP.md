@@ -173,6 +173,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | C | 一种录制格式的参考样片辅助 moov 重建 | B | 完成（`af73b69`） |
 | D | 索引损坏后的直接扫描与 GOP 恢复 | B | 完成（层 2/3；层 1 未做，`5200d51`） |
 | E / F / G | 显示顺序 / 时基证据 / 逐轨覆盖 | A–D | 完成（`5200d51` / `a73e42a` / `5932508`） |
+| H | 参考辅助重建写 ctts（放开「参考无 ctts」） | C + E | 完成（本轮） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（`elst` 与 VFR 逐帧时长未做） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 未开始 |
 
@@ -362,6 +363,26 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   重排 + 时间戳重置 0 缺口；明细截断时条数仍为全量精确值；共同覆盖是交集（不相交时
   明确写"未知"）；无时间戳样本单独计数。
 
+### 4.8 切片 H：参考辅助重建写 ctts（放开「参考无 ctts」前提）
+
+- **要解决的现实问题**：C 的第一版直接拒绝含 `ctts` 的参考样片。于是「有 B 帧 + 缺 moov
+  + 参数集只在 moov 里」这三种条件同时成立时是**死路**：无参考路径需要 VUI 或用户帧率
+  且拿不到 `avcC`，参考路径又因为参考自带 ctts 被拒。而这类文件恰恰是最常见的录制格式。
+- **改法**：参考可以含 `ctts`，`ReadProfile` 只记录 `has_ctts`（进 limitations），
+  合成偏移**一律不借** —— 它是「这份文件的帧」的属性，照抄等于把另一份文件的显示顺序
+  按到本片上。产物 ctts 由损坏文件自身的码流 POC 实测得到（复用切片 E 的
+  `MeasureDisplayOrder` / `BuildCttsBox` 语义，写 version 1 有符号 + run-length 压缩）。
+- **三条边界**：
+  1. **条数守恒**：实测偏移条数必须等于视频样本数，否则**不写** ctts 并如实标注
+     （写半张表比不写更糟：播放顺序会错且看不出来）。
+  2. **不拿解码序冒充显示序**：`display_ordinal` 只在「实测帧数 == 视频 AU 数」时才用；
+     否则退回解码序且不写 ctts。
+  3. **样本层同步**：`pts_seconds` 带上实测偏移，`inference_basis` 写明
+     「显示顺序由源侧码流 POC 实测」，不把实测值混进「参考 stts 推定」。
+- **明确不做**：不借参考的 POC；不重建 `elst`；开放 GOP 前导图像仍判不可用（沿用 E）。
+- **验收**：含 B 帧的真实双轨语料（`real_h264_aac_faststart.mp4`）删 moov 后重建成功，
+  产物视频轨**有** `ctts`，且逐包 PTS 间隔与原片**逐项一致**（ctts 缺一条或偏移算错都会判红）。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -457,7 +478,8 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | E 显示顺序证据层（POC → ctts） | 完成（本轮） | `5200d51` | 新增 `RepairDisplayOrder.{h,cpp}` 与 11 个用例；真实 B 帧语料显示序与容器 PTS 逐项一致；自建重排码流重建后 `ctts` 偏移逐条对上；6 组判别力变异精确判红。见下方「切片 E 验收记录」 |
 | F 时基证据（VFR 声明 + 显式帧率） | 完成（本轮） | `a73e42a` | 新增 `RepairTimelineBasis` 与 11 个用例；无 VUI 时显式帧率可重建且标 `user_input`；`fixed_frame_rate_flag=0` 不再被静默当成 CFR；8 组判别力变异精确判红。见下方「切片 F 验收记录」 |
 | G 逐轨覆盖与音画共同区间 | 完成（本轮） | `5932508` | 新增 `RepairTrackCoverageSummary` 与 9 个用例；逐轨缺口由账本流式统计导出（明细截断不影响计数）；共同覆盖取交集；6 组判别力变异精确判红。见下方「切片 G 验收记录」 |
-| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖已落地，VFR 逐帧时长与 `elst` 未做） | | 见 §4.5、§4.6、§4.7 |
+| H 参考辅助重建写 ctts | 完成（本轮） | 未提交 | 含 ctts 的参考不再被拒（只记录不借用）；产物 ctts 由源侧 POC 实测；真实 B 帧语料删 moov 后重建成功且逐包 PTS 与原片一致；4 组判别力变异精确判红。见 §4.8 |
+| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / 参考路径 ctts 已落地，VFR 逐帧时长与 `elst` 未做） | | 见 §4.5–§4.8 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -724,3 +746,35 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **不换算恢复率**：逐轨缺口不进恢复率分子（分母仍缺源侧基线）。
 - **参考辅助重建 / 转码路径没有逐轨覆盖**：这两条路径的样本账本未接入
   `TrackCoverageStats`，报告会明确写「未接入」，不会当成零缺口。
+
+### 切片 H 验收记录（2026-11-11）
+
+**交付**
+
+- `RepairReferenceTrackProfile.has_ctts`：参考含 ctts 时只记录、不拒绝；限制项写明
+  「不借用其合成偏移」。`RepairReferenceRebuildResult.display_order` 把实测结论带进结果。
+- `ScanSource` 顺带产出视频 AU 范围（就是逐字节守恒用的那一份，不重扫），
+  再用参考的 `avcC`（从 sample entry 原样取出）驱动 `MeasureDisplayOrder`；
+  `pts_seconds` 带上实测偏移、`display_ordinal` 用 POC 测出的显示序号。
+- `BuildMoov` 在 `stts` 之后写 `ctts`（version 1 有符号 + run-length 压缩），
+  条数不等于样本数时**不写**。
+- 执行器：参考路径的 `display_order` 原样上抛，报告三格式同步（已有 `display_order` 段落）。
+
+**验证**
+
+- 新增/改造 2 个用例：`ReadProfileAcceptsBFrameReferenceButDoesNotBorrowCtts`
+  （记录 has_ctts、借用清单不含 ctts、限制项有说明、篡改时基仍拒绝）、
+  `RebuildWithBFrameReferenceWritesMeasuredCtts`（真实语料删 moov → 重建 →
+  产物视频轨有 ctts → **逐包 PTS 间隔与原片逐项一致**）。
+- 全量：构建 rc=0；`ctest` **170/170 全绿**（161.11 s）；离屏启动 rc=124；
+  clang-format 18.1.8、AUTOMOC 9/151、分层、命名空间、`git diff --check` 全绿；
+  README 快照 151 / 151 / 1901 / 19。
+- 判别力 4 组全部精确判红后按字节恢复复跑绿：M1 不写 ctts、M2 写全零 ctts、
+  M3 不喂参数集（POC 不可用）、M4 重新拒绝含 ctts 的参考。
+
+**未覆盖（如实记账）**
+
+- **`elst` 仍不重建**：负偏移用 ctts version 1 表达，不做「整体平移 + 裁开头」。
+- **开放 GOP 前导图像（RASL/RADL）仍判不可用**（沿用切片 E 的边界）。
+- **逐帧时长仍取参考 stts 的恒定值**：VFR 参考（stts 多条不同 delta）依旧拒绝。
+- **只覆盖 H.264(AVCC) + AAC 双轨**：HEVC / 多轨 / 分片 MP4 不在本版。

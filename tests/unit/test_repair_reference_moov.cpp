@@ -302,12 +302,21 @@ TEST(RepairReferenceMoov, ReadProfileAcceptsHealthyTwoTrackReference) {
     EXPECT_EQ(audio_samples, profile.audio.sample_count);
 }
 
-TEST(RepairReferenceMoov, ReadProfileRejectsBFrameAndTamperedTimescale) {
+TEST(RepairReferenceMoov, ReadProfileAcceptsBFrameReferenceButDoesNotBorrowCtts) {
     const std::string bframe = CorpusPath("real_h264_aac_faststart.mp4");
     ASSERT_TRUE(fs::exists(bframe)) << "缺少受控语料 " << bframe;
-    const RepairReferenceProfile rejected_bframe = RepairReferenceMoovRebuilder::ReadProfile(bframe);
-    EXPECT_FALSE(rejected_bframe.ok);
-    EXPECT_NE(rejected_bframe.error.find("ctts"), std::string::npos) << rejected_bframe.error;
+    const RepairReferenceProfile profile = RepairReferenceMoovRebuilder::ReadProfile(bframe);
+    // 切片 H：含 ctts 的参考不再拒绝（否则「有 B 帧 + 缺 moov」是死路），
+    // 但合成偏移一律不借 —— 那是「这份文件的帧」的属性。
+    ASSERT_TRUE(profile.ok) << profile.error;
+    EXPECT_TRUE(profile.video.has_ctts) << "该语料含 B 帧 ctts，profile 必须记录它";
+    for (const auto& item : profile.borrowed_parameters)
+        EXPECT_EQ(item.find("ctts"), std::string::npos) << "不得把 ctts 写进借用清单: " << item;
+    bool noted = false;
+    for (const auto& item : profile.limitations)
+        if (item.find("不借用其合成偏移") != std::string::npos)
+            noted = true;
+    EXPECT_TRUE(noted) << "不借用这件事必须写进限制项";
 
     Fixture f = MakeFixture("profile_tamper");
     ASSERT_TRUE(f.media.ok) << f.media.error;
@@ -317,6 +326,44 @@ TEST(RepairReferenceMoov, ReadProfileRejectsBFrameAndTamperedTimescale) {
     const RepairReferenceProfile rejected_timescale = RepairReferenceMoovRebuilder::ReadProfile(tampered);
     EXPECT_FALSE(rejected_timescale.ok);
     EXPECT_NE(rejected_timescale.error.find("timescale"), std::string::npos) << rejected_timescale.error;
+}
+
+// 切片 H 端到端：有 B 帧的参考（含 ctts）+ 缺 moov 的同源损坏片，
+// 重建后必须写出由**源侧码流 POC** 实测的 ctts，且逐包 PTS 序列与原片一致。
+TEST(RepairReferenceMoov, RebuildWithBFrameReferenceWritesMeasuredCtts) {
+    const std::string reference = CorpusPath("real_h264_aac_faststart.mp4");
+    ASSERT_TRUE(fs::exists(reference)) << "缺少受控语料 " << reference;
+    const std::string dir = MakeTempDir("bframes");
+    const std::string damaged = dir + "/damaged_missing_moov.mp4";
+    const std::string output = dir + "/rebuilt.mp4";
+    std::string error;
+    ASSERT_TRUE(DropTopLevelBox(reference, damaged, "moov", &error)) << error;
+
+    const auto result = RepairReferenceMoovRebuilder::Rebuild(damaged, reference, output, nullptr);
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.profile.video.has_ctts) << "参考含 ctts 这一事实必须带进结果";
+    ASSERT_TRUE(result.display_order.analyzed) << "显示顺序必须真的做过测量";
+    ASSERT_TRUE(result.display_order.available) << result.display_order.unavailable_reason;
+    EXPECT_GT(result.display_order.reordered_frames, 0u) << "该语料有 B 帧重排";
+    EXPECT_TRUE(result.display_order.ctts_required);
+    EXPECT_TRUE(result.display_order.ctts_written) << "有重排就必须写 ctts";
+
+    videoeye::IsobmffFile rebuilt;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(output, rebuilt));
+    ASSERT_TRUE(rebuilt.ok) << rebuilt.error_message;
+    bool video_has_ctts = false;
+    for (const auto& track : rebuilt.tracks)
+        if (track.handler == "vide")
+            video_has_ctts = track.has_ctts;
+    EXPECT_TRUE(video_has_ctts) << "重建产物的视频轨必须有 ctts";
+
+    // 最硬的判据：逐包 PTS 间隔与原片一致。ctts 缺一条 / 偏移算错都会让它判红。
+    const auto expected = videoeye_test::CaptureMediaSequence(reference);
+    const auto actual = videoeye_test::CaptureMediaSequence(output);
+    const auto diffs = ComparePerTrackFacts(expected, actual);
+    for (const auto& diff : diffs)
+        ADD_FAILURE() << diff;
+    EXPECT_TRUE(diffs.empty());
 }
 
 TEST(RepairReferenceMoov, ProbeAcceptsMissingMoovWithSameSourceReference) {
