@@ -174,7 +174,8 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | D | 索引损坏后的直接扫描与 GOP 恢复 | B | 完成（层 2/3；层 1 未做，`5200d51`） |
 | E / F / G | 显示顺序 / 时基证据 / 逐轨覆盖 | A–D | 完成（`5200d51` / `a73e42a` / `5932508`） |
 | H | 参考辅助重建写 ctts（放开「参考无 ctts」） | C + E | 完成（`a8029e9`） |
-| 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（`elst` 与 VFR 逐帧时长未做） |
+| I | VFR 逐帧时长（参考 stts 非常量） | C + H | 完成 |
+| 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 未开始 |
 
 ### 4.1 切片 A：基线收口
@@ -383,6 +384,37 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 - **验收**：含 B 帧的真实双轨语料（`real_h264_aac_faststart.mp4`）删 moov 后重建成功，
   产物视频轨**有** `ctts`，且逐包 PTS 间隔与原片**逐项一致**（ctts 缺一条或偏移算错都会判红）。
 
+### 4.9 切片 I：VFR 逐帧时长（参考 stts 非常量）
+
+- **要解决的现实问题**：参考样片的 `stts` 是「每帧多长」**唯一**的源侧证据，而 C 的
+  第一版要求它必须是单条恒定 delta（只容忍一个短尾帧）。真 VFR 素材（手机/相机录制、
+  屏幕录制、变速导出）的 stts 天然多段，于是这类文件在「缺 moov + 参数集只在 moov
+  里」时是死路 —— 而这恰恰是参考路径存在的理由。切片 F 放开的是**码流声明** VFR，
+  这一片放开的是**参考样本表**里的真实逐帧时长，两者不是一件事。
+- **改法**：`ReadProfile` 接受视频轨非常量 stts，把完整 run 序列存进
+  `RepairReferenceTrackProfile.stts`；`ScanSource` 展开成逐帧时长表，按序给每个样本
+  赋值（DTS 用整数 tick 累加，不用「序号 × 平均帧长」）；`BuildMoov` 按原 run-length
+  写回多条 `stts`，`mdhd`/`tkhd`/`mvhd` 时长一律取逐帧表合计。
+- **三条边界**：
+  1. **只在样本数守恒时借**：`ScanSource` 已强制「视频样本数 == 参考样本数」，
+     展开后帧数不等直接拒绝 —— 借一张长度对不上的表，等于把后半段每一帧的时长都
+     算错，而且看不出来。
+  2. **音频不放开**：AAC 恒为 1024 采样/帧，非常量 stts 仍拒绝（保留短尾帧例外）。
+  3. **VFR 不写 `ctts`**：`ctts` 的偏移换算是「帧数 × 帧长」，帧长不恒定就没有定义，
+     硬写会把整条时间轴压错。有 B 帧时宁可退回解码序，并在限制项写明「播放顺序可能
+     与源片不同」。
+- **顺带补的两个洞**：
+  - `mdhd` 时长是 32 位，逐帧表合计可能溢出 → **拒绝**（本版不写 mdhd version 1）；
+    以前恒定路径同样会静默截断，只是样本数不够多没暴露。
+  - 账本时间轴自洽校验：末帧「起点 + 时长」必须等于逐帧表合计。stts 盒写对、账本按
+    「序号 × 主 delta」算时间时产物照样能播，但报告里的样本时间戳是错的，而两处各自
+    看都「说得通」。
+- **明确不做**：`elst` 重建（沿用 F）；无参考时的 VFR 逐帧恢复（没有样本表就没有证据，
+  只标注）；`mdhd` version 1。
+- **验收**：VFR 参考可读（`variable_stts=true`、run 序列原样、主 delta 取 count 最大段
+  而不是首段）；重建后产物 `stts` 逐段等于参考、`mdhd` 时长等于合计、**逐包 DTS 间隔
+  与逐帧表一致**、无 `ctts`；音频轨非常量仍拒绝；时长溢出拒绝。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -479,7 +511,8 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | F 时基证据（VFR 声明 + 显式帧率） | 完成（本轮） | `a73e42a` | 新增 `RepairTimelineBasis` 与 11 个用例；无 VUI 时显式帧率可重建且标 `user_input`；`fixed_frame_rate_flag=0` 不再被静默当成 CFR；8 组判别力变异精确判红。见下方「切片 F 验收记录」 |
 | G 逐轨覆盖与音画共同区间 | 完成（本轮） | `5932508` | 新增 `RepairTrackCoverageSummary` 与 9 个用例；逐轨缺口由账本流式统计导出（明细截断不影响计数）；共同覆盖取交集；6 组判别力变异精确判红。见下方「切片 G 验收记录」 |
 | H 参考辅助重建写 ctts | 完成（本轮） | `a8029e9` | 含 ctts 的参考不再被拒（只记录不借用）；产物 ctts 由源侧 POC 实测；真实 B 帧语料删 moov 后重建成功且逐包 PTS 与原片一致；4 组判别力变异精确判红。见 §4.8 |
-| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / 参考路径 ctts 已落地，VFR 逐帧时长与 `elst` 未做） | | 见 §4.5–§4.8 |
+| I VFR 逐帧时长 | 完成（本轮） | 待回填 | 参考 stts 非常量不再整份拒绝；产物 `stts` 逐段等于参考、`mdhd` 时长取合计、逐包 DTS 间隔与逐帧表一致、VFR 下不写 ctts；新增 5 个用例与 5 组判别力变异（全部精确判红）。见 §4.9 |
+| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / VFR 逐帧时长已落地，只剩 `elst`） | | 见 §4.5–§4.9 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -776,5 +809,47 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 
 - **`elst` 仍不重建**：负偏移用 ctts version 1 表达，不做「整体平移 + 裁开头」。
 - **开放 GOP 前导图像（RASL/RADL）仍判不可用**（沿用切片 E 的边界）。
-- **逐帧时长仍取参考 stts 的恒定值**：VFR 参考（stts 多条不同 delta）依旧拒绝。
+- ~~**逐帧时长仍取参考 stts 的恒定值**：VFR 参考（stts 多条不同 delta）依旧拒绝。~~
+  已由切片 I 解决，见 §4.9。
 - **只覆盖 H.264(AVCC) + AAC 双轨**：HEVC / 多轨 / 分片 MP4 不在本版。
+
+### 切片 I 验收记录（2026-11-11）
+
+**交付**
+
+- `RepairReferenceTrackProfile`：新增 `stts`（完整 run 序列）与 `variable_stts`；
+  `sample_delta` 语义明确为「主 delta = count 最大的那一段」，恒定轨不变。
+- `ReadProfile`：视频轨非常量 stts 不再拒绝，记录全序列 + 限制项（「逐帧时长按参考
+  样本表借用…产物不写 ctts」）+ 借用清单一条；音频轨仍拒绝（文案改为「音频必须恒为
+  1024 采样/帧」）；`timescale_check` 与布局指纹带 VFR 段数。
+- `ScanSource`：展开逐帧时长表（帧数不等直接拒绝）；`RepairFrameDurationEvidence`
+  走 `source="stts_variable" / constant=false`；DTS 用 **uint64 tick 累加**，
+  `duration_seconds` 取该帧时长；末尾加 **账本时间轴自洽校验**。
+- `BuildMoov`：`TrackOutput.stts_runs` 按原 run-length 写多条 `stts`；
+  `TrackDurationTicks` 统一给 `mdhd`/`tkhd`/`mvhd` 时长；`Rebuild` 增加 32 位溢出
+  拒绝与「逐帧表覆盖样本数」校验。
+
+**验证**
+
+- 新增 5 个用例：`ReadProfileAcceptsVariableSttsReference`（含「主 delta 不是首段」的
+  判别点）、`ReadProfileRejectsVariableSttsOnAudioTrack`、
+  `RebuildBorrowsVariableSttsAndKeepsFrameDurations`（产物 stts 逐段 + mdhd 时长 +
+  **逐包 DTS 间隔**）、`RebuildRejectsOverflowingMediaDuration`、
+  `VariableSttsReferenceWithBFramesWritesNoCtts`。
+- 测试辅助 `PatchTrackStts`：把视频/音频 stts 换成任意 run 序列并同步修祖先盒大小、
+  `stco/co64` 偏移（**按值判断是否需要平移**：moov 在 mdat 之后时偏移根本不该动）、
+  `mdhd` 时长；`real_h264_aac_faststart.mp4` 也用它造「B 帧 + VFR」语料。
+- 判别力 5 组全部精确判红后按字节恢复复跑绿：M1 VFR 整份拒绝、M2 PTS 用
+  「序号 × 主 delta」、M3 时长退回「样本数 × 主 delta」、M4 VFR 也当恒定帧长写 ctts、
+  M5 去掉 32 位守卫。
+  ⚠️ M2 第一轮**判绿**：当时的断言（产物逐包 DTS 间隔）测的是 `stts` 盒，而账本 PTS
+  不进产物 —— 这正是「断言没覆盖到被改动的东西」。补上账本末帧终点自洽校验后复测判红。
+
+**未覆盖（如实记账）**
+
+- **`elst` 仍不重建**（阶段 5 唯一剩下的一项）。
+- **VFR 且含 B 帧时产物无 `ctts`**：播放顺序退回解码序。这是有意的取舍（换算需要
+  恒定帧长），报告限制项已写明，但「能播对画面顺序」这件事在 VFR 下确实做不到。
+- **无参考路径的 VFR 逐帧恢复**仍不做：没有样本表就没有证据，只在 `timeline_basis`
+  里标 `vfr_declared` + `modified`（切片 F）。
+- **`mdhd` version 1 未实现**：超出 32 位的时长直接拒绝。

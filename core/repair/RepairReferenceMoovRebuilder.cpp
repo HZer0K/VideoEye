@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -374,10 +375,24 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
             }
             constant_delta = false;
         }
-        if (!constant_delta) {
+        // 切片 I：视频轨的非常量 stts 不再拒绝 —— 参考样片的 stts 就是「每帧多长」
+        // 唯一的源侧证据，VFR 素材只有它。借用前提由 ScanSource 保证（同源 +
+        // 逐轨样本数守恒），所以逐帧时长按序对上不会错位。
+        const bool variable_stts = !constant_delta && is_video;
+        if (!constant_delta && !variable_stts) {
             profile.error = "参考文件轨道 " + std::to_string(track.track_id) +
-                            " 的 stts 不是恒定样本时长（第一版只支持 CFR / 1024 采样每帧）";
+                            " 的 stts 不是恒定样本时长（音频必须恒为 1024 采样/帧）";
             return profile;
+        }
+        // 主 delta = count 最大的那一段。VFR 下 front 可能是短段，拿它当兜底
+        // 会把整条时间轴压短；恒定轨两者相等，行为不变。
+        std::uint32_t main_delta = track.stts.front().sample_delta;
+        std::uint64_t best_count = 0;
+        for (const auto& run : track.stts) {
+            if (run.sample_count > best_count) {
+                best_count = run.sample_count;
+                main_delta = run.sample_delta;
+            }
         }
         const std::uint32_t total_samples = track.SttsSampleCount();
         const std::vector<std::uint32_t> sizes = TrackSizes(track);
@@ -392,9 +407,18 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
         dst.codec = track.codec;
         dst.handler = handler;
         dst.timescale = track.media_timescale;
-        dst.sample_delta = delta;
+        dst.sample_delta = main_delta;
         dst.sample_count = total_samples;
+        dst.variable_stts = variable_stts;
         dst.candidate_sizes = sizes;
+        for (const auto& run : track.stts)
+            dst.stts.push_back(RepairReferenceSttsRun{run.sample_count, run.sample_delta});
+        if (variable_stts) {
+            profile.limitations.push_back("参考视频轨 stts 非恒定（" + std::to_string(track.stts.size()) + " 段 / " +
+                                          std::to_string(total_samples) +
+                                          " 帧）：逐帧时长按参考样本表借用，"
+                                          "POC 合成偏移换算需要恒定帧长，产物不写 ctts");
+        }
         if (has_short_tail)
             profile.limitations.push_back("参考音频轨含不足 1024 采样的尾帧，重建按 1024 归一化");
         if (!FirstSampleEntry(reference_path, *stsd, &dst.sample_entry, &profile.error))
@@ -474,28 +498,50 @@ RepairReferenceProfile ReadProfileImpl(const std::string& reference_path, const 
 
     std::ostringstream fingerprint;
     fingerprint << "avc1/" << profile.video.width << "x" << profile.video.height << "/ts" << profile.video.timescale
-                << "/d" << profile.video.sample_delta << "/n" << profile.video.sample_count << ";mp4a/"
-                << profile.audio.sample_rate << "/" << profile.audio.channels << "/n" << profile.audio.sample_count
-                << ";chunks=" << profile.chunks.size();
+                << "/d" << profile.video.sample_delta << "/n" << profile.video.sample_count;
+    if (profile.video.variable_stts)
+        fingerprint << "/vfr" << profile.video.stts.size();
+    fingerprint << ";mp4a/" << profile.audio.sample_rate << "/" << profile.audio.channels << "/n"
+                << profile.audio.sample_count << ";chunks=" << profile.chunks.size();
     profile.layout_fingerprint = fingerprint.str();
+
+    std::uint64_t video_ticks = 0;
+    for (const auto& run : profile.video.stts)
+        video_ticks += static_cast<std::uint64_t>(run.count) * run.delta;
 
     profile.compatibility = "verified";
     profile.compatibility_reason =
         "参考样片自身自洽：两轨 stts/stsz/stsc 守恒、AudioSpecificConfig 与 mp4a 采样率/声道一致、"
         "音频 mdhd timescale 等于采样率、样本时长 1024；布局线索还须在损坏文件里逐块字节守恒自证"
         "（参考含 ctts 时不借用其合成偏移，见 limitations）";
-    profile.timescale_check = "视频 " + std::to_string(profile.video.sample_delta) + "/" +
-                              std::to_string(profile.video.timescale) + " s，音频 1024/" +
-                              std::to_string(profile.audio.timescale) +
-                              " s；视频时基来自参考 SPS 所属轨道（源侧 moov 已丢失，无独立时基证据）";
+    if (profile.video.variable_stts) {
+        std::ostringstream check;
+        check.setf(std::ios::fixed);
+        check.precision(3);
+        check << "视频 stts 非恒定（VFR）：" << profile.video.stts.size() << " 段 / " << profile.video.sample_count
+              << " 帧，总 " << video_ticks << " ticks / timescale " << profile.video.timescale << " = "
+              << (profile.video.timescale > 0 ? static_cast<double>(video_ticks) / profile.video.timescale : 0.0)
+              << " s，逐帧时长按参考样本表借用；音频 1024/" << profile.audio.timescale << " s";
+        profile.timescale_check = check.str();
+    } else {
+        profile.timescale_check = "视频 " + std::to_string(profile.video.sample_delta) + "/" +
+                                  std::to_string(profile.video.timescale) + " s，音频 1024/" +
+                                  std::to_string(profile.audio.timescale) +
+                                  " s；视频时基来自参考 SPS 所属轨道（源侧 moov 已丢失，无独立时基证据）";
+    }
     profile.borrowed_parameters.push_back("ftyp 兼容 brands（原样）");
     profile.borrowed_parameters.push_back("视频 stsd/avc1 sample entry（avcC 参数集、宽高）");
     profile.borrowed_parameters.push_back("音频 stsd/mp4a sample entry（esds / AudioSpecificConfig）");
     profile.borrowed_parameters.push_back("逐轨 mdhd timescale 与恒定 stts sample_delta（仅作待核对值）");
+    if (profile.video.variable_stts) {
+        profile.borrowed_parameters.push_back("视频 stts 逐帧时长表（VFR，" +
+                                              std::to_string(profile.video.stts.size()) + " 段 / " +
+                                              std::to_string(profile.video.sample_count) + " 帧）");
+    }
     profile.borrowed_parameters.push_back("chunk 布局线索：全局顺序 + 每 chunk 样本数 + 裸 AAC AU 长度候选");
     profile.limitations.push_back("裸 AAC AU 无自描述边界；音频样本长度取自参考 stsz 候选，须在损坏文件逐块守恒验证");
     profile.limitations.push_back("视频时基 / 帧率来自参考，源侧 moov 丢失后没有独立时基证据");
-    profile.limitations.push_back("不支持 VFR / 多 mdat / 分片 MP4 / HEVC");
+    profile.limitations.push_back("不支持多 mdat / 分片 MP4 / HEVC");
     if (profile.video.has_ctts)
         profile.limitations.push_back("参考视频轨含 ctts：产物 ctts 由损坏文件码流 POC 实测生成，"
                                       "不是从参考复制；POC 不可用时产物不写 ctts 并如实标注");
@@ -612,6 +658,9 @@ struct SourceScan {
     // 实测给出，不在显示顺序层重扫一遍（两处各扫迟早会不一致）。
     std::vector<RepairAuRange> video_access_units;
     RepairDisplayOrderPlan display_plan;
+    // 切片 I：视频 stts 非常量时的逐帧时长表（单位 tick，长度 == 视频样本数）。
+    // 为空表示恒定，时长取自 profile.video.sample_delta。
+    std::vector<std::uint32_t> video_deltas;
 };
 
 // end 是布局线索给出的该 chunk 硬边界。视频样本绝不能越界扫到下一个音频
@@ -763,17 +812,45 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
         return scan;
     }
 
+    // 切片 I：视频 stts 非常量时展开成逐帧时长表。上面的守恒检查已经把视频样本数
+    // 钉成「等于参考样本数」，所以按序借用不会错位 —— 这也是唯一能借的前提：
+    // 借一张长度对不上的表，等于把后半段每一帧的时长都算错，而且看不出来。
+    if (profile.video.variable_stts) {
+        scan.video_deltas.reserve(profile.video.sample_count);
+        for (const auto& run : profile.video.stts) {
+            for (std::uint32_t k = 0; k < run.count; ++k)
+                scan.video_deltas.push_back(run.delta);
+        }
+        if (scan.video_deltas.size() != profile.video.sample_count) {
+            scan.error = "参考视频 stts 展开后帧数 " + std::to_string(scan.video_deltas.size()) + " 与样本数 " +
+                         std::to_string(profile.video.sample_count) + " 不一致（逐帧时长表不可借用）";
+            return scan;
+        }
+    }
+
     // 切片 H：显示顺序必须在**损坏文件自身的码流**里实测。参考片的 ctts 一律不借
     // —— 合成偏移是「这份文件的帧」的属性，照抄等于把别人的显示顺序按到本片上。
     // 参数集可以借（那是解码配置，且已在源侧按 chunk 守恒核验过同源）。
     if (scan.video_access_units.size() >= 2) {
         RepairFrameDurationEvidence duration;
-        duration.source = "stts_constant";
         duration.timescale = profile.video.timescale;
-        duration.sample_delta = profile.video.sample_delta;
-        duration.constant = profile.video.timescale > 0 && profile.video.sample_delta > 0;
-        duration.detail = "参考 stts 恒定样本时长 " + std::to_string(profile.video.sample_delta) + "/" +
-                          std::to_string(profile.video.timescale) + " s（源侧 moov 已丢失，时基无独立证据）";
+        if (profile.video.variable_stts) {
+            // 变帧率下「第 i 帧的时长」不是常数，ctts 的 POC 偏移换算（偏移 × 帧长）
+            // 没有定义，所以 constant=false：产物不写 ctts，由 DeriveDisplayOrder 如实标注。
+            duration.source = "stts_variable";
+            duration.constant = false;
+            duration.sample_delta = 0;
+            duration.detail = "参考 stts 非恒定（VFR）：" + std::to_string(profile.video.stts.size()) + " 段 / " +
+                              std::to_string(profile.video.sample_count) +
+                              " 帧，逐帧时长按参考样本表借用"
+                              "（源侧 moov 已丢失，无独立时基证据）";
+        } else {
+            duration.source = "stts_constant";
+            duration.sample_delta = profile.video.sample_delta;
+            duration.constant = profile.video.timescale > 0 && profile.video.sample_delta > 0;
+            duration.detail = "参考 stts 恒定样本时长 " + std::to_string(profile.video.sample_delta) + "/" +
+                              std::to_string(profile.video.timescale) + " s（源侧 moov 已丢失，时基无独立证据）";
+        }
         std::vector<std::uint8_t> avcc;
         if (ExtractBoxPayload(profile.video.sample_entry, "avcC", &avcc)) {
             scan.display_plan =
@@ -795,6 +872,13 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
     const bool offsets_usable =
         display_index_usable && scan.display_plan.composition_offsets.size() == scan.video_access_units.size();
     std::size_t per_track_index[2] = {0, 0};
+    // VFR 用整数累加而不是「序号 × 平均帧长」：后者会让每个时间戳都带一点误差，
+    // 而且误差随帧号累积，长片能偏出好几帧。
+    std::uint64_t video_elapsed_ticks = 0;
+    // 自检用：最后一个视频样本的时间轴事实（**取自写进账本的 rec**，不是取自
+    // 累加器 —— 否则「账本算错了但累加器没错」会静默通过）。
+    std::optional<double> last_video_dts;
+    double last_video_duration = 0.0;
     for (const auto& sample : scan.samples) {
         RecoveredSample rec;
         rec.source_offset = sample.source_offset;
@@ -810,10 +894,21 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
             rec.display_ordinal = scan.display_plan.frames[decode_index].display_index;
         rec.is_rap = sample.sync || sample.track == 1;
         rec.rap_evidence = sample.track == 1 ? "adts_equivalent_all_access" : (sample.sync ? "idr_nal" : "");
-        const double step = sample.track == 0
-                                ? static_cast<double>(profile.video.sample_delta) / profile.video.timescale
-                                : 1024.0 / profile.audio.timescale;
-        rec.dts_seconds = per_track_index[sample.track] * step;
+        double step = 0.0;
+        if (sample.track == 0) {
+            if (profile.video.variable_stts) {
+                const std::uint32_t frame_ticks = scan.video_deltas[decode_index];
+                step = static_cast<double>(frame_ticks) / profile.video.timescale;
+                rec.dts_seconds = static_cast<double>(video_elapsed_ticks) / profile.video.timescale;
+                video_elapsed_ticks += frame_ticks;
+            } else {
+                step = static_cast<double>(profile.video.sample_delta) / profile.video.timescale;
+                rec.dts_seconds = static_cast<double>(decode_index) * step;
+            }
+        } else {
+            step = 1024.0 / profile.audio.timescale;
+            rec.dts_seconds = static_cast<double>(decode_index) * step;
+        }
         rec.pts_seconds = rec.dts_seconds;
         if (sample.track == 0 && offsets_usable) {
             // 合成偏移来自本文件码流 POC，单位是 mdhd timescale。
@@ -822,15 +917,41 @@ SourceScan ScanSource(const std::string& source_path, const RepairReferenceProfi
             rec.pts_seconds = rec.dts_seconds.value_or(0.0) + shift;
         }
         rec.duration_seconds = step;
+        if (sample.track == 0) {
+            last_video_dts = rec.dts_seconds.value_or(0.0);
+            last_video_duration = step;
+        }
         rec.timestamp_evidence = SampleTimestampEvidence::Inferred;
-        rec.inference_basis = sample.track == 0 ? "参考 stts 恒定样本时长 + 源侧 NAL 边界实测"
-                                                : "AAC 恒定 1024 采样/帧 + 参考采样率经源侧 chunk 守恒核对";
+        if (sample.track == 0) {
+            rec.inference_basis = profile.video.variable_stts ? "参考 stts 逐帧时长表（VFR）+ 源侧 NAL 边界实测"
+                                                              : "参考 stts 恒定样本时长 + 源侧 NAL 边界实测";
+        } else {
+            rec.inference_basis = "AAC 恒定 1024 采样/帧 + 参考采样率经源侧 chunk 守恒核对";
+        }
         if (sample.track == 0 && offsets_usable)
             rec.inference_basis += " + 显示顺序由源侧码流 POC 实测";
         rec.confidence = SampleConfidence::Inferred;
         rec.decode_status = model::SampleDecodeStatus::NotAttempted;
         scan.ledger.Add(rec);
         ++per_track_index[sample.track];
+    }
+    // VFR 时间轴自洽：账本里最后一帧的「起点 + 时长」必须等于逐帧表合计。
+    // 这条不是装饰 —— stts 盒写对、账本按「序号 × 主 delta」算时间的话，产物能播，
+    // 报告里的样本时间戳却是错的，而两处各自看都「说得通」。
+    if (profile.video.variable_stts && last_video_dts.has_value()) {
+        std::uint64_t expected_ticks = 0;
+        for (std::uint32_t delta : scan.video_deltas)
+            expected_ticks += delta;
+        const double computed = last_video_dts.value() + last_video_duration;
+        const double expected = static_cast<double>(expected_ticks) / profile.video.timescale;
+        if (std::abs(computed - expected) > 1e-6) {
+            std::ostringstream detail;
+            detail.setf(std::ios::fixed);
+            detail.precision(6);
+            detail << "VFR 时间轴自洽失败：账本末帧终点 " << computed << " s，逐帧时长表合计 " << expected << " s";
+            scan.error = detail.str();
+            return scan;
+        }
     }
     scan.total_bytes = scan.ledger.TotalBytes();
     if (scan.total_bytes != pos) {
@@ -869,10 +990,25 @@ struct TrackOutput {
     std::vector<std::uint32_t> sizes;
     std::vector<std::uint64_t> offsets;
     std::vector<std::uint32_t> sync_samples;
+    // 切片 I：逐帧时长表（VFR）。为空表示恒定，时长取 profile->sample_delta。
+    // 非空时条数必须覆盖 sizes 的全部样本，否则调用方不得填 —— 写一张覆盖不完整的
+    // stts 会让 mdhd 时长与真实播放时长对不上，且播放器不会报错。
+    std::vector<RepairReferenceSttsRun> stts_runs;
     // 切片 H：与 sizes 一一对应的有符号合成时间偏移（timescale tick）。
     // 条数不等于样本数时调用方必须留空 —— 宁可不写 ctts，也不写半张表。
     std::vector<std::int64_t> composition_offsets;
 };
+
+// 该轨在 mdhd timescale 下的总时长（tick）。恒定轨 = 样本数 × 样本时长。
+std::uint64_t TrackDurationTicks(const TrackOutput& out) {
+    if (!out.stts_runs.empty()) {
+        std::uint64_t total = 0;
+        for (const auto& run : out.stts_runs)
+            total += static_cast<std::uint64_t>(run.count) * run.delta;
+        return total;
+    }
+    return static_cast<std::uint64_t>(out.sizes.size()) * out.profile->sample_delta;
+}
 
 std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const TrackOutput& video,
                                     const TrackOutput& audio, std::uint64_t payload_start,
@@ -882,10 +1018,8 @@ std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const
     const auto to_movie_ticks = [&](double seconds) {
         return static_cast<std::uint32_t>(seconds * movie_timescale + 0.5);
     };
-    const double video_seconds =
-        static_cast<double>(video.sizes.size()) * video.profile->sample_delta / video.profile->timescale;
-    const double audio_seconds =
-        static_cast<double>(audio.sizes.size()) * audio.profile->sample_delta / audio.profile->timescale;
+    const double video_seconds = static_cast<double>(TrackDurationTicks(video)) / video.profile->timescale;
+    const double audio_seconds = static_cast<double>(TrackDurationTicks(audio)) / audio.profile->timescale;
     const double movie_seconds = std::max(video_seconds, audio_seconds);
     {
         const std::size_t box = writer.BeginFullBox("mvhd", 0, 0);
@@ -905,8 +1039,7 @@ std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const
     for (int index = 0; index < 2; ++index) {
         const TrackOutput& out = *tracks[index];
         const bool is_video = index == 0;
-        const std::uint32_t media_duration =
-            static_cast<std::uint32_t>(static_cast<std::uint64_t>(out.sizes.size()) * out.profile->sample_delta);
+        const std::uint32_t media_duration = static_cast<std::uint32_t>(TrackDurationTicks(out));
         const std::size_t trak = writer.BeginBox("trak");
         {
             const std::size_t box = writer.BeginFullBox("tkhd", 0, 3);
@@ -977,9 +1110,17 @@ std::vector<std::uint8_t> BuildMoov(const RepairReferenceProfile& profile, const
                     }
                     {
                         const std::size_t stts = writer.BeginFullBox("stts", 0, 0);
-                        writer.U32(1);
-                        writer.U32(static_cast<std::uint32_t>(out.sizes.size()));
-                        writer.U32(out.profile->sample_delta);
+                        if (out.stts_runs.empty()) {
+                            writer.U32(1);
+                            writer.U32(static_cast<std::uint32_t>(out.sizes.size()));
+                            writer.U32(out.profile->sample_delta);
+                        } else {
+                            writer.U32(static_cast<std::uint32_t>(out.stts_runs.size()));
+                            for (const auto& run : out.stts_runs) {
+                                writer.U32(run.count);
+                                writer.U32(run.delta);
+                            }
+                        }
                         writer.EndBox(stts);
                     }
                     if (!out.composition_offsets.empty() && out.composition_offsets.size() == out.sizes.size()) {
@@ -1136,6 +1277,37 @@ RepairReferenceMoovRebuilder::Rebuild(const std::string& source_path, const std:
         if (sample.track == 0 && sample.sync)
             out.sync_samples.push_back(static_cast<std::uint32_t>(out.sizes.size()));
     }
+    // 切片 I：VFR 逐帧时长表按原样 RLE 写进产物 stts（等价段合并，不改变语义）。
+    if (!scan.video_deltas.empty()) {
+        for (std::uint32_t delta : scan.video_deltas) {
+            if (!video.stts_runs.empty() && video.stts_runs.back().delta == delta)
+                ++video.stts_runs.back().count;
+            else
+                video.stts_runs.push_back(RepairReferenceSttsRun{1, delta});
+        }
+        if (video.stts_runs.size() > video.sizes.size()) {
+            result.error = "逐帧时长段数多于视频样本数，拒绝写出";
+            return result;
+        }
+        std::uint64_t covered = 0;
+        for (const auto& run : video.stts_runs)
+            covered += run.count;
+        if (covered != video.sizes.size()) {
+            result.error = "逐帧时长表只覆盖 " + std::to_string(covered) + " / " + std::to_string(video.sizes.size()) +
+                           " 个视频样本，拒绝写出一张缺口的 stts";
+            return result;
+        }
+    }
+    for (const TrackOutput* out : {&video, &audio}) {
+        // mdhd / tkhd / mvhd 的 duration 都是 32 位。超过就如实拒绝 —— 写截断值
+        // 会让产物时长凭空缩短，而这种错误在播放器里表现为「播到一半就结束」。
+        const std::uint64_t ticks = TrackDurationTicks(*out);
+        if (ticks > 0xFFFFFFFFull) {
+            result.error = "轨道 " + std::to_string(out->profile->track_id) + " 的媒体时长 " + std::to_string(ticks) +
+                           " ticks 超出 32 位 mdhd 表达范围，拒绝写出（需 mdhd version 1，本版未实现）";
+            return result;
+        }
+    }
     // 切片 H：合成偏移只有在「实测帧数 == 视频样本数」时才敢写；
     // 否则宁可不写 ctts（播放顺序保持解码序），也不写半张表。
     if (scan.display_plan.available && scan.display_plan.ctts_required &&
@@ -1258,6 +1430,19 @@ RepairReferenceMoovRebuilder::Rebuild(const std::string& source_path, const std:
         result.note += "；显示顺序由源侧码流 POC 实测，已写入 ctts（version 1 有符号，" +
                        std::to_string(result.display_order.reordered_frames) + " 帧重排）";
         result.assist.limitations.push_back("视频 ctts 由损坏文件码流 POC 实测生成，未借用参考片的合成偏移");
+    }
+    if (!video.stts_runs.empty()) {
+        const std::uint64_t ticks = TrackDurationTicks(video);
+        std::ostringstream vfr;
+        vfr.setf(std::ios::fixed);
+        vfr.precision(3);
+        vfr << "；视频时基按参考 stts 逐帧借用（VFR，" << video.stts_runs.size() << " 段，总 " << ticks << " ticks / "
+            << video.profile->timescale << " = " << static_cast<double>(ticks) / video.profile->timescale << " s）";
+        if (video.composition_offsets.empty())
+            vfr << "；因帧长不恒定，ctts 的 POC 偏移换算没有定义，产物未写 ctts（播放顺序按解码序）";
+        result.note += vfr.str();
+        result.assist.limitations.push_back("VFR：逐帧时长来自参考样本表；显示顺序未能写入 ctts，"
+                                            "含 B 帧时播放顺序可能与源片不同");
     }
     return result;
 }

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -167,7 +168,153 @@ bool PatchAudioTimescale(const std::string& source, const std::string& dest, uin
     return WriteFile(dest, data);
 }
 
-// 只裁掉 mdat 载荷尾部 N 字节，并同步改小 mdat 盒大小 —— 顶层盒链仍然合法，
+// 把视频轨 stts 换成给定的 run 序列（count, delta），模拟「VFR 源」。
+// 改长/改短都会让 moov 与 mdat 之间平移，所以必须同步修四处，否则产物本身
+// 就是坏文件、测到的红跟 VFR 无关：
+//   1. moov / trak / mdia / minf / stbl 的大小字段；
+//   2. mdat 之后所有 stco/co64 的样本偏移（平移量 = 新 stts 长 - 旧 stts 长）；
+//   3. 视频 mdhd 的时长（否则「时长」和 stts 自相矛盾）；
+//   4. 位于 stts 之后的盒，写入位置本身也要平移。
+bool PatchTrackStts(const std::string& source, const std::string& dest, const std::string& handler,
+                    const std::vector<std::pair<std::uint32_t, std::uint32_t>>& runs, std::string* error) {
+    videoeye::IsobmffFile parsed;
+    if (!videoeye::IsobmffParser::Parse(source, parsed) || !parsed.ok || parsed.tracks.size() != 2) {
+        *error = "参考片无法解析或轨道数不是 2";
+        return false;
+    }
+    std::vector<uint8_t> data = ReadFile(source);
+    const videoeye::IsobmffBox* moov = nullptr;
+    for (const auto& box : parsed.top_level) {
+        if (box.type == "moov")
+            moov = &box;
+    }
+    if (moov == nullptr) {
+        *error = "没有 moov";
+        return false;
+    }
+    std::vector<const videoeye::IsobmffBox*> traks;
+    for (const auto& child : moov->children) {
+        if (child.type == "trak")
+            traks.push_back(&child);
+    }
+    std::size_t target_index = traks.size();
+    for (std::size_t i = 0; i < parsed.tracks.size(); ++i) {
+        if (parsed.tracks[i].handler == handler)
+            target_index = i;
+    }
+    if (target_index >= traks.size()) {
+        *error = "找不到 handler=" + handler + " 的 trak";
+        return false;
+    }
+    const auto find_first = [](const videoeye::IsobmffBox& box, const std::string& type,
+                               const auto& self) -> const videoeye::IsobmffBox* {
+        if (box.type == type)
+            return &box;
+        for (const auto& child : box.children) {
+            if (const videoeye::IsobmffBox* hit = self(child, type, self))
+                return hit;
+        }
+        return nullptr;
+    };
+    const videoeye::IsobmffBox* trak = traks[target_index];
+    const videoeye::IsobmffBox* mdia = find_first(*trak, "mdia", find_first);
+    const videoeye::IsobmffBox* minf = mdia != nullptr ? find_first(*mdia, "minf", find_first) : nullptr;
+    const videoeye::IsobmffBox* stbl = minf != nullptr ? find_first(*minf, "stbl", find_first) : nullptr;
+    const videoeye::IsobmffBox* stts = stbl != nullptr ? find_first(*stbl, "stts", find_first) : nullptr;
+    const videoeye::IsobmffBox* mdhd = mdia != nullptr ? find_first(*mdia, "mdhd", find_first) : nullptr;
+    if (stts == nullptr || mdhd == nullptr || stts->header_size != 8) {
+        *error = "找不到 stts/mdhd 或 stts 不是 32 位定长盒";
+        return false;
+    }
+
+    std::vector<uint8_t> fresh(16 + runs.size() * 8, 0);
+    Put32(fresh.data(), static_cast<std::uint32_t>(fresh.size()));
+    std::memcpy(fresh.data() + 4, "stts", 4);
+    Put32(fresh.data() + 12, static_cast<std::uint32_t>(runs.size()));
+    std::uint64_t total_ticks = 0;
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        Put32(fresh.data() + 16 + i * 8, runs[i].first);
+        Put32(fresh.data() + 20 + i * 8, runs[i].second);
+        total_ticks += static_cast<std::uint64_t>(runs[i].first) * runs[i].second;
+    }
+
+    const std::int64_t shift = static_cast<std::int64_t>(fresh.size()) - static_cast<std::int64_t>(stts->size);
+    std::vector<uint8_t> out;
+    out.reserve(data.size() + static_cast<std::size_t>(std::max<std::int64_t>(shift, 0)));
+    out.insert(out.end(), data.begin(), data.begin() + static_cast<std::ptrdiff_t>(stts->offset));
+    out.insert(out.end(), fresh.begin(), fresh.end());
+    out.insert(out.end(), data.begin() + static_cast<std::ptrdiff_t>(stts->offset + stts->size), data.end());
+
+    // 位于 stts 之后的盒，文件内写入位置整体平移。
+    const auto at = [&](const videoeye::IsobmffBox* box) {
+        return static_cast<std::size_t>(box->offset >= stts->offset + stts->size
+                                            ? static_cast<std::int64_t>(box->offset) + shift
+                                            : static_cast<std::int64_t>(box->offset));
+    };
+    for (const videoeye::IsobmffBox* ancestor : {moov, trak, mdia, minf, stbl}) {
+        if (ancestor == nullptr) {
+            *error = "视频 trak 的盒链不完整";
+            return false;
+        }
+        Put32(out.data() + at(ancestor), static_cast<std::uint32_t>(static_cast<std::int64_t>(ancestor->size) + shift));
+    }
+    // mdhd version 0：+4 version/flags、+4 ctime、+4 mtime、+4 timescale，之后是 duration。
+    const std::size_t mdhd_duration_at = at(mdhd) + mdhd->header_size + 16;
+    if (mdhd->header_size + 20 > mdhd->size || mdhd_duration_at + 4 > out.size()) {
+        *error = "mdhd 字段越界";
+        return false;
+    }
+    Put32(out.data() + mdhd_duration_at, static_cast<std::uint32_t>(total_ticks));
+
+    // stco / co64 的平移判据必须逐值判断，不能一律 +shift：
+    //   * moov 在 mdat 之前（faststart）→ 载荷整体后移，偏移要 +shift；
+    //   * moov 在 mdat 之后（ffmpeg 默认布局）→ mdat 位置根本没变，偏移必须原样。
+    // 一律平移会把「moov 在尾部」的文件全部改坏，而且坏得很隐蔽：chunk 仍落在文件内，
+    // 只是整体错开 shift 字节。
+    const auto shift_value = [&](std::uint64_t value) -> std::uint64_t {
+        const std::uint64_t insert_at = stts->offset + stts->size;
+        return value >= insert_at ? static_cast<std::uint64_t>(static_cast<std::int64_t>(value) + shift) : value;
+    };
+    const auto patch_offsets = [&](const auto& self, const videoeye::IsobmffBox& box) -> bool {
+        if (box.type == "stco" || box.type == "co64") {
+            const std::size_t base = at(&box) + box.header_size + 4;
+            if (base + 4 > out.size()) {
+                *error = "stco/co64 表头越界";
+                return false;
+            }
+            const std::uint32_t count = Be32(out.data() + base);
+            const std::size_t width = box.type == "stco" ? 4 : 8;
+            for (std::uint32_t i = 0; i < count; ++i) {
+                const std::size_t entry = base + 4 + static_cast<std::size_t>(i) * width;
+                if (entry + width > out.size()) {
+                    *error = "stco/co64 表项越界";
+                    return false;
+                }
+                if (width == 4) {
+                    Put32(out.data() + entry, static_cast<std::uint32_t>(shift_value(Be32(out.data() + entry))));
+                } else {
+                    std::uint64_t value = 0;
+                    for (int k = 0; k < 8; ++k)
+                        value = (value << 8) | out[entry + static_cast<std::size_t>(k)];
+                    value = shift_value(value);
+                    for (int k = 0; k < 8; ++k)
+                        out[entry + static_cast<std::size_t>(k)] = static_cast<uint8_t>(value >> (56 - 8 * k));
+                }
+            }
+        }
+        for (const auto& child : box.children) {
+            if (!self(self, child))
+                return false;
+        }
+        return true;
+    };
+    for (const auto& box : moov->children) {
+        if (!patch_offsets(patch_offsets, box))
+            return false;
+    }
+    return WriteFile(dest, out);
+}
+
 // 不会在 ReadSourceTopLevel 就被「盒大小越界」拦下。这样唯一能拒绝它的就是
 // 源侧逐 chunk 字节守恒（参考只给线索，样本边界必须在损坏文件里自证）。
 // 直接删文件尾 N 字节的旧做法会让 mdat 盒头先越界，测不到这条链。
@@ -536,4 +683,199 @@ TEST(RepairReferenceMoov, RebuildIsChunkSizeIndependent) {
     ASSERT_TRUE(b.ok) << b.error;
     EXPECT_EQ(ReadFile(small), ReadFile(large));
     EXPECT_EQ(a.samples_rebuilt, b.samples_rebuilt);
+}
+
+// ---- 切片 I：VFR 逐帧时长（参考 stts 非常量）----
+//
+// 背景：参考样片的 stts 就是「每帧多长」唯一的源侧证据。第一版要求它必须是恒定
+// delta，于是真 VFR 素材整份被拒 —— 而这类素材恰恰是手机/相机录制的常态。
+// 放开的前提是「同源 + 样本数守恒」（ScanSource 已强制相等），所以逐帧按序对上
+// 不会错位；ctts 仍不写，因为 POC 偏移换算需要恒定帧长。
+
+TEST(RepairReferenceMoov, ReadProfileAcceptsVariableSttsReference) {
+    Fixture f = MakeFixture("vfr_profile");
+    ASSERT_TRUE(f.media.ok) << f.media.error;
+    const RepairReferenceProfile base = RepairReferenceMoovRebuilder::ReadProfile(f.media.path);
+    ASSERT_TRUE(base.ok) << base.error;
+    ASSERT_GT(base.video.sample_count, 4u);
+    // 第一段只有 1 帧且是长帧、第二段才是主 delta —— 这样「主 delta」与
+    // 「stts.front()」不同值，拿 front 当兜底的实现会露出来。
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs{
+        {1, base.video.sample_delta * 3}, {base.video.sample_count - 1, base.video.sample_delta}};
+    const std::string vfr = f.dir + "/vfr_reference.mp4";
+    std::string error;
+    ASSERT_TRUE(PatchTrackStts(f.media.path, vfr, "vide", runs, &error)) << error;
+
+    // 补丁之后参考片自身仍必须自洽（否则测到的红会来自补丁而不是 VFR）。
+    const RepairReferenceProfile patched = RepairReferenceMoovRebuilder::ReadProfile(vfr);
+    ASSERT_TRUE(patched.ok) << patched.error;
+    EXPECT_TRUE(patched.video.variable_stts);
+    ASSERT_EQ(patched.video.stts.size(), runs.size());
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        EXPECT_EQ(patched.video.stts[i].count, runs[i].first);
+        EXPECT_EQ(patched.video.stts[i].delta, runs[i].second);
+    }
+    // 主 delta 取 count 最大的段（不是首段）；恒定轨的 sample_delta 语义不变。
+    EXPECT_EQ(patched.video.sample_delta, base.video.sample_delta);
+    EXPECT_EQ(patched.video.sample_count, base.video.sample_count);
+    bool noted = false;
+    for (const auto& item : patched.limitations)
+        if (item.find("非恒定") != std::string::npos && item.find("不写 ctts") != std::string::npos)
+            noted = true;
+    EXPECT_TRUE(noted) << "VFR 的「不写 ctts」必须写进限制项";
+    bool borrowed = false;
+    for (const auto& item : patched.borrowed_parameters)
+        if (item.find("逐帧时长表") != std::string::npos)
+            borrowed = true;
+    EXPECT_TRUE(borrowed) << "借用逐帧时长表必须在借用清单里明示";
+    // 音频轨不受影响，仍走恒定路径。
+    EXPECT_FALSE(patched.audio.variable_stts);
+}
+
+TEST(RepairReferenceMoov, ReadProfileRejectsVariableSttsOnAudioTrack) {
+    Fixture f = MakeFixture("vfr_audio");
+    ASSERT_TRUE(f.media.ok) << f.media.error;
+    const RepairReferenceProfile base = RepairReferenceMoovRebuilder::ReadProfile(f.media.path);
+    ASSERT_TRUE(base.ok) << base.error;
+    ASSERT_GT(base.audio.sample_count, 4u);
+    // 第二段不是单帧尾帧 → 不是「AAC 短尾帧」例外，必须拒绝。
+    const std::uint32_t half = base.audio.sample_count / 2;
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs{{half, 1024},
+                                                                    {base.audio.sample_count - half, 512}};
+    const std::string bad = f.dir + "/audio_vfr.mp4";
+    std::string error;
+    ASSERT_TRUE(PatchTrackStts(f.media.path, bad, "soun", runs, &error)) << error;
+    const RepairReferenceProfile profile = RepairReferenceMoovRebuilder::ReadProfile(bad);
+    EXPECT_FALSE(profile.ok) << "音频轨非常量 stts 不得放开（AAC 恒为 1024 采样/帧）";
+    EXPECT_NE(profile.error.find("1024"), std::string::npos) << profile.error;
+}
+
+TEST(RepairReferenceMoov, RebuildBorrowsVariableSttsAndKeepsFrameDurations) {
+    Fixture f = MakeFixture("vfr_rebuild");
+    ASSERT_TRUE(f.media.ok) << f.media.error;
+    const RepairReferenceProfile base = RepairReferenceMoovRebuilder::ReadProfile(f.media.path);
+    ASSERT_TRUE(base.ok) << base.error;
+    const std::uint32_t third = base.video.sample_count / 3;
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs{
+        {third, base.video.sample_delta},
+        {third, base.video.sample_delta * 3},
+        {base.video.sample_count - 2 * third, base.video.sample_delta}};
+    const std::string vfr = f.dir + "/vfr_reference.mp4";
+    const std::string damaged = f.dir + "/vfr_damaged.mp4";
+    const std::string output = f.dir + "/vfr_rebuilt.mp4";
+    std::string error;
+    ASSERT_TRUE(PatchTrackStts(f.media.path, vfr, "vide", runs, &error)) << error;
+    ASSERT_TRUE(DropTopLevelBox(vfr, damaged, "moov", &error)) << error;
+
+    const RepairReferenceRebuildResult result = RepairReferenceMoovRebuilder::Rebuild(damaged, vfr, output, nullptr);
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_NE(result.note.find("逐帧借用"), std::string::npos) << result.note;
+    EXPECT_NE(result.note.find("未写 ctts"), std::string::npos) << result.note;
+
+    videoeye::IsobmffFile check;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(output, check)) << check.error_message;
+    ASSERT_EQ(check.tracks.size(), 2u);
+    const videoeye::IsobmffTrack* video = nullptr;
+    for (const auto& track : check.tracks)
+        if (track.handler == "vide")
+            video = &track;
+    ASSERT_NE(video, nullptr);
+    // 产物的 stts 必须逐段等于参考的逐帧时长表 —— 差一段就是「后半段时长全错」。
+    ASSERT_EQ(video->stts.size(), runs.size());
+    std::uint64_t total_ticks = 0;
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        EXPECT_EQ(video->stts[i].sample_count, runs[i].first);
+        EXPECT_EQ(video->stts[i].sample_delta, runs[i].second);
+        total_ticks += static_cast<std::uint64_t>(runs[i].first) * runs[i].second;
+    }
+    EXPECT_EQ(video->SttsSampleCount(), base.video.sample_count);
+    EXPECT_EQ(video->media_duration, total_ticks);
+    // 帧长不恒定时 POC 偏移换算没有定义 → 不许写 ctts。
+    EXPECT_FALSE(video->has_ctts) << "VFR 下产物不得写 ctts";
+
+    // 逐包时间戳：第 i 帧 DTS 必须是前 i 帧时长之和（整数累加，不是序号 × 平均）。
+    // 只核 stts 还不够 —— 盒写对了但账本用「序号 × 主 delta」算时间，照样是错的，
+    // 而且 stts 与 PTS 各自看都「说得通」。
+    // ProbeStreamLayout 只读流元信息，packets 永远为空 —— 要逐包时间戳必须用
+    // CaptureMediaSequence（关掉解码，这条只关心包头）。
+    const videoeye_test::MediaSequence seq = videoeye_test::CaptureMediaSequence(output, false);
+    ASSERT_TRUE(seq.opened) << seq.error;
+    const videoeye_test::StreamSequence* stream = nullptr;
+    for (const auto& candidate : seq.streams)
+        if (candidate.codec_type == "video")
+            stream = &candidate;
+    ASSERT_NE(stream, nullptr);
+    ASSERT_GT(stream->time_base_den, 0);
+    std::vector<double> expected_steps;
+    for (const auto& run : runs) {
+        for (std::uint32_t k = 0; k < run.first; ++k)
+            expected_steps.push_back(static_cast<double>(run.second) / video->media_timescale);
+    }
+    ASSERT_EQ(expected_steps.size(), base.video.sample_count);
+    std::size_t checked = 0;
+    const std::size_t pairs = std::min(stream->packets.size(), expected_steps.size());
+    for (std::size_t k = 1; k < pairs; ++k) {
+        const auto& previous = stream->packets[k - 1];
+        const auto& current = stream->packets[k];
+        if (!previous.has_dts || !current.has_dts)
+            continue;
+        const double step = static_cast<double>(current.dts - previous.dts) * stream->time_base_num /
+                            static_cast<double>(stream->time_base_den);
+        EXPECT_NEAR(step, expected_steps[k - 1], 0.001) << "第 " << k << " 个包的 DTS 间隔不对";
+        ++checked;
+    }
+    EXPECT_GT(checked, expected_steps.size() / 2) << "少于一半的间隔被核到，这条断言等于没测";
+}
+
+TEST(RepairReferenceMoov, RebuildRejectsOverflowingMediaDuration) {
+    Fixture f = MakeFixture("vfr_overflow");
+    ASSERT_TRUE(f.media.ok) << f.media.error;
+    const RepairReferenceProfile base = RepairReferenceMoovRebuilder::ReadProfile(f.media.path);
+    ASSERT_TRUE(base.ok) << base.error;
+    // 单条恒定 stts，但「样本数 × 时长」超过 32 位：写截断值会让产物时长凭空缩短，
+    // 表现出来是「播到一半就结束」，而且没有任何报错。
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs{{base.video.sample_count, 200000000u}};
+    const std::string huge = f.dir + "/huge_delta.mp4";
+    std::string error;
+    ASSERT_TRUE(PatchTrackStts(f.media.path, huge, "vide", runs, &error)) << error;
+    const std::string damaged = f.dir + "/huge_damaged.mp4";
+    ASSERT_TRUE(DropTopLevelBox(huge, damaged, "moov", &error)) << error;
+    const RepairReferenceRebuildResult result =
+        RepairReferenceMoovRebuilder::Rebuild(damaged, huge, f.dir + "/huge_out.mp4", nullptr);
+    EXPECT_FALSE(result.ok) << "32 位 mdhd 装不下的时长必须拒绝，而不是写截断值";
+    EXPECT_NE(result.error.find("32 位"), std::string::npos) << result.error;
+}
+
+TEST(RepairReferenceMoov, VariableSttsReferenceWithBFramesWritesNoCtts) {
+    const std::string reference = CorpusPath("real_h264_aac_faststart.mp4");
+    ASSERT_TRUE(fs::exists(reference)) << "缺少受控语料 " << reference;
+    const RepairReferenceProfile base = RepairReferenceMoovRebuilder::ReadProfile(reference);
+    ASSERT_TRUE(base.ok) << base.error;
+    ASSERT_TRUE(base.video.has_ctts) << "该语料应含 B 帧 ctts";
+
+    const std::string dir = MakeTempDir("vfr_bframes");
+    const std::uint32_t half = base.video.sample_count / 2;
+    const std::vector<std::pair<std::uint32_t, std::uint32_t>> runs{
+        {half, base.video.sample_delta}, {base.video.sample_count - half, base.video.sample_delta * 2}};
+    const std::string vfr = dir + "/vfr_bframes.mp4";
+    const std::string damaged = dir + "/damaged.mp4";
+    const std::string output = dir + "/rebuilt.mp4";
+    std::string error;
+    ASSERT_TRUE(PatchTrackStts(reference, vfr, "vide", runs, &error)) << error;
+    ASSERT_TRUE(DropTopLevelBox(vfr, damaged, "moov", &error)) << error;
+
+    const RepairReferenceRebuildResult result = RepairReferenceMoovRebuilder::Rebuild(damaged, vfr, output, nullptr);
+    ASSERT_TRUE(result.ok) << result.error;
+    // 有 B 帧但帧长不恒定：宁可退回解码序，也不写一张换算错位的 ctts。
+    EXPECT_FALSE(result.display_order.ctts_written) << "VFR 下不得写 ctts";
+    bool noted = false;
+    for (const auto& item : result.assist.limitations)
+        if (item.find("VFR") != std::string::npos && item.find("ctts") != std::string::npos)
+            noted = true;
+    EXPECT_TRUE(noted) << "「VFR 下未写 ctts，播放顺序可能与源片不同」必须进限制项";
+    videoeye::IsobmffFile check;
+    ASSERT_TRUE(videoeye::IsobmffParser::Parse(output, check)) << check.error_message;
+    for (const auto& track : check.tracks)
+        if (track.handler == "vide")
+            EXPECT_FALSE(track.has_ctts);
 }

@@ -16,7 +16,9 @@
 //   * 参考文件是普通 MP4（非分片）；参考可以含 ctts（B 帧重排），但
 //     **合成偏移一律不借**：显示顺序由损坏文件自身的码流 POC 实测后写进产物
 //     的 ctts（切片 H）。参考只借 stsd 解码配置与待核对的时基；
-//   * 两轨 stts 都是单条恒定 delta，音频恒为 1024 采样/帧、采样率恒定；
+//   * 两轨 stts 都必须是「可解释的」：音频恒为 1024 采样/帧；视频允许非恒定
+//     （真 VFR），此时逐帧时长按参考样本表借用 —— 前提是同源且样本数守恒
+//     （扫描阶段已强制相等）。VFR 下不写 ctts，因为 POC 偏移换算需要恒定帧长。
 //   * 布局线索（chunk 顺序 + 每 chunk 样本数 + 裸 AAC AU 长度候选）必须在
 //     损坏文件的 mdat 里逐块字节守恒自证，视频 AU 边界由 NAL 长度前缀实测。
 //
@@ -39,13 +41,27 @@ namespace repair {
 
 class RepairRunBudget;
 
+// stts 的一段（run-length）：连续 count 个样本、每个 delta tick。
+struct RepairReferenceSttsRun {
+    uint32_t count = 0;
+    uint32_t delta = 0;
+};
+
 struct RepairReferenceTrackProfile {
     uint32_t track_id = 0;
     std::string codec;
     std::string handler;
     uint32_t timescale = 0;
+    // 恒定轨 = 该轨的样本时长；变帧率轨 = **主 delta**（count 最大的那一段），
+    // 只用于展示与兜底，重建按 `stts` 逐帧借用。
     uint32_t sample_delta = 0;
     uint32_t sample_count = 0;
+    // 参考片该轨的完整 stts 序列（原样保留 run-length）。切片 I：非常量 stts
+    // 不再整份拒绝 —— 逐帧时长表恰恰是 VFR 唯一的源侧证据，参考样片有它。
+    std::vector<RepairReferenceSttsRun> stts;
+    // 非常量 stts（真 VFR）。前提是参考与损坏文件同源且样本数守恒（ScanSource
+    // 已强制相等），所以逐帧借用不会错位；ctts 仍不写，见 profile.limitations。
+    bool variable_stts = false;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t sample_rate = 0;
