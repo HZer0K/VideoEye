@@ -105,6 +105,9 @@ struct RepairExecutionOutcome {
     std::vector<model::RepairTrackConservation> track_conservation;
     // 样本层事实源摘要：明细可能有界抽样，total_samples / total_bytes 是全量实测值。
     model::RepairSampleLedgerSummary sample_ledger;
+    // 切片 G：逐轨覆盖 / 逐轨缺口 / 音画共同覆盖区间，由账本流式统计导出。
+    // available=false 表示这次没有样本账本（例如转码路径），不能读成「零缺口」。
+    model::RepairTrackCoverageSummary track_coverage;
     // 上三层守恒核对发现的不一致，原样上报，不静默修正。
     std::vector<std::string> sample_conservation_problems;
     // 被省略的轨道 / 元数据 / 章节，逐项列出（R11）。

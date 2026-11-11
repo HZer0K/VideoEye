@@ -1,6 +1,7 @@
 #include "core/repair/RepairSampleScan.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <sstream>
 
@@ -9,6 +10,24 @@
 namespace videoeye {
 namespace repair {
 namespace {
+
+// 时长（秒）落到 log2(毫秒) 桶。非正值返回 -1（不进直方图）。
+int IntervalBucket(double seconds) {
+    if (!(seconds > 0.0))
+        return -1;
+    const double ms = seconds * 1000.0;
+    if (ms < 1.0)
+        return 0;
+    const double exponent = std::floor(std::log2(ms));
+    if (exponent >= static_cast<double>(TrackCoverageStats::kIntervalBuckets))
+        return static_cast<int>(TrackCoverageStats::kIntervalBuckets) - 1;
+    return static_cast<int>(exponent);
+}
+
+// 桶的时长下界（毫秒）：筛选缺口时用下界，方向是「少报」而不是「多报」。
+double BucketLowerSeconds(int bucket) {
+    return std::pow(2.0, static_cast<double>(bucket)) / 1000.0;
+}
 
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
@@ -218,6 +237,7 @@ void RepairSampleLedger::Add(const model::RecoveredSample& sample) {
     if (sample.stream_index >= 0) {
         ++by_track_[sample.stream_index];
         ++by_track_count_;
+        coverage_by_track_[sample.stream_index].Add(sample);
     }
     if (sample.segment_index.has_value()) {
         ++by_segment_[*sample.segment_index];
@@ -275,6 +295,158 @@ model::RepairSampleLedgerSummary RepairSampleLedger::Summary() const {
     summary.decoded_ok_samples = decoded_ok_samples_;
     summary.damaged_samples = damaged_samples_;
     summary.limitations = limitations_;
+    return summary;
+}
+
+// ---------------- TrackCoverageStats（切片 G）----------------
+
+void TrackCoverageStats::Add(const model::RecoveredSample& sample) {
+    ++sample_count_;
+    if (sample.track_id != 0)
+        track_id_ = sample.track_id;
+    if (!sample.pts_seconds.has_value()) {
+        // 没有时间戳的样本既不算覆盖也不算缺口：只计数，不参与任何推导。
+        ++without_timestamp_;
+        return;
+    }
+    const double seconds = *sample.pts_seconds;
+    if (!std::isfinite(seconds)) {
+        ++without_timestamp_;
+        return;
+    }
+    if (!span_known_) {
+        span_known_ = true;
+        first_seconds_ = seconds;
+        last_seconds_ = seconds;
+    } else {
+        first_seconds_ = std::min(first_seconds_, seconds);
+        last_seconds_ = std::max(last_seconds_, seconds);
+    }
+    if (!has_ceiling_) {
+        has_ceiling_ = true;
+        ceiling_seconds_ = seconds;
+        return;
+    }
+    // 重排帧（B 帧）的 PTS 会早于已见最大值：不产生间隔，也不推进 ceiling。
+    if (seconds <= ceiling_seconds_)
+        return;
+    const double interval = seconds - ceiling_seconds_;
+    ceiling_seconds_ = seconds;
+
+    const int bucket = IntervalBucket(interval);
+    if (bucket >= 0)
+        ++interval_buckets_[static_cast<std::size_t>(bucket)];
+    if (interval < kGapFloorSeconds)
+        return;
+    const int gap_bucket = IntervalBucket(interval);
+    if (gap_bucket >= 0) {
+        ++gap_buckets_[static_cast<std::size_t>(gap_bucket)];
+        gap_seconds_[static_cast<std::size_t>(gap_bucket)] += interval;
+    }
+    if (gap_details_.size() < kMaxGapDetails) {
+        model::RepairTrackGap gap;
+        gap.start_seconds = ceiling_seconds_ - interval;
+        gap.end_seconds = ceiling_seconds_;
+        gap_details_.push_back(gap);
+    } else {
+        gap_details_truncated_ = true;
+    }
+}
+
+model::RepairTrackCoverage TrackCoverageStats::Build() const {
+    model::RepairTrackCoverage out;
+    out.track_id = track_id_;
+    out.samples = sample_count_;
+    out.samples_without_timestamp = without_timestamp_;
+    out.span_known = span_known_;
+    out.first_seconds = first_seconds_;
+    out.last_seconds = last_seconds_;
+
+    // 典型间隔取间隔直方图的众数桶（几何中值当代表值）。这是**估算**，不是实测
+    // 中位数：桶宽是 log2 级别，报告必须写明它是近似值。
+    std::size_t modal = kIntervalBuckets;
+    uint64_t modal_count = 0;
+    for (std::size_t i = 0; i < kIntervalBuckets; ++i) {
+        if (interval_buckets_[i] > modal_count) {
+            modal_count = interval_buckets_[i];
+            modal = i;
+        }
+    }
+    if (modal < kIntervalBuckets)
+        out.typical_interval_seconds = std::pow(2.0, static_cast<double>(modal) + 0.5) / 1000.0;
+
+    const double threshold = std::max(kGapFloorSeconds, kGapMultiple * out.typical_interval_seconds);
+    // 计数与明细用同一个判据（桶下界 >= 阈值），两者永远自洽。
+    for (std::size_t i = 0; i < kIntervalBuckets; ++i) {
+        if (BucketLowerSeconds(static_cast<int>(i)) < threshold)
+            continue;
+        out.gap_count += gap_buckets_[i];
+        out.gap_seconds += gap_seconds_[i];
+    }
+    for (const auto& gap : gap_details_) {
+        const int bucket = IntervalBucket(gap.DurationSeconds());
+        if (bucket >= 0 && BucketLowerSeconds(bucket) >= threshold)
+            out.gaps.push_back(gap);
+    }
+    out.gaps_truncated = gap_details_truncated_ || out.gap_count > out.gaps.size();
+    return out;
+}
+
+model::RepairTrackCoverageSummary RepairSampleLedger::Coverage() const {
+    model::RepairTrackCoverageSummary summary;
+    if (coverage_by_track_.empty()) {
+        summary.unavailable_reason = "没有任何样本带时间戳，无法给出逐轨覆盖区间";
+        return summary;
+    }
+    summary.available = true;
+
+    bool common_known = true;
+    double common_start = 0.0;
+    double common_end = 0.0;
+    bool first_track = true;
+    std::string overlap_gap_note;
+
+    for (const auto& entry : coverage_by_track_) {
+        model::RepairTrackCoverage track = entry.second.Build();
+        track.output_stream_index = entry.first;
+        if (track.gaps_truncated)
+            summary.limitations.push_back("轨 " + std::to_string(entry.first) + " 的缺口明细超过 " +
+                                          std::to_string(TrackCoverageStats::kMaxGapDetails) +
+                                          " 条，仅列出前若干条；条数与总时长仍为全量精确值");
+        if (!track.span_known) {
+            common_known = false;
+            overlap_gap_note = "轨 " + std::to_string(entry.first) + " 没有带时间戳的样本，共同覆盖区间无从计算";
+        } else if (first_track) {
+            common_start = track.first_seconds;
+            common_end = track.last_seconds;
+            first_track = false;
+        } else {
+            const double start = std::max(common_start, track.first_seconds);
+            const double end = std::min(common_end, track.last_seconds);
+            if (end <= start) {
+                common_known = false;
+                overlap_gap_note = "逐轨覆盖区间互不重叠（交集为空），不存在音画同时在播的区间";
+                common_start = start;
+                common_end = end;
+            } else {
+                common_start = start;
+                common_end = end;
+            }
+        }
+        summary.tracks.push_back(std::move(track));
+    }
+
+    summary.common_span_known = common_known && !summary.tracks.empty();
+    if (summary.common_span_known) {
+        summary.common_start_seconds = common_start;
+        summary.common_end_seconds = common_end;
+        if (summary.tracks.size() == 1)
+            summary.common_span_note = "只有一条轨，共同覆盖区间即该轨覆盖区间";
+        else
+            summary.common_span_note = "所有 " + std::to_string(summary.tracks.size()) + " 条轨覆盖区间的交集";
+    } else {
+        summary.common_span_note = overlap_gap_note;
+    }
     return summary;
 }
 

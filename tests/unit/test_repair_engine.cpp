@@ -520,6 +520,18 @@ TEST(RepairEngine, LostRangesAreStructuredAndVisibleInAllReportFormats) {
         << result.recovered_segments.back().recovery_point;
     EXPECT_NE(json.find("\"recovery_evidence\""), std::string::npos);
     EXPECT_NE(json.find("trial_decode_ok"), std::string::npos);
+    // 切片 G：全局损失区间之外，必须能说出「哪条轨缺了哪一段」。
+    // available=false 会被读成「逐轨都没有缺口」，所以这里要求真接了账本。
+    ASSERT_TRUE(result.track_coverage.available) << result.track_coverage.unavailable_reason;
+    ASSERT_FALSE(result.track_coverage.tracks.empty());
+    EXPECT_TRUE(result.track_coverage.complete) << "本次执行走到了源末尾，覆盖不该只是前缀";
+    EXPECT_GT(result.track_coverage.tracks.front().samples, 0u);
+    EXPECT_NE(json.find("\"track_coverage\""), std::string::npos);
+    EXPECT_NE(json.find("\"common_span_known\""), std::string::npos);
+    for (const auto& body : {text, html}) {
+        EXPECT_NE(body.find("音画共同覆盖"), std::string::npos) << "TXT / HTML 必须给出共同覆盖区间";
+        EXPECT_NE(body.find("缺口 "), std::string::npos) << "TXT / HTML 必须逐轨交代缺口";
+    }
     for (const auto& body : {text, html}) {
         EXPECT_NE(body.find("损失区间"), std::string::npos) << "TXT / HTML 必须显式展示损失区间";
         EXPECT_NE(body.find("无其它副本"), std::string::npos);

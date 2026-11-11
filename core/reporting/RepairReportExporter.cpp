@@ -502,6 +502,50 @@ JsonValue BuildTimelineBasis(const model::RepairTimelineBasis& basis) {
     return object;
 }
 
+JsonValue BuildTrackCoverage(const model::RepairTrackCoverageSummary& coverage) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("available", JsonValue(coverage.available));
+    object.Set("complete", JsonValue(coverage.complete));
+    object.Set("unavailable_reason", JOptString(coverage.unavailable_reason));
+    object.Set("common_span_known", JsonValue(coverage.common_span_known));
+    object.Set("common_start_seconds", JNum(coverage.common_start_seconds));
+    object.Set("common_end_seconds", JNum(coverage.common_end_seconds));
+    object.Set("common_span_note", JOptString(coverage.common_span_note));
+    JsonValue tracks = JsonValue::MakeArray();
+    for (const auto& track : coverage.tracks) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("output_stream_index", JsonValue(track.output_stream_index));
+        node.Set("track_id", JsonValue(static_cast<int>(track.track_id)));
+        node.Set("kind", JText(track.kind));
+        node.Set("codec", JOptString(track.codec));
+        node.Set("samples", J64(track.samples));
+        node.Set("samples_without_timestamp", J64(track.samples_without_timestamp));
+        node.Set("span_known", JsonValue(track.span_known));
+        node.Set("first_seconds", JNum(track.first_seconds));
+        node.Set("last_seconds", JNum(track.last_seconds));
+        node.Set("typical_interval_seconds", JNum(track.typical_interval_seconds));
+        node.Set("gap_count", J64(track.gap_count));
+        node.Set("gap_seconds", JNum(track.gap_seconds));
+        node.Set("gaps_truncated", JsonValue(track.gaps_truncated));
+        JsonValue gaps = JsonValue::MakeArray();
+        for (const auto& gap : track.gaps) {
+            JsonValue item = JsonValue::MakeObject();
+            item.Set("start_seconds", JNum(gap.start_seconds));
+            item.Set("end_seconds", JNum(gap.end_seconds));
+            item.Set("duration_seconds", JNum(gap.DurationSeconds()));
+            gaps.PushBack(item);
+        }
+        node.Set("gaps", gaps);
+        tracks.PushBack(node);
+    }
+    object.Set("tracks", tracks);
+    JsonValue limitations = JsonValue::MakeArray();
+    for (const auto& text : coverage.limitations)
+        limitations.PushBack(JText(text));
+    object.Set("limitations", limitations);
+    return object;
+}
+
 JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records) {
     JsonValue array = JsonValue::MakeArray();
     for (const auto& record : records) {
@@ -596,6 +640,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("sample_ledger", BuildSampleLedger(result.sample_ledger, result.sample_conservation_problems));
     root.Set("recovered_segments", BuildRecoveredSegments(result.recovered_segments));
     root.Set("lost_ranges", BuildLostRanges(result.lost_ranges));
+    root.Set("track_coverage", BuildTrackCoverage(result.track_coverage));
     root.Set("reference_assist", BuildReferenceAssist(result.reference_assist));
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("display_order", BuildDisplayOrder(result.display_order));
@@ -867,6 +912,58 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
              << "s（" << FixedSeconds(lost.DurationSeconds()) << "s，" << lost.reason << "，"
              << (lost.recoverable ? "有其它副本可恢复" : "无其它副本") << "） — " << lost.evidence;
         recovery.items.push_back(line.str());
+    }
+    // 逐轨覆盖（切片 G）：全局损失区间说不清「是哪条轨缺的」，这里按轨逐个交代。
+    // available=false 必须出一行 —— 静默省略会被读成「逐轨都没有缺口」。
+    if (!result.track_coverage.available) {
+        recovery.rows.emplace_back("逐轨覆盖", "未接入（" +
+                                                   (result.track_coverage.unavailable_reason.empty()
+                                                        ? std::string("本次执行没有样本账本")
+                                                        : result.track_coverage.unavailable_reason) +
+                                                   "）");
+    } else {
+        if (!result.track_coverage.complete)
+            recovery.items.push_back("逐轨覆盖只统计到已扫描前缀（本次执行未走到源末尾），不能读成整段没内容");
+        if (result.track_coverage.common_span_known) {
+            recovery.rows.emplace_back("音画共同覆盖", FixedSeconds(result.track_coverage.common_start_seconds) + "–" +
+                                                           FixedSeconds(result.track_coverage.common_end_seconds) +
+                                                           "s（" +
+                                                           FixedSeconds(result.track_coverage.common_end_seconds -
+                                                                        result.track_coverage.common_start_seconds) +
+                                                           "s）");
+        } else {
+            recovery.rows.emplace_back("音画共同覆盖", "未知（" + result.track_coverage.common_span_note + "）");
+        }
+        for (const auto& track : result.track_coverage.tracks) {
+            std::ostringstream line;
+            line << "轨 " << track.output_stream_index << "（" << (track.kind.empty() ? "other" : track.kind);
+            if (!track.codec.empty())
+                line << " / " << track.codec;
+            line << "）：" << track.samples << " 个样本";
+            if (track.span_known) {
+                line << "，覆盖 " << FixedSeconds(track.first_seconds) << "–" << FixedSeconds(track.last_seconds)
+                     << "s";
+            } else {
+                line << "，没有带时间戳的样本，覆盖区间未知";
+            }
+            if (track.samples_without_timestamp > 0)
+                line << "；" << track.samples_without_timestamp << " 个样本无时间戳未计入";
+            line << "；缺口 " << track.gap_count << " 段 / " << FixedSeconds(track.gap_seconds) << "s";
+            if (track.typical_interval_seconds > 0.0)
+                line << "（判据 ≥" << FixedSeconds(std::max(0.5, 3.0 * track.typical_interval_seconds))
+                     << "s，典型间隔约 " << FixedSeconds(track.typical_interval_seconds) << "s）";
+            if (track.gaps_truncated)
+                line << "，明细超过上限只列前 " << track.gaps.size() << " 段";
+            recovery.items.push_back(line.str());
+            for (const auto& gap : track.gaps) {
+                std::ostringstream detail;
+                detail << "  缺口: " << FixedSeconds(gap.start_seconds) << "–" << FixedSeconds(gap.end_seconds) << "s（"
+                       << FixedSeconds(gap.DurationSeconds()) << "s）";
+                recovery.items.push_back(detail.str());
+            }
+        }
+        for (const auto& text : result.track_coverage.limitations)
+            recovery.items.push_back("逐轨覆盖限制: " + text);
     }
     if (result.recovered_segments.empty()) {
         recovery.items.push_back("未发生跳段恢复：产物由单一连续区段组成");

@@ -2794,6 +2794,22 @@ target_link_libraries(test_repair_timeline_basis PRIVATE
 add_test(NAME RepairTimelineBasisTests COMMAND test_repair_timeline_basis)
 
 # =================================================
+# 测试：逐轨覆盖与音画共同区间（切片 G）
+#
+# 守住四件事：只有真的缺内容的那条轨才报缺口；判据带相对项（10 s 一帧的
+# 延时摄影不算丢失）、有下限（丢 6 帧不算损失）；B 帧重排的 PTS 回退不被
+# 当成缺口；明细截断时条数与总时长仍是全量精确值。
+# =================================================
+videoeye_add_test(test_repair_track_coverage
+    unit/test_repair_track_coverage.cpp
+)
+target_link_libraries(test_repair_track_coverage PRIVATE
+    VideoEyeRepair
+    VideoEyeDomain
+    VideoEyeInfrastructure)
+add_test(NAME RepairTrackCoverageTests COMMAND test_repair_track_coverage)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

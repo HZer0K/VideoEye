@@ -11,6 +11,7 @@
 //   * 统计不丢：明细缓存到双上限后是「抽样」，聚合计数仍然全量精确，且
 //     detail_truncated 必须随结论一起进报告，不许静默丢样本。
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -107,6 +108,47 @@ private:
     uint64_t chunks_loaded_ = 0;
 };
 
+// 逐轨覆盖的流式统计（切片 G）。每个样本只做一次 O(1) 更新，内存固定：
+// 两个固定桶数的直方图 + 有界缺口明细。**绝不能改成在明细缓存上算** ——
+// 明细超过双上限后是抽样，拿它算区间会把「没缓存到的样本」误判成丢帧。
+class TrackCoverageStats {
+public:
+    // 间隔直方图：log2(毫秒) 分桶，覆盖 1 ms ~ 2^40 ms。
+    static constexpr std::size_t kIntervalBuckets = 40;
+    static constexpr std::size_t kMaxGapDetails = 32;
+    // 缺口下限：短于它的间隔不算缺口（单帧 / 两帧抖动不值得报成损失）。
+    static constexpr double kGapFloorSeconds = 0.5;
+    // 缺口判据 = max(kGapFloorSeconds, kGapMultiple × 该轨典型间隔)。
+    // 相对项是必须的：10 s 一帧的延时摄影，5 s 间隔不是丢失。
+    static constexpr double kGapMultiple = 3.0;
+
+    void Add(const model::RecoveredSample& sample);
+    model::RepairTrackCoverage Build() const;
+
+    uint64_t SampleCount() const {
+        return sample_count_;
+    }
+
+private:
+    uint64_t sample_count_ = 0;
+    uint64_t without_timestamp_ = 0;
+    uint32_t track_id_ = 0;
+    bool span_known_ = false;
+    double first_seconds_ = 0.0;
+    double last_seconds_ = 0.0;
+    // 已见最大时间戳：重排帧（PTS 早于已见最大值）不产生间隔，不贡献缺口。
+    bool has_ceiling_ = false;
+    double ceiling_seconds_ = 0.0;
+    std::array<uint64_t, kIntervalBuckets> interval_buckets_{};
+
+    // 候选缺口（间隔 >= kGapFloorSeconds）按时长分桶累计：即使明细被截断，
+    // 最终按阈值筛选的条数与总时长仍是全量精确值。
+    std::array<uint64_t, kIntervalBuckets> gap_buckets_{};
+    std::array<double, kIntervalBuckets> gap_seconds_{};
+    std::vector<model::RepairTrackGap> gap_details_;
+    bool gap_details_truncated_ = false;
+};
+
 // 样本账本：明细双上限（条数 + 源字节数），聚合计数始终精确。
 class RepairSampleLedger {
 public:
@@ -143,10 +185,15 @@ public:
 
     model::RepairSampleLedgerSummary Summary() const;
 
+    // 逐轨覆盖 / 逐轨缺口 / 音画共同覆盖区间。只由流式统计导出，
+    // 与样本明细是否截断无关。`complete` 需要调用方按本次执行是否走到末尾填。
+    model::RepairTrackCoverageSummary Coverage() const;
+
 private:
     Limits limits_;
     std::vector<model::RecoveredSample> samples_;
     std::map<int, uint64_t> by_track_;
+    std::map<int, TrackCoverageStats> coverage_by_track_;
     std::map<uint32_t, uint64_t> by_segment_;
     uint64_t total_ = 0;
     uint64_t total_bytes_ = 0;

@@ -584,6 +584,65 @@ struct RepairLostRange {
     }
 };
 
+// ---- 逐轨覆盖与音画共同区间（切片 G）----
+//
+// 全局 `lost_ranges` 只能说明「源时间轴上有一段没进产物」，说明不了「是哪条轨缺的」。
+// 一条轨的索引失效时另一条轨可能全程连续；音画两条轨的缺口起点也常常差几百毫秒。
+// 只报全局秒数会把「音频其实完整」说成「音画都缺了」。
+//
+// 这一块由样本账本的**流式统计**导出，不读明细缓存 —— 明细超过上限就变成抽样，
+// 拿它算区间会把「没缓存到的样本」误判成丢帧。所有计数都是全量精确值。
+//
+// 区间口径：全部是**输入时间轴**秒数（与 `lost_ranges` 同一口径），不是产物时间轴。
+// 开了 MergeContiguous 时产物时间轴会被平移，两张表不能直接相减。
+//
+// 判据说明（缺口语义）：样本按写入顺序推进，重排帧（B 帧）的 PTS 会略早于已见最大值，
+// 此时不产生间隔（不贡献缺口）。因此缺口起点可能被高估至多一个重排深度，
+// 方向是「少报」而不是「多报」。
+struct RepairTrackGap {
+    double start_seconds = 0.0;
+    double end_seconds = 0.0;
+
+    double DurationSeconds() const {
+        return end_seconds > start_seconds ? end_seconds - start_seconds : 0.0;
+    }
+};
+
+struct RepairTrackCoverage {
+    int output_stream_index = -1;
+    uint32_t track_id = 0;
+    std::string kind;  // "video" / "audio" / "other"
+    std::string codec; // 输入侧编码名，拿不到留空
+    uint64_t samples = 0;
+    // 该轨有 N 个样本没有时间戳：它们既不算覆盖也不算缺口，必须单独说清楚。
+    uint64_t samples_without_timestamp = 0;
+    bool span_known = false;
+    double first_seconds = 0.0;
+    double last_seconds = 0.0;
+    // 缺口判据的基准：该轨样本间隔直方图众数桶的估算值（近似，不是实测中位数）。
+    double typical_interval_seconds = 0.0;
+    // 以下两项是全量精确值，与缺口明细是否截断无关。
+    uint64_t gap_count = 0;
+    double gap_seconds = 0.0;
+    std::vector<RepairTrackGap> gaps;
+    bool gaps_truncated = false;
+};
+
+struct RepairTrackCoverageSummary {
+    bool available = false;
+    // 扫描走到源末尾（未被取消 / 超时 / 读写失败打断）。false 时逐轨覆盖只是前缀，
+    // 不能当成「整段没内容」的证据。
+    bool complete = false;
+    std::string unavailable_reason;
+    std::vector<RepairTrackCoverage> tracks;
+    // 所有轨 span 的交集 —— 这才是「音画同时在播」的区间。
+    bool common_span_known = false;
+    double common_start_seconds = 0.0;
+    double common_end_seconds = 0.0;
+    std::string common_span_note;
+    std::vector<std::string> limitations;
+};
+
 // ---- 显示顺序证据（切片 E）----
 //
 // 容器只给解码序；B 帧重排后的显示序只能从码流 POC 推。这一块记录"推没推、
@@ -702,6 +761,9 @@ struct RepairResult {
     std::vector<RepairRecoveredSegment> recovered_segments;
     // S04 跳过的源时间区间：由 recovered_segments 派生，供报告逐段说明损失。
     std::vector<RepairLostRange> lost_ranges;
+    // 切片 G：逐轨覆盖 / 逐轨缺口 / 音画共同覆盖区间。available=false 表示本次
+    // 执行没有接入样本账本（例如转码或参考辅助重建路径），不能当成「零缺口」。
+    RepairTrackCoverageSummary track_coverage;
     RepairTimelineRepair timeline_repair;
     // 参考样片辅助重建（切片 C）：借了哪些解码配置、布局线索如何在源侧自证。
     RepairReferenceAssist reference_assist;

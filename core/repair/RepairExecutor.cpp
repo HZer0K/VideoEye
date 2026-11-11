@@ -670,6 +670,9 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     // 样本层是逐轨 / 逐区间 / 写入总量统计的唯一事实源：明细有界，聚合计数精确。
     // 原来各自 ++ 的 per_output_packets / current_segment.packets_written 全部改由它求和。
     RepairSampleLedger sample_ledger;
+    // 逐轨覆盖报告要带编码名（切片 G），而 demuxer 在函数收尾前就关闭了：
+    // 必须在建输出轨时把字符串捕获下来，不能事后回头读 AVStream。
+    std::vector<std::string> output_codec_names(mapped_streams.size());
     // MPEG-TS 要求 H.264/HEVC 使用 Annex B 码流；MP4 内是 length-prefixed，
     // 必须在写入前经比特流过滤器转换，否则产物在播放器里无法解码。
     std::vector<AVBSFContext*> bsf_contexts(mapped_streams.size(), nullptr);
@@ -705,6 +708,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             if (src->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
                 outcome.output_video_stream_index = static_cast<int>(i);
             }
+            if (const char* codec_name = avcodec_get_name(src->codecpar->codec_id); codec_name != nullptr)
+                output_codec_names[i] = codec_name;
         }
         if (!failure.empty())
             break;
@@ -1388,6 +1393,27 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
     // 所有返回路径都要带上样本层实测值：取消 / 超时 / 写失败时账本同样存在，
     // 只是总数可能是部分值，不能事后伪装成「完整扫描」。
     outcome.sample_ledger = sample_ledger.Summary();
+    // 逐轨覆盖（切片 G）：由账本的流式统计导出，与明细是否截断无关。
+    // complete=false 时它只是已扫描前缀的覆盖，不能读成「整段没内容」。
+    outcome.track_coverage = sample_ledger.Coverage();
+    outcome.track_coverage.complete = failure.empty() && !outcome.canceled && !outcome.timed_out &&
+                                      !outcome.read_error && !outcome.salvage_truncated && !outcome.output_size_capped;
+    if (!outcome.track_coverage.complete && !outcome.track_coverage.unavailable_reason.empty())
+        outcome.track_coverage.unavailable_reason += "；且本次执行未走到源末尾";
+    for (auto& track : outcome.track_coverage.tracks) {
+        if (track.output_stream_index >= 0 && track.output_stream_index < static_cast<int>(output_codec_names.size()))
+            track.codec = output_codec_names[static_cast<std::size_t>(track.output_stream_index)];
+        for (const auto& target : outcome.verification_targets) {
+            if (target.output_stream_index != track.output_stream_index)
+                continue;
+            track.kind = target.kind;
+            if (track.track_id == 0)
+                track.track_id = target.track_id;
+            break;
+        }
+        if (track.kind.empty())
+            track.kind = "other";
+    }
 
     if (!failure.empty()) {
         outcome.error = failure;

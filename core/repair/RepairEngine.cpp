@@ -226,6 +226,8 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.sample_conservation_problems = execution.sample_conservation_problems;
     result.recovered_segments = execution.recovered_segments;
     result.lost_ranges = BuildLostRanges(result.recovered_segments);
+    // 切片 G：逐轨覆盖 / 逐轨缺口 / 音画共同区间，由执行期样本账本流式导出。
+    result.track_coverage = execution.track_coverage;
     result.timeline_repair = execution.timeline_repair;
     result.reference_assist = execution.reference_assist;
     result.display_order = execution.display_order;
