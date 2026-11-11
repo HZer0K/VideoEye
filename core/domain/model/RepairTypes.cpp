@@ -23,6 +23,22 @@ const char* ToString(RepairGapPolicy value) {
     return "unknown";
 }
 
+const char* ToString(RepairRecoveryEvidence value) {
+    switch (value) {
+    case RepairRecoveryEvidence::Unknown:
+        return "unknown";
+    case RepairRecoveryEvidence::AvSeekFrame:
+        return "av_seek_frame";
+    case RepairRecoveryEvidence::MoofResync:
+        return "moof_resync";
+    case RepairRecoveryEvidence::BitstreamRap:
+        return "bitstream_rap";
+    case RepairRecoveryEvidence::TrialDecodeOk:
+        return "trial_decode_ok";
+    }
+    return "unknown";
+}
+
 const char* ToString(RepairOutputContainer value) {
     switch (value) {
     case RepairOutputContainer::Auto:
@@ -213,6 +229,22 @@ const char* DisplayName(RepairGapPolicy value) {
         return "保留原时间间隔";
     case RepairGapPolicy::MergeContiguous:
         return "删除损坏区间，连续播放";
+    }
+    return "未知";
+}
+
+const char* DisplayName(RepairRecoveryEvidence value) {
+    switch (value) {
+    case RepairRecoveryEvidence::Unknown:
+        return "未标注来源";
+    case RepairRecoveryEvidence::AvSeekFrame:
+        return "demuxer 索引定位";
+    case RepairRecoveryEvidence::MoofResync:
+        return "容器级重同步（moof/trun）";
+    case RepairRecoveryEvidence::BitstreamRap:
+        return "码流级重同步（NAL/AU 扫描）";
+    case RepairRecoveryEvidence::TrialDecodeOk:
+        return "试解码确认";
     }
     return "未知";
 }

@@ -41,7 +41,8 @@ std::vector<model::RepairLostRange> BuildLostRanges(const std::vector<model::Rep
         range.input_end_seconds = segment.input_start_seconds;
         range.input_start_seconds = std::max(0.0, segment.input_start_seconds - segment.skipped_before_seconds);
         range.reason = "container.damaged_segment_skipped";
-        range.evidence = "跳段恢复实测：本段前跳过 " + FormatSeconds(segment.skipped_before_seconds) + " s；恢复点 " +
+        range.evidence = "跳段恢复实测：本段前跳过 " + FormatSeconds(segment.skipped_before_seconds) +
+                         " s；恢复点来源 " + std::string(model::ToString(segment.recovery_evidence)) + "；恢复点 " +
                          (segment.recovery_point.empty() ? "未记录" : segment.recovery_point);
         range.recoverable = false;
         out.push_back(std::move(range));
@@ -218,6 +219,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.lost_ranges = BuildLostRanges(result.recovered_segments);
     result.timeline_repair = execution.timeline_repair;
     result.reference_assist = execution.reference_assist;
+    result.display_order = execution.display_order;
     result.fidelity.omitted_items = execution.omitted_items;
 
     // P2-14b：取消 / 超预算时按需保留已经写入的产物前缀。

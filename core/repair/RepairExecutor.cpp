@@ -14,6 +14,7 @@
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairBitstreamResync.h"
 #include "core/repair/RepairIndexRepair.h"
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPayloadHash.h"
@@ -21,6 +22,7 @@
 #include "core/repair/RepairReferenceMoovRebuilder.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTolerantTranscode.h"
+#include "core/repair/RepairTrialDecode.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -210,16 +212,32 @@ bool CheckpointOrStop(const std::atomic<bool>* cancel, const RepairRunBudget* bu
     return false;
 }
 
+// 码流扫描只认 H.264 / HEVC：其它编码返回空串，由调用方跳过诊断而不是猜语法。
+std::string ScanCodecName(AVCodecID codec_id) {
+    switch (codec_id) {
+    case AV_CODEC_ID_H264:
+        return "h264";
+    case AV_CODEC_ID_HEVC:
+        return "hevc";
+    default:
+        return std::string();
+    }
+}
+
 // 跳段恢复：从损坏点之后按递增步长寻找可解码恢复点。
 //
 // 关键约束：
 //  - 只接受时间戳明确大于损坏点之后的新包，避免 seek 原地打转；
 //  - 有输出视频轨时优先要关键帧，宁可跳过恢复点前的少量音频，也不从半截 GOP 开始；
 //  - 恢复失败由调用方记为"读取失败点之后未参与修复"，不能假装成功。
-bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds, int first_video_input_index,
-               int first_audio_input_index, int preferred_stream_index, const std::vector<int>& stream_map,
-               const std::atomic<bool>* cancel, const RepairRunBudget* budget, AVPacket* packet, double* resync_seconds,
-               std::string* detail, bool* canceled, bool* timed_out) {
+//  - 本函数只依赖 demuxer 索引，因此证据强度封顶在 AvSeekFrame：seek 成功不等于
+//    载荷可解码，报告不得据此声称「该点之后可解码」。索引损坏时由上层改走
+//    容器级 / 码流级重同步（证据 MoofResync / BitstreamRap / TrialDecodeOk）。
+bool TryResync(AVFormatContext* in, const std::string& source_path, double from_seconds, double duration_seconds,
+               int first_video_input_index, int first_audio_input_index, int preferred_stream_index,
+               const std::vector<int>& stream_map, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
+               AVPacket* packet, double* resync_seconds, std::string* detail, model::RepairRecoveryEvidence* evidence,
+               bool* canceled, bool* timed_out) {
     static const double kStepsSeconds[] = {0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2};
     // 只要产物里有视频轨，恢复点就必须是关键帧；否则会从半截 GOP 开始解码。
     const bool require_keyframe = first_video_input_index >= 0;
@@ -229,6 +247,13 @@ bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds
                                   ? preferred_stream_index
                                   : (first_video_input_index >= 0 ? first_video_input_index : first_audio_input_index);
     const double end_limit = duration_seconds > 0.0 ? duration_seconds - 0.05 : std::numeric_limits<double>::infinity();
+
+    // 试解码次数上限：坏文件里每个 seek 窗口都可能出现多个"看起来是关键帧"的包，
+    // 不设上限会把预算耗在反复打开解码器上。
+    int trials_left = 8;
+    int rejected_candidates = 0;
+    std::string last_reject_reason;
+    std::string no_trial_reason;
 
     for (double step : kStepsSeconds) {
         const double target = from_seconds + step;
@@ -288,11 +313,45 @@ bool TryResync(AVFormatContext* in, double from_seconds, double duration_seconds
                 continue;
             }
 
+            // 关键帧标记只是容器声明，必须用真实解码器裁决（切片 D 层 3）。
+            if (require_keyframe && trials_left > 0) {
+                --trials_left;
+                RepairTrialDecodeOptions trial_options;
+                const RepairTrialDecodeResult trial =
+                    TrialDecodeVideoAt(source_path, *seconds, trial_options, cancel, budget);
+                if (trial.attempted && !trial.ok) {
+                    ++rejected_candidates;
+                    last_reject_reason = trial.error;
+                    av_packet_unref(packet);
+                    continue;
+                }
+                if (trial.attempted) {
+                    *resync_seconds = *seconds;
+                    *evidence = model::RepairRecoveryEvidence::TrialDecodeOk;
+                    *detail = "av_seek_frame(" + FormatSeconds(target) + " s) 恢复到 " + FormatSeconds(*seconds) +
+                              " s；" + trial.evidence;
+                    return true;
+                }
+                // 没试成（编码未覆盖 / 预算耗尽）：证据只能停在 AvSeekFrame，
+                // 描述里必须写明"未验证可解码"，不能伪装成已核验。
+                no_trial_reason = trial.error;
+            }
+
             *resync_seconds = *seconds;
-            *detail = "av_seek_frame(" + FormatSeconds(target) + " s) 恢复到 " + FormatSeconds(*seconds) + " s";
+            *detail = "av_seek_frame(" + FormatSeconds(target) + " s) 恢复到 " + FormatSeconds(*seconds) + " s" +
+                      (no_trial_reason.empty() ? std::string() : "；未做试解码（" + no_trial_reason + "）");
+            *evidence = model::RepairRecoveryEvidence::AvSeekFrame;
             return true;
         }
         avformat_flush(in);
+    }
+    // 失败也要说清"为什么没找到"：是 seek 全失败，还是找到了关键帧但试解码不过。
+    // 这两种结论对用户完全不同，不能都压成一句"未找到恢复点"。
+    if (rejected_candidates > 0) {
+        *detail = "试解码拒绝了 " + std::to_string(rejected_candidates) + " 个关键帧候选（最后原因：" +
+                  last_reject_reason + "）";
+    } else {
+        *detail = "各跳段步长均未找到可用关键帧候选";
     }
     return false;
 }
@@ -370,6 +429,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 rebuild_error = rebuilt.error;
                 rebuild_note = rebuilt.note;
                 rebuild_samples = rebuilt.samples_rebuilt;
+                if (rebuilt.ok)
+                    outcome.display_order = rebuilt.display_order;
             }
             const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
             if (stopped) {
@@ -721,6 +782,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         bool current_segment_active = false;
         bool next_segment_resumed = false;
         std::string next_segment_recovery_point;
+        model::RepairRecoveryEvidence next_segment_evidence = model::RepairRecoveryEvidence::Unknown;
         double next_segment_skipped_before = 0.0;
         bool merge_active = false;
         double merge_shift_seconds = 0.0;
@@ -733,6 +795,8 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         uint64_t rewritten_timestamps = 0;
         // 跳段恢复已经读到的恢复点包，需要在下一轮直接处理而不是重新读包。
         bool packet_ready = false;
+        // 码流级诊断每次执行只跑一次：失败分支可能被反复进入，重复扫 32 MiB 不值当。
+        bool bitstream_diag_done = false;
 
         // 逐输入流已读包数与最后时间戳：用于识别"某个轨提前结束"这种无报错的
         // 中间损坏（例如 MP4 的样本偏移越界时 demuxer 直接对该轨返回 EOF）。
@@ -826,14 +890,15 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     // 因为越界边界之后没有可读内容。
                     double resync_seconds = 0.0;
                     std::string resync_detail;
+                    model::RepairRecoveryEvidence resync_evidence = model::RepairRecoveryEvidence::Unknown;
                     bool canceled_resync = false;
                     bool timed_out_resync = false;
                     const double resync_from = premature_eof ? resync_from_seconds : last_seconds;
-                    const bool resumed =
-                        request.allow_segment_salvage && !salvage_end.has_value() &&
-                        TryResync(in, resync_from, duration_seconds, first_video_input_index, first_audio_input_index,
-                                  premature_stream, stream_map, cancel, budget, packet, &resync_seconds, &resync_detail,
-                                  &canceled_resync, &timed_out_resync);
+                    const bool resumed = request.allow_segment_salvage && !salvage_end.has_value() &&
+                                         TryResync(in, input_path, resync_from, duration_seconds,
+                                                   first_video_input_index, first_audio_input_index, premature_stream,
+                                                   stream_map, cancel, budget, packet, &resync_seconds, &resync_detail,
+                                                   &resync_evidence, &canceled_resync, &timed_out_resync);
                     if (canceled_resync) {
                         outcome.canceled = true;
                         break;
@@ -866,6 +931,47 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                                                " s 附近读取失败: " + AvErrorText(read_ret);
                             finding.limitations.push_back("读取失败点之后的载荷未参与修复");
                         }
+                        // 跳段恢复自己的结论单独拼进来：是"根本没找到候选"还是
+                        // "找到了但试解码不过"，对用户是完全不同的两种损失原因。
+                        if (!resync_detail.empty())
+                            finding.evidence += "；跳段恢复结论: " + resync_detail;
+
+                        // 码流级诊断（切片 D 层 2）：索引失效时至少要交代载荷里还有没有
+                        // 随机访问点。即使找到候选也只能报"存在候选" —— 当前链路没有不依赖
+                        // 索引的写包路径，绝不能说成已恢复。
+                        if (!bitstream_diag_done && first_video_input_index >= 0 &&
+                            first_video_input_index < static_cast<int>(in->nb_streams) &&
+                            in->streams[first_video_input_index] != nullptr) {
+                            bitstream_diag_done = true;
+                            const std::string scan_codec =
+                                ScanCodecName(in->streams[first_video_input_index]->codecpar->codec_id);
+                            if (scan_codec.empty()) {
+                                finding.evidence += "；码流级扫描未执行（第一版只覆盖 H.264 / HEVC）";
+                            } else {
+                                const RepairMdatWindow mdat = FindPrimaryMdatPayload(input_path);
+                                if (!mdat.found) {
+                                    finding.evidence +=
+                                        "；mdat 窗口不可用: " + (mdat.error.empty() ? "未找到 mdat" : mdat.error);
+                                } else {
+                                    RepairBitstreamResyncOptions scan_options;
+                                    const RepairBitstreamResyncResult scan = ScanForRandomAccessPoints(
+                                        input_path, mdat.payload_offset, mdat.payload_offset + mdat.payload_size,
+                                        scan_codec, scan_options, cancel, budget);
+                                    if (scan.found) {
+                                        finding.evidence += "；码流级扫描在 mdat 载荷内找到 " +
+                                                            std::to_string(scan.candidates.size()) +
+                                                            " 个随机访问候选（最早字节偏移 " +
+                                                            std::to_string(scan.candidates.front().byte_offset) +
+                                                            "），但当前链路只能按容器索引定位，候选尚未接入输出";
+                                    } else {
+                                        finding.evidence += "；码流级扫描未找到随机访问候选: " +
+                                                            (scan.error.empty() ? "窗口内无有效 NAL 链" : scan.error);
+                                    }
+                                    if (!scan.limitations.empty())
+                                        finding.limitations.push_back(scan.limitations);
+                                }
+                            }
+                        }
                         finding.candidate_actions.push_back(model::RepairAction::S02_TailSalvage);
                         finding.candidate_actions.push_back(model::RepairAction::S04_SegmentSalvage);
                         outcome.residual_findings.push_back(std::move(finding));
@@ -889,6 +995,7 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     }
                     next_segment_resumed = true;
                     next_segment_recovery_point = resync_detail;
+                    next_segment_evidence = resync_evidence;
                     next_segment_skipped_before = std::max(0.0, resync_seconds - resync_from);
                     skipped_total_seconds += next_segment_skipped_before;
 
@@ -1146,11 +1253,13 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     current_segment.input_start_seconds = *input_seconds;
                     current_segment.output_start_seconds = output_seconds;
                     current_segment.resumed_after_damage = next_segment_resumed;
+                    current_segment.recovery_evidence = next_segment_evidence;
                     current_segment.recovery_point = next_segment_recovery_point;
                     current_segment.skipped_before_seconds = next_segment_skipped_before;
                     current_segment_active = true;
                     next_segment_resumed = false;
                     next_segment_recovery_point.clear();
+                    next_segment_evidence = model::RepairRecoveryEvidence::Unknown;
                     next_segment_skipped_before = 0.0;
                 }
                 current_segment.input_end_seconds = std::max(current_segment.input_end_seconds, *input_seconds);

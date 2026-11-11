@@ -685,6 +685,10 @@ target_link_libraries(VideoEyeRepair
     PRIVATE VideoEyeMedia
             VideoEyeInfrastructure
             VideoEyeFfmpegIo
+            # 切片 E：显示顺序要逐帧实测 POC，复用 core/analysis/codec 的追踪器。
+            # 只挂 PRIVATE —— 修复层公共头里没有任何 POC / codec 类型，
+            # 调用方链 repair 不会被迫拿到 codec 的 include 目录。
+            VideoEyeCodec
             FFmpeg::avcodec
             FFmpeg::avformat
             FFmpeg::avutil

@@ -2713,6 +2713,65 @@ target_compile_definitions(test_repair_reference_moov PRIVATE
 add_test(NAME RepairReferenceMoovTests COMMAND test_repair_reference_moov)
 
 # =================================================
+# 切片 D：码流级重同步
+#
+# 索引失效时直接在载荷窗口里按 4 字节 NAL 长度前缀找随机访问点。
+# 判据只认「链自洽 + 出现 VCL」，因此需要正反两向守护：
+#   * 真有 SPS/PPS/IDR 必须找到，且字节偏移精确；
+#   * 只有 P 帧 / 纯垃圾 / 窗口被截断时必须报「没找到」，不能猜。
+# HEVC 头是 2 字节 6-bit type，单独一条用例防两套语法串味。
+# =================================================
+videoeye_add_test(test_repair_bitstream_resync
+    unit/test_repair_bitstream_resync.cpp
+)
+target_link_libraries(test_repair_bitstream_resync PRIVATE
+    VideoEyeRepair
+    VideoEyeDomain
+    VideoEyeInfrastructure)
+add_test(NAME RepairBitstreamResyncTests COMMAND test_repair_bitstream_resync)
+
+# =================================================
+# 切片 D：短窗口试解码
+#
+# 「AV_PKT_FLAG_KEY 只是容器声明」这句话必须有用例能证明它：破坏 IDR 载荷但
+# 保持 stsz/stco 不动，容器层完全看不出异常，只有真解码才能判失败。
+# =================================================
+videoeye_add_test(test_repair_trial_decode
+    unit/test_repair_trial_decode.cpp
+)
+target_link_libraries(test_repair_trial_decode PRIVATE
+    VideoEyeRepair
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory)
+add_test(NAME RepairTrialDecodeTests COMMAND test_repair_trial_decode)
+
+# =================================================
+# 测试：显示顺序证据层（切片 E）
+#
+# 推导部分用表驱动（手写 POC 序列 → 显示序 / ctts 偏移）；实测部分只认真实 B 帧
+# 语料 —— 测试工厂用的预编译 FFmpeg 没有 libx264，现场生成不出 B 帧。
+# =================================================
+videoeye_add_test(test_repair_display_order
+    unit/test_repair_display_order.cpp
+)
+target_link_libraries(test_repair_display_order PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil
+    FFmpeg::swscale)
+target_compile_definitions(test_repair_display_order PRIVATE
+    VIDEOEYE_CONTAINER_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/container"
+    VIDEOEYE_CODEC_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/codec")
+add_test(NAME RepairDisplayOrderTests COMMAND test_repair_display_order)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

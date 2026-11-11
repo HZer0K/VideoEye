@@ -58,6 +58,8 @@ struct RepairExecutionOutcome {
     std::string moov_rebuild_error;
     // 切片 C：参考样片辅助重建时借了什么、布局线索如何在源侧自证。
     model::RepairReferenceAssist reference_assist;
+    // 切片 E：无参考重建时按 POC 实测的显示顺序结论（analyzed=false 表示没做过测量）。
+    model::RepairDisplayOrderSummary display_order;
 
     // P2-13：S08 容忍式转码的实测结果。
     bool video_reencoded = false;

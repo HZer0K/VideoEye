@@ -367,6 +367,8 @@ JsonValue BuildRecoveredSegments(const std::vector<model::RepairRecoveredSegment
         node.Set("packets_written", J64(segment.packets_written));
         node.Set("resumed_after_damage", JsonValue(segment.resumed_after_damage));
         node.Set("skipped_before_seconds", JNum(segment.skipped_before_seconds));
+        // 恢复点来源单独落机读码：TXT/HTML 的文案可以改，JSON 契约不能漂。
+        node.Set("recovery_evidence", JText(model::ToString(segment.recovery_evidence)));
         node.Set("recovery_point", JOptString(segment.recovery_point));
         array.PushBack(node);
     }
@@ -454,6 +456,35 @@ JsonValue BuildTimelineRepair(const model::RepairTimelineRepair& repair) {
     object.Set("synthesized_timestamps", J64(repair.synthesized_timestamps));
     object.Set("rewritten_timestamps", J64(repair.rewritten_timestamps));
     object.Set("note", JText(repair.note));
+    return object;
+}
+
+// 显示顺序（切片 E）：analyzed / available / ctts_written 三个标志分开落，
+// 因为"跑过测量"、"测量给了结论"、"产物里真写了 ctts" 是三件不同的事。
+JsonValue BuildDisplayOrder(const model::RepairDisplayOrderSummary& order) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("analyzed", JsonValue(order.analyzed));
+    object.Set("available", JsonValue(order.available));
+    object.Set("unavailable_reason", JOptString(order.unavailable_reason));
+    object.Set("codec", JOptString(order.codec));
+    object.Set("order_source", JOptString(order.order_source));
+    object.Set("basis", JOptString(order.basis));
+    object.Set("confidence", JOptString(order.confidence));
+    object.Set("duration_source", JText(order.duration_source));
+    object.Set("timescale", JsonValue(static_cast<int>(order.timescale)));
+    object.Set("sample_delta", JsonValue(static_cast<int>(order.sample_delta)));
+    object.Set("frames", J64(order.frames));
+    object.Set("frames_observed", J64(order.frames_observed));
+    object.Set("truncated", JsonValue(order.truncated));
+    object.Set("rap_segments", J64(order.rap_segments));
+    object.Set("reordered_frames", J64(order.reordered_frames));
+    object.Set("max_reorder", J64(order.max_reorder));
+    object.Set("ctts_required", JsonValue(order.ctts_required));
+    object.Set("ctts_written", JsonValue(order.ctts_written));
+    JsonValue limitations = JsonValue::MakeArray();
+    for (const auto& text : order.limitations)
+        limitations.PushBack(JText(text));
+    object.Set("limitations", limitations);
     return object;
 }
 
@@ -553,6 +584,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("lost_ranges", BuildLostRanges(result.lost_ranges));
     root.Set("reference_assist", BuildReferenceAssist(result.reference_assist));
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
+    root.Set("display_order", BuildDisplayOrder(result.display_order));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
     return root;
@@ -764,6 +796,31 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         for (const auto& text : assist.limitations)
             recovery.items.push_back("限制: " + text);
     }
+    // 显示顺序（切片 E）：只有真做过测量才出行；没做过不能默认"顺序没问题"。
+    if (result.display_order.analyzed) {
+        const model::RepairDisplayOrderSummary& order = result.display_order;
+        if (order.available) {
+            const std::string source = order.order_source.empty() ? std::string("poc") : order.order_source;
+            recovery.rows.emplace_back("显示顺序", order.confidence + "（顺序值来源 " + source + "）");
+            recovery.rows.emplace_back("随机接入点分段 / 重排帧数", std::to_string(order.rap_segments) + " 段 / " +
+                                                                        std::to_string(order.reordered_frames) +
+                                                                        " 帧（最大 " +
+                                                                        std::to_string(order.max_reorder) + " 帧）");
+            recovery.rows.emplace_back("合成时间偏移 (ctts)",
+                                       order.ctts_written ? "已写入" : (order.ctts_required ? "应写但未写" : "不需要"));
+            recovery.items.push_back("显示顺序依据: " + order.basis);
+            recovery.items.push_back("帧时长证据: " + order.duration_source + "（timescale " +
+                                     std::to_string(order.timescale) + "，每帧 " + std::to_string(order.sample_delta) +
+                                     " tick）");
+            if (order.truncated)
+                recovery.items.push_back("显示顺序明细达到上限: 实测 " + std::to_string(order.frames_observed) +
+                                         " 帧，参与排序 " + std::to_string(order.frames) + " 帧");
+        } else {
+            recovery.items.push_back("显示顺序未推导: " + order.unavailable_reason);
+        }
+        for (const auto& text : order.limitations)
+            recovery.items.push_back("显示顺序限制: " + text);
+    }
     // 只写「确实损失」的区间：没有跳段时一行都不出，避免空表被读成「检查过且无损」。
     recovery.rows.emplace_back("损失区间数量", std::to_string(result.lost_ranges.size()));
     for (const auto& lost : result.lost_ranges) {
@@ -785,6 +842,7 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                 line << "（跳段恢复";
                 if (segment.skipped_before_seconds > 0.0)
                     line << "，跳过 " << FixedSeconds(segment.skipped_before_seconds) << "s";
+                line << "，恢复点来源: " << model::DisplayName(segment.recovery_evidence);
                 if (!segment.recovery_point.empty())
                     line << "，" << segment.recovery_point;
                 line << "）";

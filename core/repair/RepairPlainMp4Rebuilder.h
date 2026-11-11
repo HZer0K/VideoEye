@@ -49,6 +49,8 @@ struct RepairPlainMp4RebuildResult {
     uint64_t output_bytes = 0;
     // 扫描阶段由统一账本实测的样本事实（不是再统计一遍；samples_rebuilt 直接取它的总数）。
     model::RepairSampleLedgerSummary sample_ledger;
+    // 切片 E：显示顺序（POC → ctts）的实测结论。analyzed=false 表示这次没做测量。
+    model::RepairDisplayOrderSummary display_order;
 };
 
 class RepairPlainMp4Rebuilder {

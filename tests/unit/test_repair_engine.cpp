@@ -515,9 +515,15 @@ TEST(RepairEngine, LostRangesAreStructuredAndVisibleInAllReportFormats) {
     const std::string html = ReadText(dir + "/r.html");
     EXPECT_NE(json.find("\"lost_ranges\""), std::string::npos);
     EXPECT_NE(json.find("container.damaged_segment_skipped"), std::string::npos);
+    // 切片 D：恢复点来源必须是结构化机读码，不能只有一句自由文本。
+    EXPECT_EQ(result.recovered_segments.back().recovery_evidence, RepairRecoveryEvidence::TrialDecodeOk)
+        << result.recovered_segments.back().recovery_point;
+    EXPECT_NE(json.find("\"recovery_evidence\""), std::string::npos);
+    EXPECT_NE(json.find("trial_decode_ok"), std::string::npos);
     for (const auto& body : {text, html}) {
         EXPECT_NE(body.find("损失区间"), std::string::npos) << "TXT / HTML 必须显式展示损失区间";
         EXPECT_NE(body.find("无其它副本"), std::string::npos);
+        EXPECT_NE(body.find("恢复点来源"), std::string::npos) << "TXT / HTML 必须说明恢复点来源";
     }
 }
 
@@ -707,8 +713,13 @@ TEST(RepairEngine, RealCorpusMidFileDamageResumesIntoSegments) {
     EXPECT_EQ(result.status, RepairBusinessStatus::PartiallyRecovered) << ToString(result.status);
     ASSERT_GE(result.recovered_segments.size(), 2u) << result.summary;
     EXPECT_FALSE(result.recovered_segments.front().resumed_after_damage);
+    EXPECT_EQ(result.recovered_segments.front().recovery_evidence, RepairRecoveryEvidence::Unknown);
     EXPECT_TRUE(result.recovered_segments.back().resumed_after_damage);
     EXPECT_GT(result.recovered_segments.back().skipped_before_seconds, 0.0);
+    // 切片 D：恢复点证据必须升级到「试解码确认」。容器关键帧标记只是声明，
+    // 这一段从损坏点之后的关键帧续采，候选包必须真的能解出帧才允许写进来。
+    EXPECT_EQ(result.recovered_segments.back().recovery_evidence, RepairRecoveryEvidence::TrialDecodeOk)
+        << result.recovered_segments.back().recovery_point;
 
     const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
     EXPECT_TRUE(probe.opened) << result.output_path;

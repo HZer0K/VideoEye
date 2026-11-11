@@ -40,6 +40,24 @@ enum class RepairGapPolicy {
     MergeContiguous,          // 删除损坏区间，把后续片段平移到前一段末尾
 };
 
+// ---- 跳段恢复点的证据来源 ----
+//
+// 「恢复点」不能只写一句自由文本：seek 成功不等于内容可解码，索引也许根本不可用。
+// 每段恢复必须自证恢复点是怎么找到的，强度按枚举顺序递增：
+//   Unknown       旧记录 / 未标注
+//   AvSeekFrame   依赖 demuxer 索引 seek —— 索引损坏时这条路直接失效
+//   MoofResync    容器级重同步：损坏盒链之后找到可信 moof / trun / mdat
+//   BitstreamRap  码流级重同步：在载荷窗口内扫 NAL / AU 找到随机访问点
+//   TrialDecodeOk 候选点经短窗口试解码确认能建立有效解码状态（最强）
+// 只有 TrialDecodeOk 允许报告声称「该点之后可解码」；其余只能声称「找到了候选」。
+enum class RepairRecoveryEvidence {
+    Unknown,
+    AvSeekFrame,
+    MoofResync,
+    BitstreamRap,
+    TrialDecodeOk,
+};
+
 // ---- 产物容器 ----
 //
 // 选择产物封装格式。Auto 沿用源文件扩展名（mov/m4v 保留，其它统一 mp4）。
@@ -126,6 +144,7 @@ enum class RepairFidelityStatus {
 
 const char* ToString(RepairMode value);
 const char* ToString(RepairGapPolicy value);
+const char* ToString(RepairRecoveryEvidence value);
 const char* ToString(RepairOutputContainer value);
 const char* ToString(RepairBusinessStatus value);
 const char* ToString(RepairCheckStatus value);
@@ -141,6 +160,7 @@ const char* ToString(RepairFidelityStatus value);
 const char* DisplayName(RepairBusinessStatus value);
 const char* DisplayName(RepairAction value);
 const char* DisplayName(RepairGapPolicy value);
+const char* DisplayName(RepairRecoveryEvidence value);
 const char* DisplayName(RepairOutputContainer value);
 const char* DisplayName(RepairVerificationLevel value);
 
@@ -525,7 +545,9 @@ struct RepairRecoveredSegment {
     uint64_t packets_written = 0;
     bool resumed_after_damage = false;   // 是否由跳段恢复得到（第一段为 false）
     double skipped_before_seconds = 0.0; // 本段之前被跳过的输入时长
-    std::string recovery_point;          // 恢复点依据，如 "av_seek_frame resync"
+    // 恢复点来源。Unknown 只用于没有恢复点的首段与旧记录，不许当成「已核验」。
+    RepairRecoveryEvidence recovery_evidence = RepairRecoveryEvidence::Unknown;
+    std::string recovery_point; // 恢复点描述（人类可读，含定位参数）
 };
 
 // ---- 损失区间（执行期实测）----
@@ -560,6 +582,37 @@ struct RepairLostRange {
     double DurationSeconds() const {
         return input_end_seconds > input_start_seconds ? input_end_seconds - input_start_seconds : 0.0;
     }
+};
+
+// ---- 显示顺序证据（切片 E）----
+//
+// 容器只给解码序；B 帧重排后的显示序只能从码流 POC 推。这一块记录"推没推、
+// 依据是什么、推到什么程度"，与 ctts 实际有没有写进产物分开落字段：
+// `analyzed` 是"跑过测量"，`available` 是"测量给出了可用结论"，
+// `ctts_written` 是"产物里真的写了 ctts" —— 三者不能互相冒充。
+struct RepairDisplayOrderSummary {
+    bool analyzed = false;
+    bool available = false;
+    std::string unavailable_reason;
+    std::string codec;        // "h264" / "hevc"
+    std::string order_source; // "poc" / "display_rank" / "order_hint"
+    std::string basis;        // 推导依据
+    // verified / derived / unknown
+    std::string confidence = "unknown";
+    // 帧时长证据（ctts 的单位来源）
+    std::string duration_source = "none";
+    uint32_t timescale = 0;
+    uint32_t sample_delta = 0;
+    uint64_t frames = 0;
+    uint64_t frames_observed = 0;
+    bool truncated = false;
+    uint64_t rap_segments = 0;
+    uint64_t reordered_frames = 0;
+    uint64_t max_reorder = 0;
+    bool ctts_required = false;
+    // 产物里是否真的写了 ctts（只有 available && ctts_required && 条数守恒才为 true）。
+    bool ctts_written = false;
+    std::vector<std::string> limitations;
 };
 
 // ---- 时间轴修复记录（S03）----
@@ -630,6 +683,8 @@ struct RepairResult {
     RepairTimelineRepair timeline_repair;
     // 参考样片辅助重建（切片 C）：借了哪些解码配置、布局线索如何在源侧自证。
     RepairReferenceAssist reference_assist;
+    // 显示顺序证据（切片 E）：POC 实测结论与 ctts 是否真写进产物。
+    RepairDisplayOrderSummary display_order;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

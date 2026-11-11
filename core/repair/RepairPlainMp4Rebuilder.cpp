@@ -13,6 +13,7 @@
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBoxWriter.h"
 #include "core/repair/RepairBudget.h"
+#include "core/repair/RepairDisplayOrder.h"
 #include "core/repair/RepairMdatSelfCheck.h"
 #include "core/repair/RepairSampleScan.h"
 #include "infrastructure/concurrency/Cancellation.h"
@@ -100,6 +101,8 @@ struct ScanResult {
     // 样本层事实源：samples 只是写 moov 需要的 (offset,size,sync) 视图，
     // 样本数 / 逐轨 / 逐区间统计一律由这个账本求和。
     RepairSampleLedger ledger;
+    // 切片 E：显示顺序实测结论（可用时 BuildMoov 据此写 ctts）。
+    RepairDisplayOrderPlan display;
 };
 
 bool ScanTopLevel(const std::string& path, std::vector<PlainBox>* boxes, MdatInfo* mdat, std::uint64_t* file_size,
@@ -638,7 +641,7 @@ ScanResult ScanAvcc(SampleByteSource& src, const ScanWindow& window, const std::
         result.limitations.push_back(limitation);
     result.limitations.push_back("mdat 载荷按有界分块扫描，每个 NAL 只读语法前缀，帧体不整段读入内存");
     result.limitations.push_back("样本边界由 NAL length-prefix 与 first_mb_in_slice 推断，不是原始 stsz");
-    result.limitations.push_back("未重建 edts/ctts；若源流含 B 帧，显示顺序可能不完全等价");
+    result.limitations.push_back("未重建 edts；ctts 只在显示顺序（POC）实测成功且确有重排时写入");
     return result;
 }
 
@@ -941,6 +944,13 @@ std::vector<std::uint8_t> BuildMoov(const ScanResult& scan, std::uint32_t track_
                         writer.U32(scan.sample_delta);
                         writer.EndBox(stts);
                     }
+                    // 切片 E：显示序与解码序不一致时补 ctts。条数由 BuildCttsBox 自己核对，
+                    // 对不上就返回空 —— 空表不能冒充"已重建显示顺序"。
+                    {
+                        const std::vector<std::uint8_t> ctts = BuildCttsBox(scan.display);
+                        if (!ctts.empty())
+                            writer.Raw(ctts);
+                    }
                     {
                         const std::size_t stsc = writer.BeginFullBox("stsc", 0, 0);
                         writer.U32(1);
@@ -1096,6 +1106,80 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
     return result;
 }
 
+// 切片 E：把扫描出来的样本边界交给显示顺序层，逐访问单元实测 POC。
+//
+// 边界直接用扫描结果，不在这里重新扫一遍 —— 两处各推一次 AU 边界，迟早会因为
+// "谁按 AUD 切、谁按 first_mb_in_slice 切"而不一致，而 ctts 的条数必须和 stsz 一致。
+RepairDisplayOrderPlan MeasureRebuiltDisplay(const std::string& source_path, const MdatInfo& mdat,
+                                             const ScanResult& scan, const std::atomic<bool>* cancel,
+                                             const RepairRunBudget* budget, std::size_t scan_chunk_bytes) {
+    RepairDisplayOrderPlan plan;
+    if (!scan.video || scan.kind != "h264") {
+        plan.unavailable_reason = "只有 H.264 视频轨做显示顺序实测（当前类型：" +
+                                  (scan.kind.empty() ? std::string("未知") : scan.kind) + "）";
+        return plan;
+    }
+    if (scan.samples.empty() || scan.sps.empty()) {
+        plan.unavailable_reason = "扫描结果缺少样本边界或 SPS，无法逐帧实测 POC";
+        return plan;
+    }
+
+    RepairFrameDurationEvidence duration;
+    duration.source = "vui_timing";
+    duration.timescale = scan.timescale;
+    duration.sample_delta = scan.sample_delta;
+    duration.constant = scan.timescale > 0 && scan.sample_delta > 0;
+    if (duration.constant) {
+        const std::uint64_t denominator = 2ull * static_cast<std::uint64_t>(scan.sample_delta);
+        duration.fractional_rate = denominator != 0 && scan.timescale % denominator != 0;
+    }
+    duration.detail = "SPS VUI：每帧 " + std::to_string(scan.sample_delta) + "/" + std::to_string(scan.timescale) +
+                      " s（timescale " + std::to_string(scan.timescale) + "）";
+
+    // avcC 配置记录：追踪器认标准配置记录与 Annex B 两种，这里按 stsd 的布局拼，
+    // 免得依赖"长度前缀恰好能被自动识别"。
+    std::vector<std::uint8_t> avcc;
+    avcc.push_back(1);
+    avcc.push_back(scan.profile);
+    avcc.push_back(scan.compatibility);
+    avcc.push_back(scan.level);
+    avcc.push_back(0xFF); // lengthSizeMinusOne = 3 → 4 字节前缀
+    avcc.push_back(0xE1); // numOfSequenceParameterSets = 1
+    avcc.push_back(static_cast<std::uint8_t>((scan.sps.size() >> 8) & 0xFF));
+    avcc.push_back(static_cast<std::uint8_t>(scan.sps.size() & 0xFF));
+    avcc.insert(avcc.end(), scan.sps.begin(), scan.sps.end());
+    avcc.push_back(static_cast<std::uint8_t>(scan.pps.size()));
+    for (const auto& pps : scan.pps) {
+        avcc.push_back(static_cast<std::uint8_t>((pps.size() >> 8) & 0xFF));
+        avcc.push_back(static_cast<std::uint8_t>(pps.size() & 0xFF));
+        avcc.insert(avcc.end(), pps.begin(), pps.end());
+    }
+
+    std::vector<RepairAuRange> ranges;
+    ranges.reserve(scan.samples.size());
+    for (const auto& sample : scan.samples) {
+        if (sample.source_offset < mdat.payload) {
+            plan.unavailable_reason = "样本偏移落在 mdat 载荷之前，边界与扫描窗口不一致";
+            return plan;
+        }
+        ranges.push_back(RepairAuRange{sample.source_offset - mdat.payload, sample.size});
+    }
+
+    ScanWindow window;
+    window.file_offset = mdat.payload;
+    window.size = mdat.payload_size;
+    window.track_id = 1;
+    window.stream_index = 0;
+    window.segment_index = 0;
+    window.config_id = "display_order_scan";
+    ChunkedByteSource source(source_path, window, scan_chunk_bytes, budget, cancel);
+    if (!source.Error().empty()) {
+        plan.unavailable_reason = source.Error();
+        return plan;
+    }
+    return MeasureDisplayOrder(source, ranges, avcc, "h264", duration, cancel, budget);
+}
+
 } // namespace
 
 RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_path, const std::atomic<bool>* cancel,
@@ -1139,7 +1223,7 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp_source;
     std::string error;
-    const ScanResult scan =
+    ScanResult scan =
         ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error, scan_chunk_bytes);
     if (!scan.ok) {
         result.error = error.empty() ? "无法从 mdat 重建样本表" : error;
@@ -1148,6 +1232,26 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     if (scan.samples.empty()) {
         result.error = "扫描没有产生任何样本";
         return result;
+    }
+
+    // 切片 E：显示顺序必须在写 moov 之前算出来 —— ctts 是 moov 的一部分，
+    // 而"样本能排对"和"样本能按顺序播"是两件事。测量失败不影响重建，
+    // 但结论要如实写进 limitations，不能默认显示顺序没问题。
+    if (scan.video) {
+        scan.display = MeasureRebuiltDisplay(source_path, mdat, scan, cancel, budget, scan_chunk_bytes);
+        if (Stopped(cancel, budget, &result.error))
+            return result;
+        if (scan.display.available) {
+            if (scan.display.ctts_required) {
+                scan.limitations.push_back("已按 POC 实测写入 ctts（version 1 有符号偏移），最大重排 " +
+                                           std::to_string(scan.display.max_reorder) + " 帧");
+            } else {
+                scan.limitations.push_back("POC 实测显示序与解码序一致，产物不需要 ctts");
+            }
+        } else {
+            scan.limitations.push_back("未写入 ctts：" + scan.display.unavailable_reason +
+                                       "；若源流含 B 帧，显示顺序可能与源不同");
+        }
     }
 
     result.probe.attemptable = true;
@@ -1234,6 +1338,11 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     // 上层样本数直接取样本层总数，不再从 scan.samples 另数一遍。
     result.samples_rebuilt = scan.ledger.Total();
     result.sample_ledger = scan.ledger.Summary();
+    if (scan.video) {
+        // "写了 ctts"以盒字节是否真的产生为准（与 BuildMoov 同一判据），
+        // 不看"计划里要不要写" —— 计划要写、实际没写才是最容易骗过报告的组合。
+        result.display_order = SummarizeDisplayOrder(scan.display, !BuildCttsBox(scan.display).empty());
+    }
     result.rebuilt_tracks = 1;
     result.output_bytes = ftyp_bytes.size() + moov_bytes.size() + mdat_header_size + total_payload;
     result.note = "无 moov，按 mdat 扫描重建 " + scan.codec_summary + " 单轨，样本 " +

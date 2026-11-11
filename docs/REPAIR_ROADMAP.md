@@ -254,6 +254,68 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   判别力变异「去掉试解码」应让半截 GOP 样本精确判红；`gap_policy` 两种模式时间轴
   分别符合预期。
 
+**实现状态（2026-11-11）**：
+
+- **层 3 已落地**：`core/repair/RepairTrialDecode.{h,cpp}`。从候选时间点 seek 过去，
+  收同流最多 8 个包送真实解码器；首包必须同时满足「容器标记 KEY」+「NAL 里真有 IDR」
+  +「解出 ≥1 帧」+「无 `AV_FRAME_FLAG_CORRUPT` / `decode_error_flags`」，才算通过。
+  第一版只覆盖 H.264 且只认 4 字节长度前缀，其它编码返回 `attempted=false`
+  （**没试过 ≠ 通过**，报告里必须写「未做试解码」）。
+- **层 2 已落地（诊断向）**：`core/repair/RepairBitstreamResync.{h,cpp}`。逐块扫
+  `mdat` 载荷，按 4 字节长度前缀走链，找到含 IDR/CRA 的候选 AU（H.264 / HEVC，
+  HEVC 走 2 字节 6-bit type）。**它不写产物**：当前链路没有「不依赖索引的写包路径」，
+  所以命中候选也只能写进 finding evidence 说「载荷里还有 N 个随机访问候选，但未接入
+  输出」，绝不报成已恢复。这是本切片最明确的边界。
+- **证据枚举已升级**：`RepairRecoveryEvidence`（`unknown` / `av_seek_frame` /
+  `moof_resync` / `bitstream_rap` / `trial_decode_ok`），`RepairRecoveredSegment`
+  新增 `recovery_evidence`，JSON 落机读码、TXT/HTML 落显示名，损失区间 evidence
+  里也带上来源码。
+- **层 1 未做**：容器级 `moof/trun/mdat` 重同步。它需要另一套「分片样本表重建 +
+  自建 init/moof 后写包」路径，与 C 的 init 段核验链要先统一，且缺稳定的 fMP4
+  中间损坏语料；本轮**明确不做**，不假装覆盖。
+- **已知缺口**：端到端「拒绝不可解码恢复点」用例没能构造出稳定语料 —— 破坏中段
+  关键帧载荷后，demuxer 直接丢掉了候选（`TryResync` 报「各步长均未找到可用关键帧
+  候选」），测不到试解码那一层。因此该判据只在**模块级**守护
+  （`RepairTrialDecode.RejectsCorruptedIdrPayload` 破坏 slice 中部，保留长度前缀与
+  NAL 头合法）。等有真实「标记为 KEY 但解不出来」的样本再补端到端用例。
+
+
+### 4.5 切片 E：显示顺序证据层（POC → 显示序 → ctts）
+
+- **要解决的现实问题**：无参考重建产出的 moov 里没有 `ctts`，含 B 帧的源一旦走这条路，
+  产物只能按解码序播放 —— 字节全对、画面顺序错，报告却看不出任何异常。
+- **分三层**：
+  1. **纯推导** `DeriveDisplayOrder`：给定解码序逐帧 POC 与帧时长证据，按随机接入点
+     分段、段内按 POC 升序定显示序，给 `reordered_frames` / `max_reorder` /
+     有符号合成时间偏移；跨段**不比较 POC**（POC 在 RAP 处归零是编码语义）。
+  2. **实测** `MeasureDisplayOrder`：逐访问单元从分块源读载荷喂 POC 追踪器
+     （`VideoEyeCodec` 私有链接，公共头不出现 codec 类型），逐单元检查取消与共享预算，
+     单个 AU 超 8 MiB 直接判不可用（边界推断错了才会这么大）。
+  3. **落盘** `BuildCttsBox`：写 `ctts` version **1**（有符号），连续相同偏移做
+     run-length 压缩；条数与样本数不符、或结论不可用时**返回空**，让调用方"不写"。
+- **三不借**（延续 R03 的思想）：不借绝对帧率（只认 VUI `timing_info` 这类源侧证据，
+  没有就明确不生成 ctts）、不借参考样片的 POC、不把"追踪器能跑"当成"顺序已验证"。
+- **明确不做**：开放 GOP 前导图像（RASL/RADL）直接判不可用；`pic_order_cnt_type == 1`
+  由追踪器返回不可用 + 原因；变帧率下不生成 ctts（第 i 帧时长不是常数，乘首帧时长
+  会把整条时间轴压错）；`elst` 不重建（用有符号 ctts 表达负偏移，不做"整体平移 + 裁开头"）。
+- **验收**：真实 B 帧语料（`real_x264_bframes_gop.mp4`）上，按 POC 推出的显示序必须与
+  按容器 PTS 排出来的顺序**逐项一致**；含重排的自建码流重建后产物必须有 `ctts`
+  且偏移等于 `(显示序 − 解码序) × 样本时长`；无 B 帧的源必须**不写** `ctts`。
+
+**实现状态（2026-11-11）**：
+
+- 新增 `core/repair/RepairDisplayOrder.{h,cpp}`；`VideoEyeRepair` 增加
+  `PRIVATE VideoEyeCodec`（公共头仍只有 domain 值类型）。
+- `RepairPlainMp4Rebuilder`：重建前先实测显示顺序，`BuildMoov` 在有重排时追加 `ctts`；
+  结论经 `RepairExecutionOutcome` → `RepairResult.display_order` → JSON/TXT/HTML。
+- **语料限制**：仓库里没有"既有 B 帧、SPS 又带 VUI timing、参数集还在 in-band"的真实
+  样本 —— x264 产 B 帧但不写 VUI，libopenh264 写 VUI 但不出 B 帧（实测 ffmpeg 6.1 +
+  `h264_metadata=tick_rate` 也无法给 x264 的 SPS 补出 VUI）。所以 ctts 落盘那条路径由
+  **按 H.264 语法手写的最小码流**覆盖（只保证过 SPS/PPS/slice_header 解析，不含可解码
+  图像数据）；显示顺序的语义正确性由真实 B 帧语料对账容器 PTS 负责。这两条合起来
+  才算覆盖，缺任一条都会留下"看起来绿"的空洞。
+
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -345,8 +407,9 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | A 基线收口 | 完成 | `2cec64c` | 163/163 全绿；新增 8 个用例；判别力 m1/m2/m3 全部精确判红后恢复复跑绿。A-4 按「保留扫描盲区 + 新增损失区间」实现，见 §4.1 |
 | B 样本层 + 分块扫描 | 完成 | `2cec64c` | 164/164 全绿；新增 13 个用例（11 单测 + 2 产品）；判别力 m1–m4 全部精确判红后字节写回 + `os.utime` 恢复复跑绿；1 GiB 整段读入已删除；门禁全绿、离屏 rc=124。首次并行全量出现 1 个与修复链无关的既有 flaky（`AudioOutputStabilityTest.StopClearsBacklogAndAllowsReopen` 用假后端指针相等判重开，堆地址复用），单跑与二次全量均绿 |
 | C 参考样片辅助 moov 重建 | 完成 | `af73b69` | 165/165 全绿；新增 9 个用例；8 组判别力变异精确判红后恢复复跑 9/9 全绿；门禁全绿、离屏 rc=124。见下方「切片 C 验收记录」 |
-| D 直接扫描 + GOP 恢复 | 未开始 | | |
-| 阶段 5 时间轴 / 音画同步 | 未开始 | | |
+| D 直接扫描 + GOP 恢复 | 完成（层 2/3 落地，层 1 未做） | 未提交 | 167 个 ctest 组首轮 166 过（唯一红是 README 快照，更新后复跑全绿）；新增 13 个用例（9 码流扫描 + 4 试解码）；4 组判别力变异精确判红；门禁全绿、离屏 rc=124。见下方「切片 D 验收记录」 |
+| E 显示顺序证据层（POC → ctts） | 完成（本轮） | 未提交 | 新增 `RepairDisplayOrder.{h,cpp}` 与 11 个用例；真实 B 帧语料显示序与容器 PTS 逐项一致；自建重排码流重建后 `ctts` 偏移逐条对上；6 组判别力变异精确判红。见下方「切片 E 验收记录」 |
+| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts 已落地，分数帧率与音画统一区间映射未做） | | 见 §4.5 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -387,3 +450,108 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 
 **未覆盖（留后续）**：HEVC、多 `mdat`、多轨、B 帧 / `ctts` / VFR、分片 MP4、
 源侧独立时基证据，以及阶段 5 的时间轴 / 音画同步恢复。
+
+### 切片 D 验收记录（2026-11-11）
+
+**做了什么**（§4.4 三层里的第 2、3 层）：
+
+- `RepairRecoveryEvidence`（5 值枚举）+ `RepairRecoveredSegment.recovery_evidence`：
+  恢复点从自由文本升级为「机读码 + 描述」。JSON 落 `recovery_evidence`，
+  TXT/HTML 落显示名，`lost_ranges.evidence` 里也带来源码 —— 三格式同一事实源。
+- `RepairTrialDecode`：候选恢复点必须过真实解码器裁决。判据是四道与门
+  （容器 KEY / NAL 有 IDR / 解出 ≥1 帧 / 无损坏标记）；第一版只认 H.264 +
+  4 字节长度前缀，其它编码返回 `attempted=false`，报告写「未做试解码」，
+  不把「没试」说成「通过」。
+- `RepairBitstreamResync`：逐块扫 `mdat` 载荷找 RAP 候选（H.264 / HEVC）。
+  **只做诊断**：找到候选也只写「载荷内还有 N 个候选，但未接入输出」，
+  因为当前没有不依赖索引的写包路径。
+- 执行器接线：`TryResync` 找到关键帧后逐候选试解码，拒绝即继续找；
+  全部失败时把「是没找到候选，还是找到了但解不出来」分别写进 residual finding。
+
+**验证**：
+
+- 新增 13 个用例：`RepairBitstreamResyncTests` 9 个（H.264/HEVC 正例、
+  纯 P 帧反例、分块大小一致、预算取消、窗口截断、mdat 定位正反、未支持编码）、
+  `RepairTrialDecodeTests` 4 个（健康关键帧通过、slice 中部破坏必须拒绝、
+  取消不谎报、越界 seek 不谎报）。
+- 产品级：`RealCorpusMidFileDamageResumesIntoSegments` 增加
+  「第二段证据 == `trial_decode_ok`」断言；`LostRanges...AllReportFormats`
+  增加 JSON 机读码与 TXT/HTML「恢复点来源」断言。
+- 全量：`cmake --build build/_recheck_test` rc=0，`ctest` 167 组首轮 166 过
+  （唯一红是 README 快照），`summarize_tests.py --update-readme` 后复跑全绿；
+  离屏启动 rc=124；clang-format 18.1.8、AUTOMOC 9/147、分层、命名空间、
+  `git diff --check` 全绿；README 快照 148 / 148 / 1869 / 19。
+- 判别力 4 组：M1 试解码恒通过、M2 证据不升级、M3 码流扫描不要求 RAP
+  （冗余守卫，需复合变异）、M4 JSON 丢证据，均让预期用例精确判红；
+  按字节写回 + `os.utime` 恢复后全绿、无残留。
+
+**未覆盖（如实记账）**：
+
+- **层 1 容器级 moof/trun 重同步未做**：需要「分片样本表重建 + 自建 init/moof
+  后写包」的另一条路径，且要先与 C 的 init 段核验链统一，当前也没有稳定的
+  fMP4 中间损坏语料。
+- **端到端「拒绝不可解码恢复点」缺语料**：破坏中段关键帧载荷后，demuxer 直接
+  丢掉了候选（`TryResync` 报「各步长均未找到可用关键帧候选」），根本走不到
+  试解码那一层。该判据目前只在模块级守护；因此第一次写的端到端用例属于
+  **假覆盖**，已删除，不留在仓库里充数。
+- **码流候选无法定位到时间轴**：没有容器索引就没有时基证据，`byte_offset`
+  是唯一硬事实。要把它换成秒并写进产物，需要样本表反查或参考样片（C 的能力），
+  属下一轮。
+
+### 切片 E 验收记录（2026-11-11）
+
+**交付**
+
+- 新增 `core/repair/RepairDisplayOrder.{h,cpp}`：
+  `DeriveDisplayOrder`（纯推导）/ `MeasureDisplayOrder`（逐 AU 实测 POC）/
+  `BuildCttsBox`（version 1 有符号 + RLE）/ `SummarizeDisplayOrder`（结果模型摘要）。
+  公共头只有 domain 值类型，`FrameOrderTracker` 与 `libavcodec` 全在 `.cpp`；
+  `VideoEyeRepair` 新增 `PRIVATE VideoEyeCodec`，`check_layering.py` 仍绿。
+- `RepairPlainMp4Rebuilder`：重建前实测显示顺序，`BuildMoov` 在有重排时追加 `ctts`；
+  结论（`analyzed` / `available` / `ctts_required` / `ctts_written` 分开落）经
+  `RepairExecutionOutcome` → `RepairResult.display_order` → JSON/TXT/HTML。
+- `RepairTypes.h` 新增 `RepairDisplayOrderSummary`；报告新增「显示顺序」行与
+  「显示顺序依据 / 帧时长证据 / 显示顺序限制」条目，三格式同源。
+
+**测试（11 个用例）**
+
+- 推导表驱动：段内按 POC 定序、跨段不比较 POC、`max_reorder`、有符号偏移、
+  前导图像/空输入判不可用、无恒定帧时长不生成 ctts、条数不符时一个字节都不写、
+  `ctts_written` 不能靠标志位凑出来。
+- 真实语料：`real_x264_bframes_gop.mp4`（30 帧 / 2 GOP / 4 个 B 帧层）上按 POC 排出的
+  显示序与按容器 PTS 排出的顺序**逐项一致**，`reordered_frames > 0`（防止空跑）。
+- 真实样本接线：`real_h264_inband_missing_moov.mp4` 重建后 `analyzed && available`、
+  `duration_source == vui_timing`、无 B 帧故 `ctts_written == false` 且产物无 `ctts`。
+- 自建重排码流（手写 SPS/PPS/slice_header，两个 GOP 的 I P B B）：重建产物
+  `ctts` 偏移逐条等于 `{0, +4, −2, −2} × 2`，且 `ctts` 为 version 1。
+- 引擎 + 三格式：`RepairEngine::Run` 后 `result.display_order` 有结论，
+  JSON 含 `display_order` / `ctts_written` / `reordered_frames`，TXT/HTML 含
+  「显示顺序」与推导依据。
+
+**判别力（6 组，全部精确判红后恢复复跑 11/11 全绿）**
+
+| 变异 | 拆掉的东西 | 判红的用例 |
+|---|---|---|
+| M1 | 排序键换成解码序 | 段内定序 + 自建码流 ctts |
+| M2 | `ctts` 写成 version 0 | 有符号偏移 + 自建码流 ctts |
+| M3 | 不再按随机接入点分段 | 段内定序 |
+| M4 | 永不要求写 `ctts` | 自建码流 ctts |
+| M5 | JSON 不落 `display_order` | 引擎 + 三格式 |
+| M6 | 引擎不把结论写进 `RepairResult` | 引擎 + 三格式 |
+
+**验证链**
+
+- 全量构建 rc=0；`ctest` **168/168 全绿**（163.82 s）；离屏启动 rc=124。
+- clang-format 18.1.8、AUTOMOC 9/148、分层、命名空间、`git diff --check` 全绿；
+  README 快照 149 / 149 / 1880 / 19。
+
+**未覆盖（如实记账）**
+
+- **真实语料缺口**：仓库里没有「既有 B 帧、SPS 带 VUI timing、参数集在 in-band」的
+  样本。x264 产 B 帧但不写 VUI，libopenh264 写 VUI 但不出 B 帧；实测 ffmpeg 6.1 的
+  `h264_metadata=tick_rate` 也无法给 x264 的 SPS 补出 VUI。于是 ctts 落盘路径用自建
+  最小码流覆盖（可过 SPS/PPS/slice_header 解析，不含可解码图像数据），
+  语义正确性由真实 B 帧语料对账 PTS 负责 —— 两条合起来才算覆盖。
+- **参考辅助重建（C）的产物仍不写 ctts**：C 的第一版明确要求参考样片无 `ctts`
+  （也就是无重排），两条路的前提互斥，暂不重复接入。
+- **变帧率 / 分数帧率 / 音画统一区间映射 / `elst`** 未做，仍属阶段 5 剩余部分。
