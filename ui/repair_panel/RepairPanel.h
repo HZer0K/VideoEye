@@ -81,6 +81,8 @@ private:
     QComboBox* container_combo_ = nullptr;
     QComboBox* level_combo_ = nullptr;
     QComboBox* gap_combo_ = nullptr;
+    // 切片 F：源侧无帧率证据时的显式帧率（数据存 "num/den"，"0/0" = 不推定）。
+    QComboBox* frame_rate_combo_ = nullptr;
     QCheckBox* segment_check_ = nullptr;
     QCheckBox* timeline_check_ = nullptr;
     QCheckBox* fill_missing_check_ = nullptr;

@@ -488,6 +488,20 @@ JsonValue BuildDisplayOrder(const model::RepairDisplayOrderSummary& order) {
     return object;
 }
 
+JsonValue BuildTimelineBasis(const model::RepairTimelineBasis& basis) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("mode", JText(basis.mode));
+    object.Set("frame_rate", JText(basis.frame_rate));
+    object.Set("constant", JsonValue(basis.constant));
+    object.Set("vfr_declared", JsonValue(basis.vfr_declared));
+    object.Set("detail", JText(basis.detail));
+    JsonValue limitations = JsonValue::MakeArray();
+    for (const auto& text : basis.limitations)
+        limitations.PushBack(JText(text));
+    object.Set("limitations", limitations);
+    return object;
+}
+
 JsonValue BuildTrackConservationArray(const std::vector<model::RepairTrackConservation>& records) {
     JsonValue array = JsonValue::MakeArray();
     for (const auto& record : records) {
@@ -585,6 +599,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("reference_assist", BuildReferenceAssist(result.reference_assist));
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("display_order", BuildDisplayOrder(result.display_order));
+    root.Set("timeline_basis", BuildTimelineBasis(result.timeline_basis));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
     return root;
@@ -820,6 +835,29 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         }
         for (const auto& text : order.limitations)
             recovery.items.push_back("显示顺序限制: " + text);
+    }
+    // 时基依据（切片 F）：报告里每一个"秒"都来自这里。mode=unknown 表示没拿到
+    // 证据，此时不出行 —— 但也不能反过来说"时间轴没问题"。
+    if (result.timeline_basis.mode != "unknown") {
+        const model::RepairTimelineBasis& basis = result.timeline_basis;
+        std::string mode_text = basis.mode;
+        if (basis.mode == "vui_timing")
+            mode_text = "SPS VUI timing_info";
+        else if (basis.mode == "user_input")
+            mode_text = "用户显式帧率";
+        else if (basis.mode == "container_pts")
+            mode_text = "容器时间戳";
+        else if (basis.mode == "adts_sample_rate")
+            mode_text = "ADTS 采样率";
+        const bool has_rate = basis.frame_rate != "unknown";
+        recovery.rows.emplace_back("时基依据", has_rate ? mode_text + "（" + basis.frame_rate + "）" : mode_text);
+        recovery.rows.emplace_back("帧时长是否恒定", basis.constant ? "是" : "否（逐帧时长无证据）");
+        if (basis.vfr_declared)
+            recovery.rows.emplace_back("码流声明非恒定帧率", "是（fixed_frame_rate_flag=0，按名义帧率重建）");
+        if (!basis.detail.empty())
+            recovery.items.push_back("时基细节: " + basis.detail);
+        for (const auto& text : basis.limitations)
+            recovery.items.push_back("时基限制: " + text);
     }
     // 只写「确实损失」的区间：没有跳段时一行都不出，避免空表被读成「检查过且无损」。
     recovery.rows.emplace_back("损失区间数量", std::to_string(result.lost_ranges.size()));

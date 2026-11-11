@@ -224,6 +224,26 @@ void RepairPanel::BuildUi() {
     grid->addWidget(gap_combo_, row, 1);
 
     ++row;
+    grid->addWidget(new QLabel(QStringLiteral("推定帧率"), config_group), row, 0);
+    frame_rate_combo_ = new QComboBox(config_group);
+    // 只在源侧没有帧率证据时使用（典型是 SPS 里没有 VUI timing_info 的 H.264）。
+    // 值用精确分数，不用 29.97 这种十进制近似。
+    frame_rate_combo_->addItem(QStringLiteral("不推定（缺帧率证据则拒绝重建）"), QStringLiteral("0/0"));
+    frame_rate_combo_->addItem(QStringLiteral("23.976 (24000/1001)"), QStringLiteral("24000/1001"));
+    frame_rate_combo_->addItem(QStringLiteral("24"), QStringLiteral("24/1"));
+    frame_rate_combo_->addItem(QStringLiteral("25"), QStringLiteral("25/1"));
+    frame_rate_combo_->addItem(QStringLiteral("29.97 (30000/1001)"), QStringLiteral("30000/1001"));
+    frame_rate_combo_->addItem(QStringLiteral("30"), QStringLiteral("30/1"));
+    frame_rate_combo_->addItem(QStringLiteral("50"), QStringLiteral("50/1"));
+    frame_rate_combo_->addItem(QStringLiteral("59.94 (60000/1001)"), QStringLiteral("60000/1001"));
+    frame_rate_combo_->addItem(QStringLiteral("60"), QStringLiteral("60/1"));
+    frame_rate_combo_->setToolTip(
+        QStringLiteral("仅当源文件缺少帧率证据时才用（例如 SPS 没有 VUI timing_info）。\n"
+                       "给了就能重建，但报告会把时间轴标成 modified —— 播放速度是按这个值推出来的，"
+                       "不是源侧事实。\n选「不推定」时，缺帧率证据一律拒绝，不会猜。"));
+    grid->addWidget(frame_rate_combo_, row, 1);
+
+    ++row;
     grid->addWidget(new QLabel(QStringLiteral("恢复能力"), config_group), row, 0);
     auto* capability_row = new QHBoxLayout();
     capability_row->setSpacing(12);
@@ -500,6 +520,14 @@ model::RepairRequest RepairPanel::BuildRequest(const QString& source) const {
     request.output_container = static_cast<model::RepairOutputContainer>(container_combo_->currentData().toInt());
     request.verification_level = static_cast<model::RepairVerificationLevel>(level_combo_->currentData().toInt());
     request.gap_policy = static_cast<model::RepairGapPolicy>(gap_combo_->currentData().toInt());
+    // 推定帧率：数据里存的是 "num/den" 精确分数；"0/0" 表示不推定。
+    {
+        const QStringList parts = frame_rate_combo_->currentData().toString().split(QLatin1Char('/'));
+        if (parts.size() == 2) {
+            request.assumed_frame_rate_num = parts.at(0).toUInt();
+            request.assumed_frame_rate_den = parts.at(1).toUInt();
+        }
+    }
     request.allow_segment_salvage = segment_check_->isChecked();
     request.repair_timeline = timeline_check_->isChecked();
     request.fill_missing_timestamps = request.repair_timeline && fill_missing_check_->isChecked();
@@ -705,6 +733,7 @@ void RepairPanel::SetRunning(bool running) {
     container_combo_->setEnabled(idle);
     level_combo_->setEnabled(idle);
     gap_combo_->setEnabled(idle);
+    frame_rate_combo_->setEnabled(idle);
     segment_check_->setEnabled(idle);
     timeline_check_->setEnabled(idle);
     fill_missing_check_->setEnabled(idle && timeline_check_->isChecked());

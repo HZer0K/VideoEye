@@ -316,6 +316,30 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   才算覆盖，缺任一条都会留下"看起来绿"的空洞。
 
 
+### 4.6 切片 F：时基证据（VFR 声明 + 显式推定帧率）
+
+- **要解决的现实问题**：报告里每个"秒"都来自"一帧多长"。这个值只有三种来源 ——
+  源侧证据（SPS VUI `timing_info`、容器 `stts`、ADTS 采样率）、用户显式给的、
+  或者根本没有。前两种都被当成"源本来就这样"，第三种找不到时就拒绝。但中间有个
+  真实缺口：`fixed_frame_rate_flag == 0`（码流自己声明不是恒定帧率）被直接读掉丢弃，
+  VFR 源会被当成 CFR 重建，报告仍写"时间轴 unchanged"。
+- **要解决的第二件事**：没有 VUI timing 的 H.264（很常见）目前一律拒绝重建，
+  用户只能看着能力不可用。允许显式给帧率才叫"扩大恢复范围"，但必须写清楚这是推定。
+- **三条边界**：
+  1. **不猜**：没有 VUI 也没有显式帧率时继续拒绝，错误文案要指出补救方式。
+  2. **精确**：帧率写成约分后的分数（`30000/1001`），timescale 取 `num*m`、
+     sample_delta 取 `den*m`（m 最小使 timescale ≥ 1000），不做小数折算 ——
+     29.97 的十进制近似三十秒就差半帧。
+  3. **如实**：`mode` / `frame_rate` / `constant` / `vfr_declared` 分开落字段；
+     推定时基下 `fidelity.timeline_status` 只能是 `modified`，绝不能是 `unchanged`。
+- **明确不做**：`elst` 重建；VFR 逐帧时长恢复（没有样本表就没有证据，只标注）；
+  `mdhd` version 1（32 位时长会溢出时直接拒绝，不写截断值）。
+- **验收**：无 VUI 无帧率 → 拒绝且原因含补救提示；给 25 fps → 产物
+  `timescale=1000 / delta=40` 且 `mode=user_input`；29.97 → `frame_rate=30000/1001`、
+  `stts.delta=2002`；`fixed_frame_rate_flag=0` → 不写 `ctts` 且限制项明确；
+  32 位时长溢出 → 拒绝。
+
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -409,7 +433,8 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | C 参考样片辅助 moov 重建 | 完成 | `af73b69` | 165/165 全绿；新增 9 个用例；8 组判别力变异精确判红后恢复复跑 9/9 全绿；门禁全绿、离屏 rc=124。见下方「切片 C 验收记录」 |
 | D 直接扫描 + GOP 恢复 | 完成（层 2/3 落地，层 1 未做） | `5200d51` | 167 个 ctest 组首轮 166 过（唯一红是 README 快照，更新后复跑全绿）；新增 13 个用例（9 码流扫描 + 4 试解码）；4 组判别力变异精确判红；门禁全绿、离屏 rc=124。见下方「切片 D 验收记录」 |
 | E 显示顺序证据层（POC → ctts） | 完成（本轮） | `5200d51` | 新增 `RepairDisplayOrder.{h,cpp}` 与 11 个用例；真实 B 帧语料显示序与容器 PTS 逐项一致；自建重排码流重建后 `ctts` 偏移逐条对上；6 组判别力变异精确判红。见下方「切片 E 验收记录」 |
-| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts 已落地，分数帧率与音画统一区间映射未做） | | 见 §4.5 |
+| F 时基证据（VFR 声明 + 显式帧率） | 完成（本轮） | 未提交 | 新增 `RepairTimelineBasis` 与 11 个用例；无 VUI 时显式帧率可重建且标 `user_input`；`fixed_frame_rate_flag=0` 不再被静默当成 CFR；8 组判别力变异精确判红。见下方「切片 F 验收记录」 |
+| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据已落地，VFR 逐帧时长与音画统一区间映射未做） | | 见 §4.5、§4.6 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -555,3 +580,82 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **参考辅助重建（C）的产物仍不写 ctts**：C 的第一版明确要求参考样片无 `ctts`
   （也就是无重排），两条路的前提互斥，暂不重复接入。
 - **变帧率 / 分数帧率 / 音画统一区间映射 / `elst`** 未做，仍属阶段 5 剩余部分。
+
+### 切片 F 验收记录（2026-11-11）
+
+**交付**
+
+- `model::RepairTimelineBasis`（`mode` / `frame_rate` / `constant` / `vfr_declared` /
+  `detail` / `limitations`）+ `RepairResult.timeline_basis`：时基证据单独成一块，
+  不从其它字段反推。`RepairRequest` 新增 `assumed_frame_rate_num/den`
+  （精确分数，"0/0" = 不推定；只给一半直接拒绝）。
+- `RepairPlainMp4Rebuilder`：
+  - `ParsePlainSps` 支持两条证据路径。没有 VUI / 没有 `timing_info` / `timing_info`
+    无效，这三种情况统一走 `fall_back_or_reject`：有显式帧率就用（`mode=user_input`
+    + 限制项写明"不是源侧证据"），没有就拒绝，错误文案指出可用显式帧率补救。
+  - `fixed_frame_rate_flag` 不再被读掉丢弃：`=0` 时按名义帧率重建，但
+    `duration.constant=false` → 不生成合成偏移 → **不写 ctts**，并落限制项。
+  - `ComputeTimelineTicks`：帧率分数 → `(timescale, sample_delta)`，取最小放大倍数
+    使 timescale ≥ 1000；32 位 mdhd 时长上限做硬拒绝（本版本不写 version 1）。
+  - `ScanResult` 记录 `timeline_mode` / `frame_rate_text`（约分后的精确分数）/
+    `timeline_detail`；ADTS 路径落 `mode=adts_sample_rate`（采样率 ≠ 帧率，不冒充）。
+- 引擎：显式帧率参数不完整时在开跑前失败；`fidelity.timeline_status` 在
+  `mode=user_input` 或 `vfr_declared` 时写 `modified`（此前会落到 `unchanged`）。
+- 报告：JSON 落 `timeline_basis` 对象（含 `vfr_declared` 布尔与精确 `frame_rate`）；
+  TXT/HTML 落「时基依据 / 帧时长是否恒定 / 码流声明非恒定帧率」三行 + 时基限制项。
+- UI：修复面板新增「推定帧率」下拉（23.976 / 24 / 25 / 29.97 / 30 / 50 / 59.94 / 60
+  与「不推定」），值用 `"num/den"` 精确分数传给请求。
+
+**顺带修掉的一个"嘴硬"**：切片 E 的 `DeriveDisplayOrder` 在**没算出**合成偏移时
+（变帧率 / 时长未知 / 偏移超范围）也会追加一句「显示序与解码序一致，产物不需要 ctts」。
+那是把"不知道"说成"没问题"。现在只有真的算过偏移、且每帧偏移都是 0 才说这句话。
+
+**测试（11 个用例，`tests/unit/test_repair_timeline_basis.cpp`）**
+
+- 换算表：25 → 1000/40、50 → 1000/20、30000/1001 → 30000/1001、24000/1001 原样。
+- 反例：`0/1`、`25/0` 拒绝；两亿样本按 25 fps 换算超出 32 位必须拒绝（报错含
+  `mdhd version 1`）；`samples == 0` 表示"还不知道"时跳过高限检查。
+- 无 VUI：无帧率 → `attemptable=false` 且原因含「帧率证据」「显式帧率」；
+  给 25 fps → 重建成功、产物 `mdhd timescale=1000`、`stts.delta=40`、
+  `mode=user_input`、限制项含「显式输入」。
+- `timing_info` 无效（`num_units_in_tick=0`）：无帧率拒绝，给 30 fps 则按 30/1 重建。
+- VFR 声明：`vfr_declared=true`、`ctts_written=false`、产物无 `ctts`、
+  显示顺序限制项里**不得**出现「显示序与解码序一致」。
+- 分数帧率：`frame_rate=30000/1001`、`timescale=60000`、`stts.delta=2002`。
+- 引擎：参数只给分子 → `Failed` 且不发布；给完整 25/1 跑通 → 结果 `mode=user_input`、
+  `timeline_status=modified`、三格式报告都写出来源。
+- 报告：直接构造 `vfr_declared` 的结果，JSON/TXT/HTML 三处都要出现 VFR 声明与精确帧率。
+
+**语料**：手写最小码流（`tests/unit/H264TestBitstream.h`）。原 `test_repair_display_order.cpp`
+里的逐位构造器抽到这里共用 —— 切片 E 与 F 都要改 SPS 的 VUI / `fixed_frame_rate_flag`，
+两份各抄一遍迟早不一致。抽出后 E 的 11 个用例复跑全绿。
+
+**判别力（8 组，全部精确判红后恢复复跑全绿）**
+
+| 变异 | 拆掉的东西 | 判红的用例 |
+|---|---|---|
+| M1 | 忽略 `fixed_frame_rate_flag` | VFR 声明不下发 ctts |
+| M2 | VFR 仍按恒定时长算偏移 | 同上 |
+| M3 | 无 VUI 时无视显式帧率 | 显式帧率重建 |
+| M4 | `mode` 报成 `vui_timing` | 显式帧率重建 |
+| M5 | 去掉 32 位时长守卫 | 时长溢出拒绝 |
+| M6 | 引擎不把推定时基标成 modified | 引擎接线 |
+| M7 | 帧率不约分（`60000/2002`） | 分数帧率精确值 |
+| M8 | 没算偏移也说"显示序一致" | VFR 声明不下发 ctts |
+
+**验证链**
+
+- 全量构建 rc=0；`ctest` **169/169 全绿**（157.07 s / 二轮 199.55 s）；离屏启动 rc=124。
+  第三轮出现一次 `AudioOutputStabilityTests` 红 —— 就是 B 阶段记过的既有 flaky
+  （假后端用指针相等判重开，堆地址复用），单跑与二轮全量均绿，未改业务代码。
+- clang-format 18.1.8、AUTOMOC 9/149、分层、命名空间、`git diff --check` 全绿；
+  README 快照 150 / 150 / 1891 / 19。
+
+**未覆盖（如实记账）**
+
+- **VFR 的逐帧时长不恢复**：没有样本表就没有逐帧证据，当前只按名义帧率重建并
+  标注"逐帧时长不可验证"。要真恢复需要从容器 `stts` / 参考样片取逐帧时长，属
+  下一轮（C 的参考路径也没有接）。
+- **音画统一区间映射没做**：重封装路径的区间由包投递顺序推（逐流覆盖只用于
+  丢重叠包），没有"音视频共同覆盖区间"这个概念；`lost_ranges` 仍是全局秒数。
+- **`elst` 不重建**：负偏移用 ctts version 1 表达，不做"整体平移 + 裁开头"。

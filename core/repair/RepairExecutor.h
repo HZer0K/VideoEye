@@ -61,6 +61,10 @@ struct RepairExecutionOutcome {
     // 切片 E：无参考重建时按 POC 实测的显示顺序结论（analyzed=false 表示没做过测量）。
     model::RepairDisplayOrderSummary display_order;
 
+    // 切片 F：时间轴秒数的来源（VUI / 显式帧率 / 容器 PTS / ADTS 采样率）。
+    // 空 mode=unknown 表示这次没拿到时基证据。
+    model::RepairTimelineBasis timeline_basis;
+
     // P2-13：S08 容忍式转码的实测结果。
     bool video_reencoded = false;
     bool audio_reencoded = false;

@@ -766,7 +766,15 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                 // 才允许进入重建流程；否则仍按"需要参考初始化段"阻止执行。
                 const auto probe_start = Clock::now();
                 Emit(progress, 55, stage::Inspecting(), "尝试无参考扫描 mdat 载荷");
-                const RepairPlainMp4Probe probe = RepairPlainMp4Rebuilder::Probe(request.source_path, cancel, budget);
+                // 切片 F：显式帧率会改变"能不能重建"的结论（无 VUI timing 的
+                // H.264 只有在给了帧率时才可重建），所以探测必须和重建用同一份参数。
+                RepairTimelineAssumption assumption;
+                if (request.HasAssumedFrameRate()) {
+                    assumption.num = request.assumed_frame_rate_num;
+                    assumption.den = request.assumed_frame_rate_den;
+                }
+                const RepairPlainMp4Probe probe = RepairPlainMp4Rebuilder::Probe(
+                    request.source_path, cancel, budget, 0, assumption.Valid() ? &assumption : nullptr);
                 if (probe.attemptable) {
                     model::DamageFinding plain;
                     plain.code = "container.mdat_unindexed";

@@ -107,6 +107,7 @@ RepairDisplayOrderPlan DeriveDisplayOrder(std::vector<RepairDisplayFrame> frames
     // 合成时间偏移：只有恒定样本时长才成立。ctts 偏移 = (显示序 − 解码序) × 样本时长；
     // 负值靠 ctts version 1 的有符号字段表达，不做"整体平移 + elst 裁掉开头"
     // （那会把媒体时长改长，且要求调用方额外写编辑列表）。
+    bool offsets_computed = false;
     if (duration.constant && duration.sample_delta > 0 && duration.timescale > 0) {
         bool fits = true;
         plan.composition_offsets.reserve(frames.size());
@@ -125,6 +126,8 @@ RepairDisplayOrderPlan DeriveDisplayOrder(std::vector<RepairDisplayFrame> frames
             plan.composition_offsets.clear();
             plan.ctts_required = false;
             plan.limitations.push_back("显示序偏移超出 ctts 有符号 32 位范围，未生成合成时间偏移");
+        } else {
+            offsets_computed = true;
         }
     } else {
         plan.limitations.push_back("没有恒定样本时长证据（" + duration.source + "），不生成 ctts");
@@ -139,7 +142,10 @@ RepairDisplayOrderPlan DeriveDisplayOrder(std::vector<RepairDisplayFrame> frames
         plan.limitations.push_back("段内有 " + std::to_string(duplicate_poc) +
                                    " 处 POC 重复，显示顺序按解码序稳定排列");
     }
-    if (!plan.ctts_required)
+    // 只有真的算过偏移、且每帧偏移都是 0，才能说"显示序与解码序一致"。
+    // 没算过偏移（变帧率 / 时长未知 / 偏移超范围）时不能借用这句话 ——
+    // 那会把"不知道"说成"没问题"。
+    if (offsets_computed && !plan.ctts_required)
         plan.limitations.push_back("显示序与解码序一致，产物不需要 ctts");
 
     plan.basis =

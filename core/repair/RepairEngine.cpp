@@ -133,6 +133,15 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
 
     // ---- 0. 请求预检 + 产物路径解析 + 独占预留（R01）----
     Emit(progress, 0, stage::Inspecting(), "检查请求与产物路径");
+    // 切片 F：显式帧率只接受完整分数。只给分子/分母是调用方写错了 ——
+    // 静默当成"没指定"会让用户以为指定生效了，然后拿到一个按别的帧率建的产物。
+    if (request.AssumedFrameRateIncomplete()) {
+        FinishEarly(result, model::RepairBusinessStatus::Failed,
+                    "显式帧率参数不完整（num=" + std::to_string(request.assumed_frame_rate_num) + "，den=" +
+                        std::to_string(request.assumed_frame_rate_den) + "）；分子与分母必须同时给出，或都不给");
+        result.error = result.summary;
+        return result;
+    }
     const std::string run_id = result.result_id.substr(std::string("result-").size());
     const RepairOutputPaths paths = RepairOutputWriter::Resolve(request, run_id);
     result.report_json_path = paths.report_json_path;
@@ -220,6 +229,7 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.timeline_repair = execution.timeline_repair;
     result.reference_assist = execution.reference_assist;
     result.display_order = execution.display_order;
+    result.timeline_basis = execution.timeline_basis;
     result.fidelity.omitted_items = execution.omitted_items;
 
     // P2-14b：取消 / 超预算时按需保留已经写入的产物前缀。
@@ -442,7 +452,13 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     const bool timeline_adjusted = execution.timeline_repair.gap_removed ||
                                    execution.timeline_repair.rewritten_timestamps > 0 ||
                                    execution.timeline_repair.synthesized_timestamps > 0;
-    fidelity.timeline_modified = timeline_mismatch || timeline_adjusted || execution.video_reencoded;
+    // 切片 F：时基本身不是源侧证据时，播放速度就是"推出来的"而不是"源本来就有的"。
+    // 这两种情况必须写 modified —— 顺着后面的分支走下去会落到 "unchanged"，
+    // 等于对用户声称"时间轴没改"，而实际上每一秒都是按推定帧率算出来的。
+    const bool timeline_basis_inferred = execution.timeline_basis.mode == "user_input";
+    const bool timeline_vfr_declared = execution.timeline_basis.vfr_declared;
+    fidelity.timeline_modified = timeline_mismatch || timeline_adjusted || execution.video_reencoded ||
+                                 timeline_basis_inferred || timeline_vfr_declared;
     if (execution.video_reencoded) {
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
@@ -452,6 +468,16 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
         fidelity.timeline_note = "产物实测时长 " + FormatSeconds(verified.verification.observed_duration_seconds) +
                                  "s 与源侧估算 " + FormatSeconds(verified.verification.expected_duration_seconds) +
                                  "s 不符；播放时长 / 速度可能已被借用的参考时基改变";
+    } else if (timeline_basis_inferred || timeline_vfr_declared) {
+        fidelity.timeline_status = "modified";
+        fidelity.timeline_note =
+            timeline_basis_inferred
+                ? "时基来自显式帧率 " + execution.timeline_basis.frame_rate +
+                      "（用户输入，不是源侧证据）；产物时间戳按该帧率生成，实际帧率不同会整体偏快或偏慢"
+                : "源码流声明非恒定帧率（SPS fixed_frame_rate_flag=0）；产物按名义帧率 " +
+                      execution.timeline_basis.frame_rate + " 重建，逐帧时长与源不同";
+        if (timeline_adjusted && !execution.timeline_repair.note.empty())
+            fidelity.timeline_note += "；" + execution.timeline_repair.note;
     } else if (timeline_adjusted) {
         // 「adjusted」与「modified」区分开：这里是逐流单调重写 / 缺口合并造成的主动调整，
         // 不是全区段播放速度改变。报告必须能解释改动的来源。

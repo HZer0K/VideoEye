@@ -615,6 +615,28 @@ struct RepairDisplayOrderSummary {
     std::vector<std::string> limitations;
 };
 
+// ---- 时基（每帧时长）依据（切片 F）----
+//
+// 时间轴上的所有秒数都来自"一帧多长"。这个值要么有源侧证据（SPS VUI 的
+// timing_info、容器 stts、ADTS 采样率），要么是用户显式给的，要么就不存在。
+// 三种情况必须分开落字段，不能合成一个"可用/不可用"：
+//   * `mode`         —— "vui_timing" / "user_input" / "container_pts" /
+//                        "adts_sample_rate" / "unknown"
+//   * `frame_rate`   —— "30000/1001" 这类精确分数；拿不到就是 "unknown"，
+//                        不从 mode 反推，也不写近似小数
+//   * `constant`     —— 每个样本的时长能否当常数用（变帧率下不成立）
+//   * `vfr_declared` —— 码流自己声明了非恒定帧率（SPS VUI fixed_frame_rate_flag=0）。
+//                        此时 `constant` 仍然可以为 true（VUI 给的是名义值），
+//                        但"逐帧时长可验证"这件事是假的，报告必须说出来。
+struct RepairTimelineBasis {
+    std::string mode = "unknown";
+    std::string frame_rate = "unknown";
+    bool constant = false;
+    bool vfr_declared = false;
+    std::string detail;
+    std::vector<std::string> limitations;
+};
+
 // ---- 时间轴修复记录（S03）----
 //
 // 只做有证据的修复：重复 / 回退的时间戳会被显式重写并计数；缺失时间戳只统计，
@@ -685,6 +707,9 @@ struct RepairResult {
     RepairReferenceAssist reference_assist;
     // 显示顺序证据（切片 E）：POC 实测结论与 ctts 是否真写进产物。
     RepairDisplayOrderSummary display_order;
+    // 切片 F：时间轴秒数的来源。`mode == "unknown"` 表示这次没有拿到时基证据，
+    // 报告不能说"时间轴没问题"。
+    RepairTimelineBasis timeline_basis;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

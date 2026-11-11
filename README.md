@@ -295,12 +295,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 <!-- BEGIN GENERATED TEST SUMMARY -->
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 149 |
-| ctest 用例组（gtest 可执行文件） | 149 |
+| 测试可执行文件 | 150 |
+| ctest 用例组（gtest 可执行文件） | 150 |
 | python 脚本用例组（非 gtest） | 19 |
-| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1880 |
+| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 1891 |
 
-启用测试且找到 Python 时，静态注册的 ctest 用例组共 **168 = 149 + 19**。
+启用测试且找到 Python 时，静态注册的 ctest 用例组共 **169 = 150 + 19**。
 这里统计源码中的测试声明，不代表本次已运行通过的数量；参数化测试运行时可能展开成多个用例。
 <!-- END GENERATED TEST SUMMARY -->
 

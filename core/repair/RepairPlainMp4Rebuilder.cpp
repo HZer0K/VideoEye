@@ -85,6 +85,12 @@ struct ScanResult {
     std::uint64_t total_bytes = 0;
     std::uint32_t timescale = 0;
     std::uint32_t sample_delta = 0;
+    // 切片 F：时基证据的来源与边界，原样写进 RepairTimelineBasis。
+    // `timeline_mode` 只描述"这个 timescale 从哪来"，不从其它字段反推。
+    std::string timeline_mode = "unknown";
+    std::string frame_rate_text = "unknown";
+    std::string timeline_detail;
+    bool vfr_declared = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint8_t profile = 0;
@@ -223,8 +229,27 @@ std::vector<std::uint8_t> Rbsp(const std::uint8_t* nal, std::size_t size, std::s
     return out;
 }
 
+// 帧率写成约分后的精确分数："30000/1001" 而不是 "29.97"。
+// 报告里的帧率必须能和 timescale / sample_delta 对上，近似值做不到这一点。
+std::uint32_t Gcd(std::uint32_t a, std::uint32_t b) {
+    while (b != 0) {
+        const std::uint32_t t = a % b;
+        a = b;
+        b = t;
+    }
+    return a == 0 ? 1 : a;
+}
+
+std::string FormatFrameRate(std::uint32_t num, std::uint32_t den) {
+    if (num == 0 || den == 0)
+        return "unknown";
+    const std::uint32_t divisor = Gcd(num, den);
+    return std::to_string(num / divisor) + "/" + std::to_string(den / divisor);
+}
+
 // SPS 最小解析：到 VUI timing_info 为止（后续字段对本重建无意义）。
-bool ParsePlainSps(const std::vector<std::uint8_t>& nal, ScanResult* scan, std::string* error) {
+bool ParsePlainSps(const std::vector<std::uint8_t>& nal, const RepairTimelineAssumption* assumption, ScanResult* scan,
+                   std::string* error) {
     if (nal.size() < 4) {
         *error = "SPS 长度不足";
         return false;
@@ -287,10 +312,34 @@ bool ParsePlainSps(const std::vector<std::uint8_t>& nal, ScanResult* scan, std::
         *error = "SPS 解析中断";
         return false;
     }
-    if (!reader.Bit()) {
-        *error = "SPS 没有 VUI，缺少帧率证据（num_units_in_tick/time_scale），拒绝推断时基";
+
+    // 帧率证据缺口的统一收尾：要么用调用方显式给的帧率，要么明确拒绝。
+    // 抽成 lambda 是因为「没有 VUI」「VUI 里没有 timing_info」「timing_info 无效」
+    // 三种情况都要走同一条路 —— 三条各写一遍，迟早有一条只改一半。
+    const auto fall_back_or_reject = [&](const char* why) {
+        if (assumption != nullptr && assumption->Valid()) {
+            RepairTimelineTicks ticks;
+            std::string ticks_error;
+            if (!ComputeTimelineTicks(assumption->num, assumption->den, 0, &ticks, &ticks_error)) {
+                *error = ticks_error;
+                return false;
+            }
+            scan->timescale = ticks.timescale;
+            scan->sample_delta = ticks.sample_delta;
+            scan->timeline_mode = "user_input";
+            scan->frame_rate_text = FormatFrameRate(assumption->num, assumption->den);
+            scan->timeline_detail = "显式帧率 " + scan->frame_rate_text + "（源侧没有帧率证据：" + why + "）；每帧 " +
+                                    std::to_string(scan->sample_delta) + "/" + std::to_string(scan->timescale) + " s";
+            scan->limitations.push_back("帧率来自用户显式输入，不是源侧证据；实际帧率不同会让整条时间轴整体偏快或偏慢");
+            return true;
+        }
+        *error = std::string(why) + "，缺少帧率证据（num_units_in_tick/time_scale），拒绝推断时基；"
+                                    "如确知帧率，可用显式帧率参数重试";
         return false;
-    }
+    };
+
+    if (!reader.Bit()) // vui_parameters_present_flag
+        return fall_back_or_reject("SPS 没有 VUI");
 
     // VUI
     if (reader.Bit()) { // aspect_ratio_info_present_flag
@@ -315,22 +364,32 @@ bool ParsePlainSps(const std::vector<std::uint8_t>& nal, ScanResult* scan, std::
         reader.Ue();
         reader.Ue();
     }
-    if (!reader.Bit()) {
-        *error = "SPS VUI 没有 timing_info，缺少帧率证据，拒绝推断时基";
-        return false;
-    }
+    if (!reader.Bit()) // timing_info_present_flag
+        return fall_back_or_reject("SPS VUI 没有 timing_info");
     const std::uint32_t num_units_in_tick = reader.U(32);
     const std::uint32_t time_scale = reader.U(32);
-    reader.Bit(); // fixed_frame_rate_flag
-    if (!reader.ok() || num_units_in_tick == 0 || time_scale == 0) {
-        *error = "SPS VUI 的 timing_info 无效";
-        return false;
-    }
+    const bool fixed_frame_rate = reader.Bit() != 0; // fixed_frame_rate_flag
+    if (!reader.ok() || num_units_in_tick == 0 || time_scale == 0)
+        return fall_back_or_reject("SPS VUI 的 timing_info 无效");
     scan->timescale = time_scale;
     scan->sample_delta = 2u * num_units_in_tick;
     if (scan->sample_delta == 0) {
         *error = "SPS VUI 推出的样本时长为 0";
         return false;
+    }
+    scan->timeline_mode = "vui_timing";
+    // 帧率 = time_scale / (2 * num_units_in_tick)。约分后写成精确分数，
+    // 不写 "29.97" 这种近似 —— 报告里的帧率要能和 timescale 对得上。
+    scan->frame_rate_text = FormatFrameRate(time_scale, scan->sample_delta);
+    scan->vfr_declared = !fixed_frame_rate;
+    scan->timeline_detail = "SPS VUI：每帧 " + std::to_string(scan->sample_delta) + "/" +
+                            std::to_string(scan->timescale) + " s（timescale " + std::to_string(scan->timescale) + "）";
+    if (scan->vfr_declared) {
+        // 码流自己说"我不是恒定帧率"：仍按名义帧率重建（没有更好的证据），
+        // 但逐帧时长不可验证，所以不写 ctts，并在报告里明确说出来。
+        scan->timeline_detail += "；码流声明 fixed_frame_rate_flag=0（非恒定帧率），当前仅按名义帧率重建";
+        scan->limitations.push_back("码流声明非恒定帧率（fixed_frame_rate_flag=0），已按名义帧率 " +
+                                    scan->frame_rate_text + " 重建；逐帧时长不可验证，因此不写 ctts");
     }
     return true;
 }
@@ -458,6 +517,10 @@ ScanResult ScanAdts(SampleByteSource& src, const ScanWindow& window, const std::
     result.timescale = first_rate;
     result.sample_rate = static_cast<std::uint16_t>(first_rate);
     result.sample_delta = 1024;
+    // 音频的时基是采样率，不是帧率：每帧恒定 1024 采样，所以 timescale = 采样率、
+    // sample_delta = 1024 就是精确值。frame_rate_text 留 unknown，不拿采样率冒充帧率。
+    result.timeline_mode = "adts_sample_rate";
+    result.timeline_detail = "ADTS 帧头采样率 " + std::to_string(first_rate) + " Hz，每帧恒定 1024 采样";
     result.channels = channels;
     result.aac_object_type = object_type;
     result.audio_sfi = sfi;
@@ -475,7 +538,7 @@ ScanResult ScanAdts(SampleByteSource& src, const ScanWindow& window, const std::
 }
 
 ScanResult ScanAvcc(SampleByteSource& src, const ScanWindow& window, const std::atomic<bool>* cancel,
-                    const RepairRunBudget* budget) {
+                    const RepairRunBudget* budget, const RepairTimelineAssumption* assumption) {
     ScanResult result;
     result.video = true;
     result.kind = "h264";
@@ -513,7 +576,9 @@ ScanResult ScanAvcc(SampleByteSource& src, const ScanWindow& window, const std::
             sample.dts_seconds = static_cast<double>(result.ledger.Total()) * step;
             sample.duration_seconds = step;
             sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
-            sample.inference_basis = "SPS VUI 帧率 + 恒定样本时长，未重建 ctts";
+            sample.inference_basis = result.timeline_mode == "user_input"
+                                         ? "显式帧率（用户输入）+ 恒定样本时长，未重建 ctts"
+                                         : "SPS VUI 帧率 + 恒定样本时长，未重建 ctts";
             sample.confidence = model::SampleConfidence::Inferred;
             result.ledger.Add(sample);
             result.total_bytes = result.ledger.TotalBytes();
@@ -589,7 +654,7 @@ ScanResult ScanAvcc(SampleByteSource& src, const ScanWindow& window, const std::
                 }
                 std::vector<std::uint8_t> sps(nal_buffer.begin(), nal_buffer.end());
                 std::string sps_error;
-                if (!ParsePlainSps(sps, &result, &sps_error)) {
+                if (!ParsePlainSps(sps, assumption, &result, &sps_error)) {
                     result.error = sps_error;
                     result.video = false;
                     result.samples.clear();
@@ -1028,7 +1093,8 @@ void WriteMdatHeader(std::ofstream& out, std::uint64_t payload_size) {
 
 ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* cancel, const RepairRunBudget* budget,
                        MdatInfo* mdat_out, std::uint64_t* file_size_out, std::vector<PlainBox>* boxes_out,
-                       std::vector<std::uint8_t>* ftyp_out, std::string* error, std::size_t scan_chunk_bytes) {
+                       std::vector<std::uint8_t>* ftyp_out, std::string* error, std::size_t scan_chunk_bytes,
+                       const RepairTimelineAssumption* assumption) {
     ScanResult result;
     std::vector<PlainBox> boxes;
     MdatInfo mdat;
@@ -1086,7 +1152,7 @@ ScanResult ScanPayload(const std::string& source_path, const std::atomic<bool>* 
         return audio;
     }
     ChunkedByteSource video_source(source_path, window, scan_chunk_bytes, budget, cancel);
-    ScanResult video = ScanAvcc(video_source, window, cancel, budget);
+    ScanResult video = ScanAvcc(video_source, window, cancel, budget, assumption);
     if (video.ok) {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
@@ -1125,16 +1191,18 @@ RepairDisplayOrderPlan MeasureRebuiltDisplay(const std::string& source_path, con
     }
 
     RepairFrameDurationEvidence duration;
-    duration.source = "vui_timing";
+    duration.source = scan.timeline_mode;
     duration.timescale = scan.timescale;
     duration.sample_delta = scan.sample_delta;
-    duration.constant = scan.timescale > 0 && scan.sample_delta > 0;
+    // 变帧率声明会让"每帧时长是常数"这件事失效：VUI 给的是名义值，逐帧
+    // 时长没有证据。此时不生成合成偏移 → 不写 ctts（宁可不写，也不按错的
+    // 时长压缩整条时间轴）。
+    duration.constant = scan.timescale > 0 && scan.sample_delta > 0 && !scan.vfr_declared;
     if (duration.constant) {
         const std::uint64_t denominator = 2ull * static_cast<std::uint64_t>(scan.sample_delta);
         duration.fractional_rate = denominator != 0 && scan.timescale % denominator != 0;
     }
-    duration.detail = "SPS VUI：每帧 " + std::to_string(scan.sample_delta) + "/" + std::to_string(scan.timescale) +
-                      " s（timescale " + std::to_string(scan.timescale) + "）";
+    duration.detail = scan.timeline_detail;
 
     // avcC 配置记录：追踪器认标准配置记录与 Annex B 两种，这里按 stsd 的布局拼，
     // 免得依赖"长度前缀恰好能被自动识别"。
@@ -1182,16 +1250,73 @@ RepairDisplayOrderPlan MeasureRebuiltDisplay(const std::string& source_path, con
 
 } // namespace
 
+bool ComputeTimelineTicks(std::uint32_t frame_rate_num, std::uint32_t frame_rate_den, std::uint64_t samples,
+                          RepairTimelineTicks* ticks, std::string* error) {
+    if (ticks == nullptr)
+        return false;
+    *ticks = RepairTimelineTicks{};
+    if (frame_rate_num == 0 || frame_rate_den == 0) {
+        if (error != nullptr)
+            *error = "帧率分数不完整（num/den 都必须大于 0）";
+        return false;
+    }
+    // timescale 至少 1000：太小的 timescale 会让 ctts 偏移只能落在整帧上，
+    // 也容易让某些解复用器把时基当成毫秒。
+    const std::uint64_t scale = (1000ull + frame_rate_num - 1ull) / frame_rate_num;
+    const std::uint64_t timescale = static_cast<std::uint64_t>(frame_rate_num) * scale;
+    const std::uint64_t delta = static_cast<std::uint64_t>(frame_rate_den) * scale;
+    if (timescale > 0xFFFFFFFFull || delta > 0xFFFFFFFFull) {
+        if (error != nullptr)
+            *error = "时基 " + FormatFrameRate(frame_rate_num, frame_rate_den) +
+                     " 换算出的 timescale/sample_delta 超出 32 位范围";
+        return false;
+    }
+    if (samples > 0 && delta > 0 && samples > 0xFFFFFFFFull / delta) {
+        // mdhd / tkhd / mvhd 的 duration 在 version 0 里是 32 位。这里不写 version 1，
+        // 所以宁可拒绝，也不写出被截断的时长（截断后播放器会把长片当短片）。
+        const std::uint64_t max_seconds = (0xFFFFFFFFull / delta) * frame_rate_den / frame_rate_num;
+        if (error != nullptr) {
+            *error = "重建时长超出 32 位 mdhd 表示范围（当前帧率下约 " + std::to_string(max_seconds) + " s，样本 " +
+                     std::to_string(samples) + " 个）；本版本不写 mdhd version 1，拒绝写出截断时长";
+        }
+        return false;
+    }
+    ticks->timescale = static_cast<std::uint32_t>(timescale);
+    ticks->sample_delta = static_cast<std::uint32_t>(delta);
+    return true;
+}
+
+namespace {
+
+// 扫描结果 → 结果模型里的时基依据。三种事实分开落，不合成派生值。
+model::RepairTimelineBasis MakeTimelineBasis(const ScanResult& scan) {
+    model::RepairTimelineBasis basis;
+    basis.mode = scan.timeline_mode;
+    basis.frame_rate = scan.frame_rate_text;
+    basis.constant = scan.timescale > 0 && scan.sample_delta > 0;
+    basis.vfr_declared = scan.vfr_declared;
+    basis.detail = scan.timeline_detail;
+    for (const auto& limitation : scan.limitations) {
+        // 只把"时基相关"的限制带进时基依据，避免整份 limitations 复制两遍。
+        if (limitation.find("帧率") != std::string::npos || limitation.find("时基") != std::string::npos)
+            basis.limitations.push_back(limitation);
+    }
+    return basis;
+}
+
+} // namespace
+
 RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_path, const std::atomic<bool>* cancel,
-                                                   const RepairRunBudget* budget, std::size_t scan_chunk_bytes) {
+                                                   const RepairRunBudget* budget, std::size_t scan_chunk_bytes,
+                                                   const RepairTimelineAssumption* assumption) {
     RepairPlainMp4Probe probe;
     MdatInfo mdat;
     std::uint64_t file_size = 0;
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp;
     std::string error;
-    const ScanResult scan =
-        ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp, &error, scan_chunk_bytes);
+    const ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp, &error,
+                                        scan_chunk_bytes, assumption);
     if (!scan.ok) {
         probe.reason = error;
         return probe;
@@ -1205,14 +1330,14 @@ RepairPlainMp4Probe RepairPlainMp4Rebuilder::Probe(const std::string& source_pat
     probe.attemptable = true;
     probe.kind = scan.kind;
     probe.limitations = scan.limitations;
+    probe.timeline_basis = MakeTimelineBasis(scan);
     return probe;
 }
 
-RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& source_path,
-                                                             const std::string& output_path,
-                                                             const std::atomic<bool>* cancel,
-                                                             const RepairRunBudget* budget,
-                                                             std::size_t scan_chunk_bytes) {
+RepairPlainMp4RebuildResult
+RepairPlainMp4Rebuilder::Rebuild(const std::string& source_path, const std::string& output_path,
+                                 const std::atomic<bool>* cancel, const RepairRunBudget* budget,
+                                 std::size_t scan_chunk_bytes, const RepairTimelineAssumption* assumption) {
     RepairPlainMp4RebuildResult result;
     result.attempted = true;
     if (Stopped(cancel, budget, &result.error))
@@ -1223,8 +1348,8 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     std::vector<PlainBox> boxes;
     std::vector<std::uint8_t> ftyp_source;
     std::string error;
-    ScanResult scan =
-        ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error, scan_chunk_bytes);
+    ScanResult scan = ScanPayload(source_path, cancel, budget, &mdat, &file_size, &boxes, &ftyp_source, &error,
+                                  scan_chunk_bytes, assumption);
     if (!scan.ok) {
         result.error = error.empty() ? "无法从 mdat 重建样本表" : error;
         return result;
@@ -1261,6 +1386,18 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
 
     std::vector<std::uint8_t> ftyp_bytes = MakeFtyp(std::move(ftyp_source));
     const std::uint32_t track_id = 1;
+    // 32 位 mdhd/tkhd/mvhd 的时长上限守卫。样本数这时才知道，所以用实测总数
+    // 再算一次 —— 扫描阶段（SPS 解析）传的是 0，跳过了这一检查。
+    {
+        RepairTimelineTicks guard;
+        std::string guard_error;
+        if (!ComputeTimelineTicks(scan.timescale > 0 ? scan.timescale : 1,
+                                  scan.sample_delta > 0 ? scan.sample_delta : 1, scan.ledger.Total(), &guard,
+                                  &guard_error)) {
+            result.error = guard_error;
+            return result;
+        }
+    }
     const std::uint64_t media_duration = static_cast<std::uint64_t>(scan.sample_delta) * scan.ledger.Total();
 
     // moov 大小依赖 stco/co64 的选择，后者又依赖载荷起点；迭代到尺寸收敛。
@@ -1338,6 +1475,7 @@ RepairPlainMp4RebuildResult RepairPlainMp4Rebuilder::Rebuild(const std::string& 
     // 上层样本数直接取样本层总数，不再从 scan.samples 另数一遍。
     result.samples_rebuilt = scan.ledger.Total();
     result.sample_ledger = scan.ledger.Summary();
+    result.timeline_basis = MakeTimelineBasis(scan);
     if (scan.video) {
         // "写了 ctts"以盒字节是否真的产生为准（与 BuildMoov 同一判据），
         // 不看"计划里要不要写" —— 计划要写、实际没写才是最容易骗过报告的组合。

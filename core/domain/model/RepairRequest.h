@@ -70,6 +70,24 @@ struct RepairRequest {
     // 诊断层只有在拿到越界样本证据时才会给出该轨不可抢救的结论。
     bool allow_single_track = true;
 
+    // 显式帧率（切片 F）：只在源侧没有帧率证据时使用 —— 典型是 SPS 里没有
+    // VUI timing_info 的 H.264。写成精确分数（30000/1001）而不是 double，
+    // 因为 29.97 的十进制近似会把整条时间轴按 ppm 级误差拉偏。
+    //
+    // 两字段都为 0 = 未指定：此时缺帧率证据的源一律拒绝重建，绝不猜。
+    // 只给一个 = 参数不完整，引擎直接拒绝这次修复（不静默当成未指定）。
+    uint32_t assumed_frame_rate_num = 0;
+    uint32_t assumed_frame_rate_den = 0;
+
+    bool HasAssumedFrameRate() const {
+        return assumed_frame_rate_num > 0 && assumed_frame_rate_den > 0;
+    }
+
+    // 参数是否被写坏（只给了一半）。引擎在开跑前用它做快速拒绝。
+    bool AssumedFrameRateIncomplete() const {
+        return (assumed_frame_rate_num == 0) != (assumed_frame_rate_den == 0);
+    }
+
     RepairLimits limits;
 
     bool write_report = true;

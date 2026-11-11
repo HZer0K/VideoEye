@@ -2772,6 +2772,28 @@ target_compile_definitions(test_repair_display_order PRIVATE
 add_test(NAME RepairDisplayOrderTests COMMAND test_repair_display_order)
 
 # =================================================
+# 测试：时基依据（切片 F）
+#
+# 三条边界各一组：没有 VUI 且没给帧率必须拒绝；给了帧率必须用精确分数换算出
+# timescale（1000/40、60000/2002），不许折成小数；码流声明 fixed_frame_rate_flag=0
+# 时必须按名义帧率重建但不写 ctts。
+# =================================================
+videoeye_add_test(test_repair_timeline_basis
+    unit/test_repair_timeline_basis.cpp
+)
+target_link_libraries(test_repair_timeline_basis PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil
+    FFmpeg::swscale)
+add_test(NAME RepairTimelineBasisTests COMMAND test_repair_timeline_basis)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

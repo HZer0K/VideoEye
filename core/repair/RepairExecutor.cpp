@@ -419,18 +419,33 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                 rebuild_error = rebuilt.error;
                 rebuild_note = rebuilt.note;
                 rebuild_samples = rebuilt.samples_rebuilt;
-                if (rebuilt.ok)
+                if (rebuilt.ok) {
                     outcome.reference_assist = rebuilt.assist;
+                    // 显式帧率只对"无参考扫描"这条路有意义：参考辅助重建的时基来自
+                    // 参考初始化段并与源侧证据交叉核验过，不能用用户输入覆盖它。
+                    // 但要说话 —— 否则用户设了 25 fps 却什么都没发生。
+                    if (request.HasAssumedFrameRate())
+                        rebuild_note += "；本次走参考样片辅助重建，显式帧率参数未参与（时基来自参考初始化段）";
+                }
             } else {
-                const RepairPlainMp4RebuildResult rebuilt =
-                    RepairPlainMp4Rebuilder::Rebuild(input_path, rebuilt_path, cancel, budget);
+                // 切片 F：源侧没有帧率证据时，允许调用方显式给一个（报告里标成
+                // user_input）。没给就让重建器拒绝 —— 绝不在这里兜底猜一个。
+                RepairTimelineAssumption assumption;
+                if (request.HasAssumedFrameRate()) {
+                    assumption.num = request.assumed_frame_rate_num;
+                    assumption.den = request.assumed_frame_rate_den;
+                }
+                const RepairPlainMp4RebuildResult rebuilt = RepairPlainMp4Rebuilder::Rebuild(
+                    input_path, rebuilt_path, cancel, budget, 0, assumption.Valid() ? &assumption : nullptr);
                 rebuild_attempted = rebuilt.attempted;
                 rebuild_ok = rebuilt.ok;
                 rebuild_error = rebuilt.error;
                 rebuild_note = rebuilt.note;
                 rebuild_samples = rebuilt.samples_rebuilt;
-                if (rebuilt.ok)
+                if (rebuilt.ok) {
                     outcome.display_order = rebuilt.display_order;
+                    outcome.timeline_basis = rebuilt.timeline_basis;
+                }
             }
             const bool stopped = budget != nullptr ? budget->Checkpoint() : infrastructure::Checkpoint(cancel);
             if (stopped) {
@@ -1300,6 +1315,14 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
         outcome.packets_read = packets_seen;
         outcome.packets_written = sample_ledger.Total();
         outcome.recovered_segments = segments;
+        // 切片 F：重封装 / 转码路径的秒数来自容器时间戳（stream time_base），
+        // 不是帧率。逐帧时长能不能当常数用取决于源容器，这里不声称 ——
+        // 只有无参考重建那条路才有 VUI / 显式帧率这种"每帧多长"的证据。
+        if (outcome.timeline_basis.mode == "unknown") {
+            outcome.timeline_basis.mode = "container_pts";
+            outcome.timeline_basis.constant = false;
+            outcome.timeline_basis.detail = "秒数由容器时间戳换算（stream time_base），未做帧时长推定";
+        }
         outcome.timeline_repair.attempted = request.repair_timeline;
         outcome.timeline_repair.gap_removed = gap_removed;
         outcome.timeline_repair.removed_gap_seconds = removed_gap_total;
