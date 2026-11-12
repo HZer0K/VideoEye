@@ -245,6 +245,38 @@ struct RepairCapabilityBoundary {
     std::vector<std::string> trigger_findings;    // 本次命中它的诊断证据 code
 };
 
+// ---- 本次明确未恢复项（阶段 5 / 切片 L）----
+//
+// 路线图里反复写着「明确不做」（elst、VFR 逐帧时长、分片重同步、旋转/HDR
+// 继承……），但过去只落在文档里：报告读者看到「修复成功」，没有任何一处
+// 结构化说明这次修复**有意没做什么**。这与「未测量态静默省略」是同一类
+// 错误结论 —— 空章节会被默认读成「没有问题」。
+//
+// 口径（红线）：
+//   * 这是**能力声明**，不是本次损失清单。源是否真的含有 elst / HDR 没有检测，
+//     所以 consequence 只能说「不保证保留」，不许说「已丢失」。
+//   * 只有本次执行/诊断里存在结构化触发事实时才挂载一条；没有事实就返回空表，
+//     并由报告显式写「未触发」，绝不把全局免责声明糊到每一次修复上。
+//   * `available` 与 `items` 分开：评估过但零命中 ≠ 根本没评估。
+struct RepairDeclaredExclusion {
+    std::string code;
+    std::string title;
+    // version_capability：本版本能力声明，触发事实只说明「本次适用」
+    std::string scope;
+    std::string status = "not_attempted";
+    std::string applies_to;                 // 适用的策略 / 场景
+    std::vector<std::string> trigger_facts; // 结构化事实（字段名=值），不是自由文本
+    std::string consequence;                // 对产物的影响，只说「不保证」
+    std::string evidence;                   // 为什么这条成立（路线图结论 / 实测）
+};
+
+struct RepairDeclaredExclusions {
+    bool available = false; // false = 根本没评估（未测量态，报告必须显式出行）
+    std::string unavailable_reason;
+    std::vector<RepairDeclaredExclusion> items;
+    std::vector<std::string> limitations;
+};
+
 // ---- 覆盖范围 ----
 //
 // "没发现问题"必须能回答"到底看了多少、跳过了什么、为什么停"。
@@ -812,6 +844,9 @@ struct RepairResult {
     // 切片 F：时间轴秒数的来源。`mode == "unknown"` 表示这次没有拿到时基证据，
     // 报告不能说"时间轴没问题"。
     RepairTimelineBasis timeline_basis;
+    // 切片 L：本次「明确未恢复项」。由引擎在所有返回路径上统一评估；
+    // available=false 表示未测量态，报告不许静默省略这一节。
+    RepairDeclaredExclusions declared_exclusions;
     std::vector<RepairArtifact> artifacts;
     std::vector<DamageFinding> residual_findings;
 

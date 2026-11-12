@@ -6,6 +6,7 @@
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/repair/RepairBudget.h"
+#include "core/repair/RepairDeclaredExclusions.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairInspector.h"
 #include "core/repair/RepairOutputWriter.h"
@@ -113,10 +114,8 @@ model::RepairBusinessStatus BudgetTerminal(const RepairRunBudget& budget) {
     return budget.Canceled() ? model::RepairBusinessStatus::Canceled : model::RepairBusinessStatus::TimedOut;
 }
 
-} // namespace
-
-model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const std::atomic<bool>* cancel,
-                                      const RepairProgress& progress) {
+model::RepairResult RunCore(const model::RepairRequest& request, const std::atomic<bool>* cancel,
+                            const RepairProgress& progress) {
     model::RepairResult result;
     result.request_id = request.request_id.empty() ? "req-" + FormatLocalRunId() : request.request_id;
     result.result_id = "result-" + FormatLocalRunId();
@@ -730,6 +729,18 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     result.created_at_iso8601 = FormatIso8601Now();
 
     Emit(progress, 100, stage::Publishing(), "修复完成");
+    return result;
+}
+
+} // namespace
+
+model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const std::atomic<bool>* cancel,
+                                      const RepairProgress& progress) {
+    // 唯一收尾点：预检失败 / 诊断流产 / 取消 / 超时 / 成功发布都经过这里。
+    // 用包装函数而不是逐出口手写；也不能放进 RAII 守卫的析构 —— `return result`
+    // 若发生 move，析构时改的是已被搬走的局部对象，字段会静默丢失。
+    model::RepairResult result = RunCore(request, cancel, progress);
+    result.declared_exclusions = BuildDeclaredExclusions(result);
     return result;
 }
 

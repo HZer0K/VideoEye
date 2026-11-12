@@ -629,6 +629,30 @@ JsonValue BuildArtifacts(const std::vector<model::RepairArtifact>& artifacts) {
     return array;
 }
 
+// 切片 L：本次明确未恢复项。JSON 与 TXT/HTML 走同一份 items，
+// available=false / items 为空都要显式落字段，不许静默省略。
+JsonValue BuildDeclaredExclusionsJson(const model::RepairDeclaredExclusions& declared) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("available", JsonValue(declared.available));
+    object.Set("unavailable_reason", JOptString(declared.unavailable_reason));
+    JsonValue items = JsonValue::MakeArray();
+    for (const auto& item : declared.items) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("code", JText(item.code));
+        node.Set("title", JText(item.title));
+        node.Set("scope", JText(item.scope));
+        node.Set("status", JText(item.status));
+        node.Set("applies_to", JText(item.applies_to));
+        node.Set("trigger_facts", BuildStringArray(item.trigger_facts));
+        node.Set("consequence", JText(item.consequence));
+        node.Set("evidence", JText(item.evidence));
+        items.PushBack(node);
+    }
+    object.Set("items", items);
+    object.Set("limitations", BuildStringArray(declared.limitations));
+    return object;
+}
+
 JsonValue BuildResultJson(const model::RepairResult& result) {
     JsonValue root = JsonValue::MakeObject();
     root.Set("schema_version", JText(kRepairSchemaVersion));
@@ -673,6 +697,7 @@ JsonValue BuildResultJson(const model::RepairResult& result) {
     root.Set("timeline_repair", BuildTimelineRepair(result.timeline_repair));
     root.Set("display_order", BuildDisplayOrder(result.display_order));
     root.Set("timeline_basis", BuildTimelineBasis(result.timeline_basis));
+    root.Set("declared_exclusions", BuildDeclaredExclusionsJson(result.declared_exclusions));
     root.Set("artifacts", BuildArtifacts(result.artifacts));
     root.Set("residual_findings", BuildFindings(result.residual_findings));
     return root;
@@ -829,6 +854,34 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         }
         sections.push_back(std::move(boundaries));
     }
+
+    // 切片 L：「本次明确未恢复项」章节恒定输出。三种未测量/零命中态都要显式
+    // 出行 —— 空章节被默认读成「没有问题」正是错误结论率红线禁止的。
+    ReportSection declared;
+    declared.title = "本次明确未恢复项";
+    const auto& exclusions = result.declared_exclusions;
+    if (!exclusions.available) {
+        declared.rows.emplace_back("评估状态", "未评估");
+        declared.rows.emplace_back("未评估原因", exclusions.unavailable_reason.empty() ? "（未记录）"
+                                                                                       : exclusions.unavailable_reason);
+        declared.items.push_back("未评估不等于没有明确未恢复项；本次结论层不完整");
+    } else {
+        declared.rows.emplace_back("评估状态", "已评估");
+        declared.rows.emplace_back("命中条数", std::to_string(exclusions.items.size()));
+        if (exclusions.items.empty())
+            declared.rows.emplace_back("本次结论", "本次未触发任何明确未恢复项");
+        for (const auto& item : exclusions.items) {
+            declared.items.push_back(item.code + " [" + item.status + "] " + item.title +
+                                     " — 适用: " + item.applies_to);
+            for (const auto& fact : item.trigger_facts)
+                declared.items.push_back("  触发事实: " + fact);
+            declared.items.push_back("  对产物的影响: " + item.consequence);
+            declared.items.push_back("  依据: " + item.evidence);
+        }
+    }
+    for (const auto& limitation : exclusions.limitations)
+        declared.items.push_back("清单限制: " + limitation);
+    sections.push_back(std::move(declared));
 
     ReportSection execution;
     execution.title = "方案与执行";

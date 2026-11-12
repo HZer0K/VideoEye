@@ -35,6 +35,7 @@
 #include "core/media/container/IsobmffParser.h"
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairCapabilityContracts.h"
+#include "core/repair/RepairDeclaredExclusions.h"
 #include "core/repair/RepairEngine.h"
 #include "core/repair/RepairExecutor.h"
 #include "core/repair/RepairFragmentForensics.h"
@@ -47,6 +48,7 @@
 #include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairUtils.h"
 #include "core/reporting/RepairReportExporter.h"
+#include "infrastructure/serialization/Json.h"
 #include "tests/support/MediaSequenceFingerprint.h"
 #include "tests/support/TestMediaFactory.h"
 
@@ -2237,4 +2239,142 @@ TEST(RepairEngine, TimelineUnknownAndDisplayOrderUnmeasuredAreExplicitInAllForma
     EXPECT_TRUE(ConclusionTextHas(probe, "显示顺序: 未测量")) << probe.text;
     EXPECT_TRUE(ConclusionTextHas(probe, "不能据此断言显示序与源片一致")) << probe.text;
     EXPECT_NE(probe.json.find("\"analyzed\": false"), std::string::npos);
+}
+
+// ============================================================
+// 切片 L：真实语料上的「本次明确未恢复项」结论层守护
+//
+// 纯函数用例钉得住触发矩阵，钉不住「整条链跑完之后报告里还有没有这一节」。
+// 这里守住三件事：三格式同源、S08 专属项不许出现在保码流路径、
+// 以及所有返回路径（含预检失败 / 无可恢复内容）都完成评估。
+// ============================================================
+
+const RepairDeclaredExclusion* FindDeclaredItem(const RepairResult& result, const char* code) {
+    for (const auto& item : result.declared_exclusions.items) {
+        if (item.code == code)
+            return &item;
+    }
+    return nullptr;
+}
+
+bool HasDeclaredCode(const RepairResult& result, const char* code) {
+    return FindDeclaredItem(result, code) != nullptr;
+}
+
+TEST(RepairEngine, RealCorpusDeclaredExclusionsAreHomogeneousInAllFormats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+
+    struct Case {
+        const char* tag;
+        RepairMode mode;
+        bool expect_transcode;
+    };
+    const Case cases[] = {
+        {"l_preserve", RepairMode::PreserveBitstream, false},
+        {"l_transcode", RepairMode::RecoverContent, true},
+    };
+    for (const auto& c : cases) {
+        const ConclusionLayerProbe probe = RunConclusionLayer("real_h264_aac_faststart.mp4", c.mode, c.tag);
+        ASSERT_TRUE(probe.result.output_published) << c.tag << " " << probe.result.summary;
+        ASSERT_FALSE(probe.json.empty()) << c.tag;
+
+        videoeye::JsonValue root;
+        std::string error;
+        ASSERT_TRUE(videoeye::JsonParse(probe.json, root, &error)) << c.tag << " " << error;
+        const videoeye::JsonValue* node = root.Find("declared_exclusions");
+        ASSERT_NE(node, nullptr) << c.tag << " JSON 必须落 declared_exclusions";
+        EXPECT_TRUE(node->Find("available")->BoolValueOr(false)) << c.tag;
+        const videoeye::JsonValue* items = node->Find("items");
+        ASSERT_NE(items, nullptr) << c.tag;
+        ASSERT_GT(items->Size(), 0u) << c.tag << " 真实修复不可能零命中";
+
+        for (const auto& item : items->Items()) {
+            const videoeye::JsonValue* code = item.Find("code");
+            ASSERT_NE(code, nullptr);
+            const std::string value = code->StringValueOr();
+            EXPECT_NE(probe.text.find(value), std::string::npos) << c.tag << " " << value << " 缺 TXT 行";
+            EXPECT_NE(probe.html.find(value), std::string::npos) << c.tag << " " << value << " 缺 HTML 行";
+            EXPECT_GT(item.Find("trigger_facts")->Size(), 0u) << c.tag << " " << value;
+        }
+        EXPECT_TRUE(ConclusionTextHas(probe, "评估状态: 已评估")) << c.tag;
+        EXPECT_NE(probe.text.find("本次明确未恢复项"), std::string::npos) << c.tag;
+        EXPECT_NE(probe.html.find("本次明确未恢复项"), std::string::npos) << c.tag;
+        EXPECT_NE(probe.text.find("清单限制"), std::string::npos) << c.tag;
+
+        // S08 专属项不得串到保码流路径；转码路径则必须同时说清「不给输入
+        // 侧覆盖区间」与「不插合成内容」。
+        const bool has_span = probe.text.find("input_timeline_span_not_reconstructed") != std::string::npos;
+        const bool has_synthetic = probe.text.find("synthetic_content_not_inserted") != std::string::npos;
+        EXPECT_EQ(has_span, c.expect_transcode) << c.tag;
+        EXPECT_EQ(has_synthetic, c.expect_transcode) << c.tag;
+        EXPECT_EQ(probe.html.find("input_timeline_span_not_reconstructed") != std::string::npos, c.expect_transcode)
+            << c.tag;
+
+        // 目录里未命中的条目不许出现在任何格式里（反向守护）。
+        for (const auto& base : repair::AllDeclaredExclusions()) {
+            const bool in_json =
+                std::any_of(items->Items().begin(), items->Items().end(), [&base](const videoeye::JsonValue& item) {
+                    const videoeye::JsonValue* code = item.Find("code");
+                    return code && code->StringValueOr() == base.code;
+                });
+            if (in_json)
+                continue;
+            EXPECT_TRUE(ConclusionTextLacks(probe, base.code.c_str())) << c.tag << " " << base.code;
+        }
+    }
+}
+
+TEST(RepairEngine, EveryRunPathEvaluatesDeclaredExclusions) {
+    const std::string dir = MakeTempDir("l_paths");
+
+    // 1) 诊断之前的预检失败：评估过但零命中，且不许挂任何全局能力声明。
+    RepairRequest bad = MakeRequest("no_such_source.mp4", dir + "/out_bad");
+    bad.assumed_frame_rate_num = 30000; // 只给分子 → AssumedFrameRateIncomplete
+    const RepairResult early = repair::RepairEngine::Run(bad, nullptr, nullptr);
+    EXPECT_EQ(early.status, RepairBusinessStatus::Failed) << ToString(early.status);
+    EXPECT_TRUE(early.declared_exclusions.available) << "预检早退也必须完成评估";
+    EXPECT_TRUE(early.declared_exclusions.items.empty()) << "没进入修复阶段就不该有能力声明";
+    EXPECT_FALSE(early.declared_exclusions.limitations.empty());
+
+    // 2) 诊断完成但无可恢复内容：仍要完成评估，不许谎报 S08 专属项。
+    const std::string junk = videoeye_test::CreateCorruptMediaFile(dir, "garbage.mp4");
+    ASSERT_FALSE(junk.empty());
+    const RepairResult garbage = repair::RepairEngine::Run(MakeRequest(junk, dir + "/out_junk"), nullptr, nullptr);
+    EXPECT_EQ(garbage.status, RepairBusinessStatus::NoRecoverableContent) << ToString(garbage.status);
+    EXPECT_TRUE(garbage.declared_exclusions.available);
+    for (const auto& code : {"input_timeline_span_not_reconstructed", "synthetic_content_not_inserted",
+                             "transcode_properties_not_inherited"}) {
+        EXPECT_FALSE(HasDeclaredCode(garbage, code)) << code << " 无转码事实却出行";
+        EXPECT_TRUE(early.declared_exclusions.items.empty() || !HasDeclaredCode(early, code)) << code;
+    }
+
+    // 3) 正常成功：至少命中「elst 不重建」，且触发事实是结构化的。
+    const auto media = videoeye_test::CreateTestMedia(dir, "l_ok");
+    ASSERT_TRUE(media.ok) << media.error;
+    const RepairResult ok = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out_ok"), nullptr, nullptr);
+    ASSERT_TRUE(ok.output_published) << ok.summary << " | " << ok.error;
+    EXPECT_TRUE(ok.declared_exclusions.available);
+    ASSERT_TRUE(HasDeclaredCode(ok, "edit_list_not_rebuilt"));
+    const auto* item = FindDeclaredItem(ok, "edit_list_not_rebuilt");
+    ASSERT_NE(item, nullptr);
+    EXPECT_NE(std::find(item->trigger_facts.begin(), item->trigger_facts.end(), "executions[].attempted=true"),
+              item->trigger_facts.end());
+}
+
+TEST(RepairEngine, DeclaredExclusionsUnavailableStateIsExplicitInThreeFormats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    ConclusionLayerProbe probe =
+        RunConclusionLayer("real_h264_aac_faststart.mp4", RepairMode::PreserveBitstream, "l_unavailable");
+    ASSERT_TRUE(probe.result.output_published) << probe.result.summary;
+
+    probe.result.declared_exclusions.available = false;
+    probe.result.declared_exclusions.unavailable_reason = "测试：引擎没有评估明确未恢复项";
+    probe.result.declared_exclusions.items.clear();
+    WriteConclusionReports(&probe, "unavailable");
+
+    EXPECT_TRUE(ConclusionTextHas(probe, "评估状态: 未评估")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "未评估原因: 测试：引擎没有评估明确未恢复项")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "未评估不等于没有明确未恢复项")) << probe.text;
+    EXPECT_NE(probe.json.find("\"available\": false"), std::string::npos);
+    EXPECT_TRUE(ConclusionTextLacks(probe, "edit_list_not_rebuilt")) << "未评估态不得列具体条目";
 }

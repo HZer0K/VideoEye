@@ -2833,6 +2833,22 @@ target_link_libraries(test_repair_transcode_fidelity PRIVATE
 add_test(NAME RepairTranscodeFidelityTests COMMAND test_repair_transcode_fidelity)
 
 # =================================================
+# 测试：修复结论层「本次明确未恢复项」（阶段 5 / 切片 L）
+#
+# 静态目录覆盖守护 + 结构化触发矩阵（含未探测 / 已补齐 / 预检早退等反向守护）
+# + available=false / 零命中 / 有命中三态的 JSON/TXT/HTML 同源。
+# =================================================
+videoeye_add_test(test_repair_declared_exclusions
+    unit/test_repair_declared_exclusions.cpp
+)
+target_link_libraries(test_repair_declared_exclusions PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure)
+add_test(NAME RepairDeclaredExclusionsTests COMMAND test_repair_declared_exclusions)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

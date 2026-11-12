@@ -495,8 +495,49 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   兜底文案反向守护 / 未测量态三格式）；10 组判别力变异全部精确判红后按字节恢复
   复跑绿。语料缺失用 `ASSERT_TRUE` 而非 `GTEST_SKIP` —— 结论层守护静默跳过等于没守护。
 - **明确不做**：S08 输入时间轴覆盖区间的重建（需另做源包→输出帧映射并验证 B 帧
-  重排）；`elst` 等「明确不恢复项」的显式标注（下一片 L）；参考辅助重建路径
-  （C/H/I）尚未纳入这张真实语料矩阵。
+  重排）；`elst` 等「明确不恢复项」的显式标注由切片 L 落地（见 §4.12）；
+  参考辅助重建路径（C/H/I）尚未纳入这张真实语料矩阵。
+
+### 4.12 切片 L：本次明确未恢复项的显式标注
+
+**要解决的问题**：路线图里写过十几次「明确不做」，报告里却一个字都没有。
+「修复成功 + 空白」会被读成「这些方面也没问题」，与 K 修掉的
+「未测量态静默省略」是同一类错误结论。空表的三种含义（真的没命中 /
+没评估 / 被省略）必须在结论层分开。
+
+**口径（红线）**
+
+- 这是**能力声明**，不是本次损失清单。源是否真的含有 `elst` / HDR 没有检测，
+  所以 `consequence` 只能写「不保证保留」，不许写「已丢失」。
+- 只有本次执行 / 诊断里存在**结构化触发事实**才挂载一条；触发事实写成
+  `字段=值`（如 `fidelity.video_reencoded=true`），不从 `summary` / `error` /
+  `limitations` 等自由文本反推类别。没事实就返回空表，并显式写「未触发」。
+- `available` 与 `items` 分开：评估过但零命中 ≠ 根本没评估；`available=false`
+  的未测量态照样在三种格式里出行。
+- 诊断 / 执行之前就结束（请求预检失败）时挂**零条**：还没采用任何策略，
+  把全局免责声明糊上去就是「无事实却宣称不支持」。
+- `timeline_basis.mode` 默认就是 `unknown`，它本身不是事实；只有
+  「本次确实 attempted 过执行」时才允许据此挂 VFR 那条。
+
+**交付**
+
+- `RepairTypes.h`：`RepairDeclaredExclusion` / `RepairDeclaredExclusions`，
+  `RepairResult.declared_exclusions`。
+- `RepairDeclaredExclusions.{h,cpp}`：8 条静态目录 + 纯函数命中评估。目录是
+  `edit_list_not_rebuilt` / `vfr_frame_durations_not_recovered` /
+  `original_display_offsets_not_restored` / `input_timeline_span_not_reconstructed` /
+  `synthetic_content_not_inserted` / `transcode_properties_not_inherited` /
+  `fragment_resync_not_attempted` / `gop_local_reencode_not_attempted`。
+- `RepairEngine.cpp`：把原 `Run` 改名为匿名命名空间的 `RunCore`，新的 `Run`
+  是唯一收尾点，覆盖预检失败 / 诊断流产 / 取消 / 超时 / 成功发布全部返回路径。
+  ❗ 刻意不用 RAII 守卫的析构来收尾 —— `return result` 若发生 move，析构改的是
+  已被搬走的局部对象，字段会静默丢失。
+- `RepairReportExporter.cpp`：JSON 顶层 `declared_exclusions` + TXT/HTML
+  「本次明确未恢复项」**恒定章节**（未评估 / 零命中 / 有命中三态都出行）。
+
+**明确不做**：任何一条排除项的「实际恢复」都不在本片范围（L 只把口径说清，
+不重建 `elst`、不继承旋转 / HDR、不插合成帧、不做 GOP 局部重编码）；
+参考辅助重建路径（C/H/I）仍未纳入真实语料矩阵；S08 输入侧覆盖区间仍不给。
 
 ---
 
@@ -600,9 +641,10 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | G 逐轨覆盖与音画共同区间 | 完成（本轮） | `5932508` | 新增 `RepairTrackCoverageSummary` 与 9 个用例；逐轨缺口由账本流式统计导出（明细截断不影响计数）；共同覆盖取交集；6 组判别力变异精确判红。见下方「切片 G 验收记录」 |
 | H 参考辅助重建写 ctts | 完成（本轮） | `a8029e9` | 含 ctts 的参考不再被拒（只记录不借用）；产物 ctts 由源侧 POC 实测；真实 B 帧语料删 moov 后重建成功且逐包 PTS 与原片一致；4 组判别力变异精确判红。见 §4.8 |
 | I VFR 逐帧时长 | 完成（本轮） | `1a7ebaf` | 参考 stts 非常量不再整份拒绝；产物 `stts` 逐段等于参考、`mdhd` 时长取合计、逐包 DTS 间隔与逐帧表一致、VFR 下不写 ctts；新增 5 个用例与 5 组判别力变异（全部精确判红）。见 §4.9 |
-| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / VFR 逐帧时长已落地，只剩 `elst`） | | 见 §4.5–§4.9 |
+| 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / VFR 逐帧时长已落地；`elst` 明确不重建并由 L 显式标注） | | 见 §4.5–§4.9、§4.12 |
 | J S08 源侧保真属性探测 | 完成（本轮） | `c4d1672` | 位深 / 色彩 / 旋转 / HDR / 动态分辨率逐项实测并同源写进三种报告；可零风险继承的已继承；`sws` 按帧尺寸重建修掉越界读；15 个用例 + 11 组判别力变异全部精确判红。见 §4.10 |
 | K 真实语料结论层守护 | 完成（本轮） | `4856937` | 实测查出 S08「有账本却报没有账本」与时基 / 显示顺序未测量态静默省略两个真 bug；S08 上抛逐轨覆盖且不许伪造 span；5 个用例 + 10 组判别力变异全部精确判红。见 §4.11 |
+| L 本次明确未恢复项显式标注 | 完成（本轮） | `待回填` | 8 条能力目录 + 结构化触发矩阵；9 个纯函数用例 + 3 个真实语料端到端用例；172/172 ctest（1938 gtest）；13 组判别力变异全部精确判红后按字节恢复复跑绿。见 §4.12 与下方「切片 L 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1036,6 +1078,61 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
   不是遗漏。要做需先建立「源包 → 解码帧 → 编码包」映射并验证 B 帧重排与
   解码延迟，否则就是编一段假 span。
 - **`elst` / 开放 GOP 前导图像 / VFR+B 帧退回解码序等「明确不恢复项」**
-  仍未在报告里逐项显式标注（下一片 L）。
-- **参考辅助重建路径（C/H/I）未纳入这张真实语料矩阵**：目前 K 只钉住
+  K 时仍未在报告里逐项显式标注；**切片 L 已落地**（见 §4.12），但只标注口径，
+  不实际恢复。
+- **参考辅助重建路径（C/H/I）未纳入这张真实语料矩阵**：K 与 L 都只钉住
   保码流与 S08 两条主路径。
+
+### 切片 L 验收记录（2026-11-12）
+
+**交付**
+
+- `core/domain/model/RepairTypes.h`：`RepairDeclaredExclusion` / `RepairDeclaredExclusions`
+  与 `RepairResult.declared_exclusions`。
+- `core/repair/RepairDeclaredExclusions.{h,cpp}`：8 条静态能力目录（六维度：
+  code / title / applies_to / consequence / evidence / status）+ 纯函数
+  `BuildDeclaredExclusions()`；触发只看结构化字段，事实写成 `字段=值`。
+- `core/repair/RepairEngine.cpp`：原 `Run` → 匿名命名空间 `RunCore`，新 `Run`
+  作为唯一收尾点，覆盖 5 个早退点与主返回点。
+- `core/reporting/RepairReportExporter.cpp`：JSON 顶层 `declared_exclusions`；
+  TXT/HTML 从 `BuildSections` 恒定输出「本次明确未恢复项」章节。
+- `tests/unit/test_repair_declared_exclusions.cpp`（9 用例）、
+  `tests/unit/test_repair_engine.cpp`（追加 3 用例）、`tests/CMakeLists.txt`
+  （新目标 `RepairDeclaredExclusionsTests`）、`README.md`（快照）。
+
+**验证**
+
+- 全量 `ctest` **172/172**（1938 个 gtest 用例，本片 +12）；离屏
+  `QT_QPA_PLATFORM=offscreen timeout 10 ./VideoEye.exe` **rc=124**。
+- 门禁全绿：clang-format **18.1.8**（只格式化 7 个改动源文件）、
+  `check_automoc_registry.py`（登记 9 / 测试目标 152）、`check_layering.py`、
+  `audit_namespace_layout.py`、`audit_link_visibility.py`、
+  `summarize_tests.py --update-readme` + `--check-readme`、`git diff --check`。
+- 判别力 **13 组全部精确判红**后按字节写回 + `os.utime` 恢复、重建复跑
+  9/9 + 3/3 全绿：M1 引擎不上抛、M2 无事实也挂全部模板、M3 零命中静默省略、
+  M4 未评估态不出行、M5 JSON 不写 items、M6 未探测当成实测损失、
+  M7 `mode=unknown` 无执行也挂免责声明、M8 预检早退闸门失效、
+  M9 TXT/HTML 不输出章节、M10 目录少一条、M11 状态被抬成 `recovered`、
+  M12 触发事实退化成自由文本、M13 S08 专属项串到保码流路径。
+  M10 同时被「目录覆盖守护 / 触发矩阵 / 事实结构化 / 三格式同源」四组用例抓到。
+
+**两个实测踩到的坑**
+
+1. `RepairTimelineBasis::mode` 默认就是 `"unknown"`。第一版把它单独当触发事实，
+   结果**连请求预检失败**都会挂上「VFR 逐帧时长不恢复」—— 正是「无事实却宣称
+   不支持」。修法：`vfr_declared=true`（源侧证据）单独成立；`mode=unknown`
+   只在本次有 `attempted=true` 的执行时才成立，另加「诊断 / 执行之前结束 →
+   零条」的总闸门，并为闸门配 `PreRepairEarlyExitDoesNotCarryGlobalDisclaimers`
+   守护（否则又是一个「坏了看不出来」的检查）。
+2. 收尾**不能用 RAII 守卫的析构**：`return result` 一旦发生 move，析构里改的是
+   已被搬走的局部对象，字段静默丢失。改成「唯一返回点的包装函数」。
+   另外变异脚本在 Windows Python 里 `shell=True` 走 `cmd.exe`，不认
+   `source msvc_env.sh`；显式指定 Git Bash 才跑得动。
+
+**未覆盖（如实记账）**
+
+- 8 条排除项**只标注口径，不实际恢复**：仍不重建 `elst`、不继承旋转 / HDR、
+  不补 10-bit、不插黑帧 / 静音 / 重复帧、不做分片重同步与 GOP 局部重编码。
+- **参考辅助重建路径（C/H/I）未纳入真实语料矩阵**；S08 输入侧时间轴覆盖
+  区间仍不给（需先做源包 → 解码帧 → 编码包映射并验证 B 帧重排）。
+- 逐轨转码决策 / 其他容器 / 多候选规划器仍属 §5.2 未完成部分。
