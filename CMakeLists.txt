@@ -676,12 +676,19 @@ target_link_libraries(VideoEyeExporter
 )
 
 # --- repair: 视频修复（诊断 / 规划 / 执行 / 验证）---
-# 公共头只出现 domain 值类型与 std::，所以 FFmpeg / media / ffmpeg_io 全部挂
-# PRIVATE：链它的目标不需要拿到 libav 的 include 目录（只在 .cpp 里用）。
+# 切片 J 之前公共头只出现 domain 值类型与 std::，FFmpeg 挂 PRIVATE 即可。
+# 现在 `RepairTranscodeFidelity.h` 是 S08 的可测探测头，直接在头里 include
+# libav* —— 静态库的 PRIVATE 依赖只传 link、不传 include 目录，外部目标
+# （含测试）include 它会撞墙。因此 FFmpeg 三件套挂 PUBLIC（行为中性：现有
+# 消费者本就自带这些运行库，只是补上头文件与编译定义）。
+# media / ffmpeg_io / codec 仍挂 PRIVATE：公共头里没有它们的类型。
 # 报告不在这一层生成 —— repair 不认识 reporting，由表现层单独调用导出器。
 videoeye_add_module(VideoEyeRepair ${REPAIR_SOURCES})
 target_link_libraries(VideoEyeRepair
     PUBLIC VideoEyeDomain
+           FFmpeg::avcodec
+           FFmpeg::avformat
+           FFmpeg::avutil
     PRIVATE VideoEyeMedia
             VideoEyeInfrastructure
             VideoEyeFfmpegIo
@@ -689,9 +696,6 @@ target_link_libraries(VideoEyeRepair
             # 只挂 PRIVATE —— 修复层公共头里没有任何 POC / codec 类型，
             # 调用方链 repair 不会被迫拿到 codec 的 include 目录。
             VideoEyeCodec
-            FFmpeg::avcodec
-            FFmpeg::avformat
-            FFmpeg::avutil
 )
 
 # --- qc-rules: 规则引擎 / 默认规则 / 模板映射 / 报告格式 ---

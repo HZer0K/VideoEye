@@ -500,6 +500,17 @@ model::RepairResult RepairEngine::Run(const model::RepairRequest& request, const
     }
     if (execution.video_reencoded) {
         fidelity.video = model::RepairFidelityStatus::PartiallyVerified;
+        // 切片 J：源侧属性清单必须原样上抛，报告层不重算、不从文本反推。
+        fidelity.transcode = execution.transcode_fidelity;
+        if (!fidelity.transcode.inspected) {
+            fidelity.limitations.push_back(
+                "转码源侧保真属性未探测（首帧或流参数不可用），不能声称位深 / 色彩 / 旋转 / HDR 均已保留");
+        } else {
+            for (const auto& lost : fidelity.transcode.lost_properties)
+                fidelity.limitations.push_back("转码属性损失：" + lost);
+            for (const auto& kept : fidelity.transcode.preserved_properties)
+                fidelity.limitations.push_back("转码属性继承：" + kept);
+        }
         if (execution.psnr_samples > 0) {
             std::ostringstream psnr_note;
             psnr_note.setf(std::ios::fixed);

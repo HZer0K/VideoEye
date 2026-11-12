@@ -10,6 +10,7 @@
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/repair/RepairSampleScan.h"
+#include "core/repair/RepairTranscodeFidelity.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -625,6 +626,12 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     encoder->width = width;
     encoder->height = height;
     encoder->pix_fmt = encoder_format;
+    // 阶段 6 / 切片 J：把「不依赖位深」的源侧属性原样交给编码器，并逐项实测
+    // 这次重编码到底会丢什么。色彩标记只在位深不变时继承 —— 给 8-bit SDR
+    // 画面贴 bt2020/smpte2084，播放器会按 HDR 渲染，比不写标记更糟。
+    RepairTranscodeInheritance inherited = ApplyTranscodeInheritance(
+        encoder, video_in, first_frame, TranscodeBitDepth(static_cast<AVPixelFormat>(first_frame->format)),
+        TranscodeBitDepth(encoder_format));
     // CFR 帧间隔 = av_inv_q(fps)。旧实现用 {1, fps.num} 且每帧 PTS 只 +1，
     // 等于把分母丢掉：30000/1001 的内容被按 30000/1 的速度写，约 1001 秒
     // 的跨度压成 1 秒。PTS 落在编码器时基上逐帧 +1 tick 才是正确帧间隔。
@@ -730,6 +737,15 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     converted->height = height;
     sws = sws_getContext(width, height, static_cast<AVPixelFormat>(first_frame->format), width, height, encoder_format,
                          SWS_BILINEAR, nullptr, nullptr, nullptr);
+    // 切片 J：sws 是按「首帧尺寸 + 首帧像素格式」建的。源片中途换尺寸 / 换像素
+    // 格式时，继续用旧 context 喂新帧是**越界读**（srcSliceH 与行宽都对不上），
+    // 旧实现没有任何保护。状态由 TranscodeScaleState 统一维护，逐帧实测计数。
+    TranscodeScaleState scale_state;
+    scale_state.output_width = width;
+    scale_state.output_height = height;
+    scale_state.source_width = width;
+    scale_state.source_height = height;
+    scale_state.source_format = first_frame->format;
     // 固定尺寸只分配一次缓冲，之后逐帧 av_frame_make_writable。
     // ❗ av_frame_unref() 会连同 format / width / height 一起清零，再调
     // av_frame_get_buffer 必然 EINVAL：旧实现从第二帧起把每一帧都算成
@@ -752,6 +768,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         avformat_close_input(&in);
         return outcome;
     }
+
+    // 到这里编码器已打开、转换帧缓冲已分配，才具备「逐项实测」的前提。
+    // 前面任何一步失败都保持 inspected=false —— 空表不许冒充「属性均已保留」。
+    inherited.chroma_location_copied = ApplyTranscodeFrameProperties(converted, video_in);
+    outcome.transcode_fidelity = InspectTranscodeFidelity(video_in, first_frame, encoder_format, inherited);
 
     uint64_t encoded_frames = 0;
     // 样本账本：S08 产物是「视频重编码 + 音频码流复制」的混合。源字节偏移不可得，
@@ -848,8 +869,21 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             resource_error = "转换帧缓冲不可写（无法分配新的输出帧缓冲）";
             return false;
         }
-        sws_scale(sws, (const uint8_t* const*)source->data, source->linesize, 0, height, converted->data,
-                  converted->linesize);
+        const bool needs_rebuild = scale_state.Observe(source);
+        if (needs_rebuild) {
+            SwsContext* next = sws_getContext(source->width, source->height, static_cast<AVPixelFormat>(source->format),
+                                              width, height, encoder_format, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (next == nullptr) {
+                // 宁可显式丢这一帧，也不能把错尺寸的帧喂给旧 context（越界读）。
+                ++outcome.dropped_video_frames;
+                return true;
+            }
+            sws_freeContext(sws);
+            sws = next;
+            scale_state.Commit(source);
+        }
+        sws_scale(sws, (const uint8_t* const*)source->data, source->linesize, 0, scale_state.source_height,
+                  converted->data, converted->linesize);
         // encoder->time_base = av_inv_q(fps)，PTS 每帧 +1 tick = 1/fps 秒。
         converted->pts = static_cast<int64_t>(encoded_frames);
         if (avcodec_send_frame(encoder, converted) < 0) {
@@ -971,6 +1005,16 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         avcodec_send_frame(encoder, nullptr);
         if (!drain_encoder())
             write_failed = true;
+    }
+    // 逐帧实测的动态分辨率帧数并进同一个保真结论，写在所有返回路径之前：
+    // 后面失败 / 取消 / 截断的分支也得带上这份实测，不能退回去用空表自证。
+    FinalizeTranscodeFidelity(outcome.transcode_fidelity, scale_state.resolution_changed_frames);
+    if (outcome.transcode_fidelity.inspected) {
+        const model::RepairTranscodeFidelity& fidelity = outcome.transcode_fidelity;
+        outcome.transcode_note += "；源侧保真探测=" + fidelity.source_pixel_format + "→" +
+                                  fidelity.output_pixel_format + "，丢失属性 " +
+                                  std::to_string(fidelity.lost_properties.size()) + " 项，继承 " +
+                                  std::to_string(fidelity.preserved_properties.size()) + " 项";
     }
 
     // 关闭输入上下文（in / video_in）之前先固化 track id：验证目标与守恒记录
@@ -1195,6 +1239,28 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         reencoded.limitations.push_back("未能完成抽帧 PSNR 比对，画质损失无法量化");
     reencoded.candidate_actions.push_back(model::RepairAction::S08_TolerantTranscode);
     outcome.residual_findings.push_back(std::move(reencoded));
+
+    // 切片 J：重编码丢掉的「源侧属性」与丢帧是两件事 —— 丢帧在画面内容里，
+    // 属性丢失在像素格式 / 色彩 / 方向 / 元数据里。不单独落一条 finding，
+    // 报告就只能看到「有代际画质损失」，看不到「10-bit 被压成 8-bit」。
+    if (outcome.transcode_fidelity.inspected && !outcome.transcode_fidelity.lost_properties.empty()) {
+        model::DamageFinding loss;
+        loss.code = "video.transcode_property_loss";
+        loss.detector = "repair.transcode";
+        loss.layer = model::DamageLayer::Decode;
+        loss.severity = model::IssueSeverity::Warning;
+        loss.confidence = model::DamageConfidence::Confirmed;
+        loss.location.precision = model::DamagePrecision::Bounded;
+        loss.location.provenance = "source stream / first decoded frame vs encoder pixel format";
+        loss.evidence = "重编码前后源侧属性实测：" + outcome.transcode_fidelity.source_pixel_format + " → " +
+                        outcome.transcode_fidelity.output_pixel_format + "，共 " +
+                        std::to_string(outcome.transcode_fidelity.lost_properties.size()) + " 项未保留";
+        for (const auto& item : outcome.transcode_fidelity.lost_properties)
+            loss.limitations.push_back(item);
+        loss.limitations.push_back("属性丢失是重编码本身造成的，不能通过重新封装或再次修复找回");
+        loss.candidate_actions.push_back(model::RepairAction::S08_TolerantTranscode);
+        outcome.residual_findings.push_back(std::move(loss));
+    }
 
     return outcome;
 }

@@ -391,6 +391,42 @@ struct RepairActionExecution {
     uint64_t input_video_packet_count = 0;
 };
 
+// ---- 转码保真属性清单（阶段 6 / 切片 J）----
+//
+// S08 把解码帧重新编码成 8-bit yuv420p。源侧的「像素位深 / 色彩标记 / 旋转
+// 矩阵 / HDR 元数据 / 帧尺寸变化」不会跟着画面一起过去；旧实现既不继承也不
+// 报告，产物能播，报告里却没有任何一条说明它丢了什么。这个清单只记**实测**
+// 到的属性，不做「源大概率是 SDR」这类推断。
+//
+// 口径（反向守护）：inspected=false = 这次根本没探测过（保码流路径 / 转码
+// 未完成）。此时列表必须为空、all_properties_preserved 恒 false —— 空表不能
+// 冒充「没有损失」。
+struct RepairTranscodeFidelity {
+    bool inspected = false;
+    std::string source_pixel_format;
+    std::string output_pixel_format;
+    int source_bit_depth = 0;
+    int output_bit_depth = 0;
+    int source_width = 0;
+    int source_height = 0;
+    std::string color_primaries;
+    std::string color_transfer;
+    std::string color_space;
+    std::string color_range;
+    std::string chroma_location;
+    std::string sample_aspect_ratio;
+    double rotation_degrees = 0.0;
+    bool has_display_matrix = false;
+    bool has_hdr_metadata = false;
+    // 与首帧尺寸不同的帧数（逐帧实测，不是容器声明）。
+    uint64_t resolution_changed_frames = 0;
+    std::vector<std::string> preserved_properties;
+    std::vector<std::string> lost_properties;
+    // 只有「探测过 + 丢失项为空」才允许为 true。重编码的代际画质损失由
+    // video_reencoded / perceptual_fidelity 单独表达，不混进这个结论。
+    bool all_properties_preserved = false;
+};
+
 // ---- 保真度 ----
 struct RepairFidelity {
     RepairFidelityStatus video = RepairFidelityStatus::NotVerified;
@@ -414,6 +450,9 @@ struct RepairFidelity {
     // 感知保真度：没有参考样片时只能是 unknown_without_reference
     std::string perceptual_fidelity = "unknown_without_reference";
     std::vector<std::string> limitations;
+    // 阶段 6 / 切片 J：S08 重编码前后「源侧属性」逐项实测结论。
+    // 非转码路径保持 inspected=false，导出时必须如实写出「未探测」。
+    RepairTranscodeFidelity transcode;
 
     // R03：参考段借来的参数必须逐项列出；时基没有源侧证据时不能写"兼容"。
     // verified / unverified / rejected / not_applicable

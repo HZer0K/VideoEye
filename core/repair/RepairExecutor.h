@@ -75,6 +75,9 @@ struct RepairExecutionOutcome {
     uint64_t psnr_samples = 0;
     double psnr_average_db = 0.0;
     std::string transcode_note;
+    // 阶段 6 / 切片 J：重编码前后源侧属性逐项实测。非转码路径保持
+    // inspected=false —— 空表不许冒充「属性均已保留」。
+    model::RepairTranscodeFidelity transcode_fidelity;
 
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;

@@ -320,6 +320,33 @@ JsonValue BuildVerification(const model::RepairVerification& verification) {
     return object;
 }
 
+// 阶段 6 / 切片 J：transcode.inspected=false 时所有明细必须为空，
+// 让「没探测过」在 JSON 里也能和「探测过且无损失」区分开。
+JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("inspected", JsonValue(transcode.inspected));
+    object.Set("source_pixel_format", JText(transcode.source_pixel_format));
+    object.Set("output_pixel_format", JText(transcode.output_pixel_format));
+    object.Set("source_bit_depth", JsonValue(transcode.source_bit_depth));
+    object.Set("output_bit_depth", JsonValue(transcode.output_bit_depth));
+    object.Set("source_width", JsonValue(transcode.source_width));
+    object.Set("source_height", JsonValue(transcode.source_height));
+    object.Set("color_primaries", JText(transcode.color_primaries));
+    object.Set("color_transfer", JText(transcode.color_transfer));
+    object.Set("color_space", JText(transcode.color_space));
+    object.Set("color_range", JText(transcode.color_range));
+    object.Set("chroma_location", JText(transcode.chroma_location));
+    object.Set("sample_aspect_ratio", JText(transcode.sample_aspect_ratio));
+    object.Set("rotation_degrees", JNum(transcode.rotation_degrees));
+    object.Set("has_display_matrix", JsonValue(transcode.has_display_matrix));
+    object.Set("has_hdr_metadata", JsonValue(transcode.has_hdr_metadata));
+    object.Set("resolution_changed_frames", J64(transcode.resolution_changed_frames));
+    object.Set("all_properties_preserved", JsonValue(transcode.all_properties_preserved));
+    object.Set("preserved_properties", BuildStringArray(transcode.preserved_properties));
+    object.Set("lost_properties", BuildStringArray(transcode.lost_properties));
+    return object;
+}
+
 JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("video", JText(model::ToString(fidelity.video)));
@@ -338,6 +365,7 @@ JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     object.Set("borrowed_parameters", BuildStringArray(fidelity.borrowed_parameters));
     object.Set("omitted_items", BuildStringArray(fidelity.omitted_items));
     object.Set("limitations", BuildStringArray(fidelity.limitations));
+    object.Set("transcode", BuildTranscodeFidelity(fidelity.transcode));
     return object;
 }
 
@@ -1098,6 +1126,51 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         fidelity.items.push_back("未保留: " + omitted);
     for (const auto& limitation : result.fidelity.limitations)
         fidelity.items.push_back("限制 / 未知项: " + limitation);
+    // 切片 J：S08 的源侧属性结论与 JSON 的 fidelity.transcode 同源。非转码路径
+    // 也必须明确写「未探测」，不能靠空表让读者以为没有损失。
+    const model::RepairTranscodeFidelity& transcode = result.fidelity.transcode;
+    fidelity.rows.emplace_back("转码保真探测", transcode.inspected ? "已实测（首帧 + 输入流）" : "未探测");
+    if (!transcode.inspected) {
+        fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");
+    } else {
+        fidelity.rows.emplace_back("源像素格式 / 位深", transcode.source_pixel_format + " / " +
+                                                            std::to_string(transcode.source_bit_depth) + " bit");
+        fidelity.rows.emplace_back("输出像素格式 / 位深", transcode.output_pixel_format + " / " +
+                                                              std::to_string(transcode.output_bit_depth) + " bit");
+        fidelity.rows.emplace_back("源首帧分辨率", std::to_string(transcode.source_width) + "x" +
+                                                       std::to_string(transcode.source_height));
+        std::string tags;
+        const auto append_tag = [&tags](const char* label, const std::string& value) {
+            if (value.empty())
+                return;
+            if (!tags.empty())
+                tags += "/";
+            tags += label;
+            tags += "=";
+            tags += value;
+        };
+        append_tag("primaries", transcode.color_primaries);
+        append_tag("transfer", transcode.color_transfer);
+        append_tag("space", transcode.color_space);
+        append_tag("range", transcode.color_range);
+        append_tag("chroma_loc", transcode.chroma_location);
+        fidelity.rows.emplace_back("色彩标记", tags.empty() ? "源未声明" : tags);
+        fidelity.rows.emplace_back("像素宽高比",
+                                   transcode.sample_aspect_ratio.empty() ? "未声明" : transcode.sample_aspect_ratio);
+        fidelity.rows.emplace_back("旋转 / 镜像矩阵", transcode.has_display_matrix
+                                                          ? "有（" + std::to_string(transcode.rotation_degrees) + "°）"
+                                                          : "无");
+        fidelity.rows.emplace_back("HDR 静态元数据", transcode.has_hdr_metadata ? "有" : "无");
+        fidelity.rows.emplace_back("动态分辨率帧", std::to_string(transcode.resolution_changed_frames));
+        fidelity.rows.emplace_back("源侧属性结论",
+                                   transcode.all_properties_preserved
+                                       ? "实测可继承属性全部保留（重编码代际损失另计）"
+                                       : "实测 " + std::to_string(transcode.lost_properties.size()) + " 项未保留");
+        for (const auto& kept : transcode.preserved_properties)
+            fidelity.items.push_back("转码属性已继承: " + kept);
+        for (const auto& lost : transcode.lost_properties)
+            fidelity.items.push_back("转码属性未保留: " + lost);
+    }
     sections.push_back(std::move(fidelity));
 
     return sections;

@@ -2810,6 +2810,29 @@ target_link_libraries(test_repair_track_coverage PRIVATE
 add_test(NAME RepairTrackCoverageTests COMMAND test_repair_track_coverage)
 
 # =================================================
+# 测试：阶段 6 / 切片 J —— S08 重编码的源侧保真属性探测
+#
+# 纯内存构造 AVStream / AVFrame / AVCodecContext 逐项验证「位深 / 色彩 /
+# 旋转 / HDR / 色度抽样」的判别力，另有两个反向守护：没有证据不得拿空表
+# 冒充「已保留」、清单说继承但产物没写进编码器/帧时必须判红。端到端用例
+# 确认字段真的进 RepairResult 与 JSON/TXT/HTML 三份报告。
+# =================================================
+videoeye_add_test(test_repair_transcode_fidelity
+    unit/test_repair_transcode_fidelity.cpp
+)
+target_link_libraries(test_repair_transcode_fidelity PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil
+    FFmpeg::swscale)
+add_test(NAME RepairTranscodeFidelityTests COMMAND test_repair_transcode_fidelity)
+
+# =================================================
 # 测试：网络源与流媒体健壮性（第五批）
 #
 # 本地文件打开链路已有用例；HTTP 是另一条 IO 路径，过去的用例只到 TCP 层

@@ -174,9 +174,10 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | D | 索引损坏后的直接扫描与 GOP 恢复 | B | 完成（层 2/3；层 1 未做，`5200d51`） |
 | E / F / G | 显示顺序 / 时基证据 / 逐轨覆盖 | A–D | 完成（`5200d51` / `a73e42a` / `5932508`） |
 | H | 参考辅助重建写 ctts（放开「参考无 ctts」） | C + E | 完成（`a8029e9`） |
-| I | VFR 逐帧时长（参考 stts 非常量） | C + H | 完成 |
+| I | VFR 逐帧时长（参考 stts 非常量） | C + H | 完成（`1a7ebaf`） |
+| J | S08 源侧保真属性探测与显式记账（阶段 6 起步） | I | 完成 |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
-| 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 未开始 |
+| 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
 ### 4.1 切片 A：基线收口
 
@@ -415,6 +416,48 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   而不是首段）；重建后产物 `stts` 逐段等于参考、`mdhd` 时长等于合计、**逐包 DTS 间隔
   与逐帧表一致**、无 `ctts`；音频轨非常量仍拒绝；时长溢出拒绝。
 
+### 4.10 切片 J：S08 源侧保真属性探测（阶段 6 起步）
+
+- **要解决的现实问题**：S08 把解码帧统一重编码成 8-bit `yuv420p`。源侧的
+  位深、色彩标记、像素宽高比、色度采样位置、旋转 / 镜像矩阵、HDR 静态元数据
+  全部不会跟着画面过去 —— 旧实现既不继承也不报告，产物能播，报告里只有一句
+  「有代际画质损失」。10-bit HDR 手机录像被压成 8-bit SDR、竖屏视频横躺，
+  用户看不到任何解释。路线图 §5.2 明确写了「补之前产物不能声称视觉无损」，
+  这一片就是那个前置条件。
+- **改法**：新增 header-only `RepairTranscodeFidelity.h`，用**首帧 + 输入流 +
+  编码器实际选定的像素格式**逐项对照，输出 `model::RepairTranscodeFidelity`：
+  - 能零风险继承的直接写进产物，并进 `preserved_properties`：
+    像素宽高比、色度采样位置（落在 `AVFrame` 上，FFmpeg 8 起 `AVCodecContext`
+    已无此字段）、以及**位深不变时**的色彩 primaries / transfer / space / range。
+  - 色彩标记**只在位深不变时**继承：给 8-bit SDR 画面贴 `bt2020`/`smpte2084`
+    会让播放器按 HDR 渲染，比不写标记更糟。位深变了就老实记损失。
+  - 位深下降、色度抽样下降、旋转 / 镜像矩阵、HDR 静态元数据逐项进
+    `lost_properties`。本版**不尝试继承旋转 / HDR**（低比特深度产物沿用源 HDR
+    标记是错的），如实记账即可。
+  - `inspected=false` 是独立状态：保码流路径 / 转码中途失败都保持未探测，
+    空表不许冒充「属性均已保留」，`FinalizeTranscodeFidelity` 也不会把没探测
+    过的清单抬成 `all_properties_preserved=true`。
+- **顺带修的安全洞**：`sws` 原先按首帧尺寸 + 像素格式建一次就再也不动。源片
+  中途换尺寸 / 换格式时继续喂旧 context 是**越界读**。现在用
+  `TranscodeScaleState` 逐帧实测：变了就重建 context（重建失败宁可显式丢帧），
+  并累计「尺寸与产物不同」的帧数写进报告；只有重建成功才 `Commit`。
+- **构建契约同步**：新头在 `core/repair` 公共头闭包里带 `libav*` include，
+  `VideoEyeRepair` 的 `FFmpeg::avcodec/avformat/avutil` 必须从 PRIVATE 提到
+  **PUBLIC**（静态库 PRIVATE 只传 link、不传 include 目录）。这是
+  `audit_link_visibility.py` 首轮判红抓到的真实问题，不是门禁误报；
+  `media` / `ffmpeg_io` / `codec` 仍保持 PRIVATE。
+- **落账链**：`RepairExecutionOutcome.transcode_fidelity` → `RepairEngine` →
+  `RepairFidelity.transcode` → JSON `fidelity.transcode` 子对象 +
+  TXT/HTML「转码保真探测」章节（同源 `BuildSections`）；
+  另有 `video.transcode_property_loss` 一条独立 `DamageFinding`。
+  非转码路径在三种格式里都明确写「未探测」。
+- **明确不做**：旋转 / HDR 元数据的继承（需单独验证 muxer 是否真的写 `tkhd`
+  矩阵，未验证前不宣称）；10-bit 编码器选型；逐轨转码决策；GOP 局部重编码；
+  `elst`（沿用 F）。
+- **验收**：13 + 2 = 15 个新用例（纯内存构造 `AVStream`/`AVFrame`/`AVCodecContext`
+  逐项验证判别力 + 两个端到端三格式一致性 + 两个逐帧缩放状态守护）；
+  11 组判别力变异全部精确判红后按字节恢复复跑绿。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -447,8 +490,13 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **S08 现状**：写死「视频 libx264 重编码 + 逐条音频轨复制」，无「按轨判断是否需转码」。
   先做轨道级选择，再研究 GOP 范围局部重编码；接入前**必须验证编码参数与拼接边界兼容性**
   （profile / level / 像素格式 / time_base / `max_b_frames`）。
-- **待补**：动态分辨率（当前固定首帧宽高）、10-bit、`color_primaries/trc/space/range`、
-  HDR 元数据与 SEI、旋转 displaymatrix。补之前产物不能声称视觉无损。
+- ~~**待补**：动态分辨率（当前固定首帧宽高）、10-bit、`color_primaries/trc/space/range`、
+  HDR 元数据与 SEI、旋转 displaymatrix。补之前产物不能声称视觉无损。~~
+  **切片 J 已部分解决**（见 §4.10）：这些属性现在逐项实测并写进报告，SAR /
+  色度采样位置 / 同色深色彩标记已继承；动态分辨率按帧重建 `sws` 并计数。
+  **仍待补**：旋转 displaymatrix 与 HDR 静态元数据的实际继承（需先用真实
+  旋转 / HDR 语料验证 muxer 行为）、10-bit 编码器选型与全链路 10-bit 保真。
+  在这些能力落地前，产物只能说「属性损失已列明」，不能说「视觉无损」。
 - **黑帧 / 静音 / 重复帧**：目前完全没有，属空能力。接入时由用户**显式选择**并单独记账，
   且不计入恢复率分子；`synthetic_frames_inserted` 恒 false 的现状要同步改掉。
 - **容器优先级**：TS/M2TS（同步恢复、PES 重组、时间戳断裂）、AVI（索引重建与损坏
@@ -513,7 +561,8 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | H 参考辅助重建写 ctts | 完成（本轮） | `a8029e9` | 含 ctts 的参考不再被拒（只记录不借用）；产物 ctts 由源侧 POC 实测；真实 B 帧语料删 moov 后重建成功且逐包 PTS 与原片一致；4 组判别力变异精确判红。见 §4.8 |
 | I VFR 逐帧时长 | 完成（本轮） | `1a7ebaf` | 参考 stts 非常量不再整份拒绝；产物 `stts` 逐段等于参考、`mdhd` 时长取合计、逐包 DTS 间隔与逐帧表一致、VFR 下不写 ctts；新增 5 个用例与 5 组判别力变异（全部精确判红）。见 §4.9 |
 | 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / VFR 逐帧时长已落地，只剩 `elst`） | | 见 §4.5–§4.9 |
-| 阶段 6 转码 / 其他容器 / 多候选 | 未开始 | | |
+| J S08 源侧保真属性探测 | 完成（本轮） | 待回填 | 位深 / 色彩 / 旋转 / HDR / 动态分辨率逐项实测并同源写进三种报告；可零风险继承的已继承；`sws` 按帧尺寸重建修掉越界读；15 个用例 + 11 组判别力变异全部精确判红。见 §4.10 |
+| 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
 
@@ -853,3 +902,54 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **无参考路径的 VFR 逐帧恢复**仍不做：没有样本表就没有证据，只在 `timeline_basis`
   里标 `vfr_declared` + `modified`（切片 F）。
 - **`mdhd` version 1 未实现**：超出 32 位的时长直接拒绝。
+
+### 切片 J 验收记录（2026-11-12）
+
+**交付**
+
+- 新 `core/repair/RepairTranscodeFidelity.h`（header-only）：
+  `TranscodeBitDepth` / `ApplyTranscodeInheritance` / `ApplyTranscodeFrameProperties` /
+  `TranscodeScaleState` / `InspectTranscodeFidelity` / `FinalizeTranscodeFidelity`。
+- `model::RepairTranscodeFidelity`（`RepairTypes.h`）挂到 `RepairFidelity.transcode`；
+  `RepairExecutionOutcome.transcode_fidelity` 作为执行层→引擎的唯一入口。
+- `RepairTolerantTranscode.cpp`：重编码前实测；`sws` 按帧尺寸 / 格式重建；
+  新增 `video.transcode_property_loss` finding；`transcode_note` 带探测摘要。
+- `RepairEngine.cpp` 原样上抛；`RepairReportExporter.cpp` 新增
+  `BuildTranscodeFidelity`，`BuildFidelity` 落 `transcode` 子对象，
+  `BuildSections` 给 TXT/HTML 加「转码保真探测」整节（含未探测态）。
+- `RepairCapabilityContracts.cpp`：S08 的 `quality_risks` / `evidence` 补上
+  位深 / 色彩 / 旋转 / HDR 的风险与「未实测不得声称已保留」的口径。
+- 顶层 `CMakeLists.txt`：`VideoEyeRepair` 的 FFmpeg 三件套 PRIVATE → PUBLIC；
+  `LinkVisibilityTests` / `LinkVisibilitySelfTestTests` 首轮判红即由此而来。
+
+**验证**
+
+- 新增 `test_repair_transcode_fidelity`（15 用例）：无证据反向守护、普通 8-bit
+  不谎报、10-bit 位深损失、位深变化只拦色彩标记不误伤 SAR / 色度位置、
+  同色深真写进编码器与转换帧才允许进 preserved、清单说继承但帧没写必须判红、
+  旋转矩阵 / 单位矩阵、HDR side data、色度抽样、动态分辨率收尾、
+  缩放状态（失败重试 / 格式变化不算分辨率变化）、S08 端到端三格式、
+  保码流路径三格式都写「未探测」。
+- 判别力 11 组全部精确判红后按字节恢复复跑绿：M1 位深损失不报、M2 位深变了
+  也照搬色彩标记、M3 声称继承色度位置但没写帧、M4 未探测被抬成已保留、
+  M5 旋转不判损失、M6 HDR 不判损失、M7 引擎不上抛、M8 JSON 不写子对象、
+  M9 TXT/HTML 把未探测写成已实测、M10 缩放状态不计数、M11 格式变化不重建 sws。
+  ⚠️ M9 与 M10 第一轮**判绿**：前者断言只找泛化的「未探测」，被另一行
+  「源侧属性结论」蒙混过去；后者计数逻辑当时埋在 `.cpp` 循环里，纯函数用例
+  根本碰不到。修法分别是把断言钉在**具体那一行的值**上、以及把计数抽成
+  `TranscodeScaleState` 让它可以被直接驱动。M6 第一轮是变异脚本自身语法错
+  （BUILD-FAILED），改锚点后复测判红。
+- 全量构建 / ctest / 离屏启动 / clang-format 18.1.8 / AUTOMOC / 分层 /
+  命名空间 / README 快照 / `git diff --check` 见提交记录。
+
+**未覆盖（如实记账）**
+
+- **旋转 / HDR 元数据本版只记账不继承**：产物画面方向可能与源片不同，
+  HDR 标记不沿用。要有真实旋转 / HDR 语料验证 muxer 的 `tkhd` 行为才能放开。
+- **10-bit 编码器未选型**：仍是统一 8-bit `yuv420p`，位深损失只是「说清楚」，
+  不是「补回来」。
+- **逐轨转码决策 / GOP 局部重编码 / 黑帧静音重复帧 / 其他容器 / 多候选规划器**
+  仍属阶段 6 未完成部分，见 §5.2。
+- **动态分辨率端到端语料缺失**：`TranscodeScaleState` 已单测，但没有
+  「真实中途变尺寸的 MP4 → 跑完整 S08」的用例；产物里那些帧仍按首帧尺寸
+  缩放，不是原样保留。
