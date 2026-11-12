@@ -908,9 +908,18 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         }
         for (const auto& text : order.limitations)
             recovery.items.push_back("显示顺序限制: " + text);
+    } else {
+        // 切片 K：「没做过测量」也必须出行。整节静默省略时，读者无从区分
+        // 「测过且顺序没问题」与「本策略根本没测」，等于默认给了一个乐观结论。
+        recovery.rows.emplace_back("显示顺序", "未测量（本次未做 POC 推导）");
+        recovery.items.push_back("显示顺序结论: 未独立核验，不能据此断言显示序与源片一致");
+        if (!result.display_order.unavailable_reason.empty())
+            recovery.items.push_back("显示顺序未测量原因: " + result.display_order.unavailable_reason);
+        for (const auto& text : result.display_order.limitations)
+            recovery.items.push_back("显示顺序限制: " + text);
     }
     // 时基依据（切片 F）：报告里每一个"秒"都来自这里。mode=unknown 表示没拿到
-    // 证据，此时不出行 —— 但也不能反过来说"时间轴没问题"。
+    // 证据，必须显式写「未取得」，不能反过来说"时间轴没问题"，也不能整节省略。
     if (result.timeline_basis.mode != "unknown") {
         const model::RepairTimelineBasis& basis = result.timeline_basis;
         std::string mode_text = basis.mode;
@@ -931,6 +940,16 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             recovery.items.push_back("时基细节: " + basis.detail);
         for (const auto& text : basis.limitations)
             recovery.items.push_back("时基限制: " + text);
+    } else {
+        // 切片 K：S08 等按推定帧率重建的路径就是这一态。以前整节消失，
+        // 读者只能从别处猜「时间轴大概没问题」——现在如实写明没有证据。
+        const model::RepairTimelineBasis& basis = result.timeline_basis;
+        recovery.rows.emplace_back("时基依据", "未取得源侧时基证据（unknown）");
+        recovery.items.push_back("时基结论: 报告里的秒数不能作为源片时间轴的证据；本次未取得帧时长 / 帧率依据");
+        if (!basis.detail.empty())
+            recovery.items.push_back("时基细节: " + basis.detail);
+        for (const auto& text : basis.limitations)
+            recovery.items.push_back("时基限制: " + text);
     }
     // 只写「确实损失」的区间：没有跳段时一行都不出，避免空表被读成「检查过且无损」。
     recovery.rows.emplace_back("损失区间数量", std::to_string(result.lost_ranges.size()));
@@ -944,11 +963,12 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     // 逐轨覆盖（切片 G）：全局损失区间说不清「是哪条轨缺的」，这里按轨逐个交代。
     // available=false 必须出一行 —— 静默省略会被读成「逐轨都没有缺口」。
     if (!result.track_coverage.available) {
-        recovery.rows.emplace_back("逐轨覆盖", "未接入（" +
-                                                   (result.track_coverage.unavailable_reason.empty()
-                                                        ? std::string("本次执行没有样本账本")
-                                                        : result.track_coverage.unavailable_reason) +
-                                                   "）");
+        // 有账本却没上抛覆盖，是「没统计」而不是「没有数据」。旧兜底无条件写
+        // 「本次执行没有样本账本」，在 S08 这类路径上是实打实的错误结论。
+        std::string reason = result.track_coverage.unavailable_reason;
+        if (reason.empty())
+            reason = result.sample_ledger.available ? "有样本账本但未产出逐轨覆盖统计" : "本次执行没有样本账本";
+        recovery.rows.emplace_back("逐轨覆盖", "未接入（" + reason + "）");
     } else {
         if (!result.track_coverage.complete)
             recovery.items.push_back("逐轨覆盖只统计到已扫描前缀（本次执行未走到源末尾），不能读成整段没内容");
@@ -972,7 +992,8 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                 line << "，覆盖 " << FixedSeconds(track.first_seconds) << "–" << FixedSeconds(track.last_seconds)
                      << "s";
             } else {
-                line << "，没有带时间戳的样本，覆盖区间未知";
+                // 下一行会单独报「多少个样本无时间戳未计入」，这里不重复写同一事实。
+                line << "，覆盖区间未知";
             }
             if (track.samples_without_timestamp > 0)
                 line << "；" << track.samples_without_timestamp << " 个样本无时间戳未计入";

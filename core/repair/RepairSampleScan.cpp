@@ -395,7 +395,9 @@ model::RepairTrackCoverage TrackCoverageStats::Build() const {
 model::RepairTrackCoverageSummary RepairSampleLedger::Coverage() const {
     model::RepairTrackCoverageSummary summary;
     if (coverage_by_track_.empty()) {
-        summary.unavailable_reason = "没有任何样本带时间戳，无法给出逐轨覆盖区间";
+        // coverage_by_track_ 为空 = 一个样本都没登记过（不是「样本没有时间戳」：
+        // 无时间戳样本也会进 map 并在 Build() 里单列 samples_without_timestamp）。
+        summary.unavailable_reason = "本次执行没有登记任何样本，无法给出逐轨覆盖";
         return summary;
     }
     summary.available = true;

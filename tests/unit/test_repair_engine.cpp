@@ -1996,3 +1996,245 @@ TEST(RepairPlainMp4RebuilderTests, ChunkSizeDoesNotChangeRebuiltOutputForBothPro
         EXPECT_GT(baseline_samples, 0u);
     }
 }
+
+// ============================================================
+// 切片 K：真实受控损坏语料上的结论层守护
+//
+// A–J 每个切片都给自己的字段写了单测，但「真实语料跑完整条链之后，报告还能不能
+// 逐轨说明恢复了什么、损失了什么」一直没人验。这里用 generate_real_corpus.py 造的
+// 受控损坏语料（有原片基准）钉死四条：
+//   1. 保码流路径：逐轨覆盖 / 共同区间 / 时基依据必须有可核对的值；
+//   2. 截断路径：不得把「只扫到前缀」标成完整覆盖；
+//   3. S08 转码路径：有账本就必须上抛逐轨覆盖，且**不许伪造输入侧时间区间**
+//      （产物时间轴按推定帧率从零重建，与损失区间不同轴，不能相减）；
+//   4. 未测量 / 未取得证据 / 未接入统计这三态必须在三种格式里显式出行，
+//      且「有账本但没统计」不许被写成「没有账本」。
+//
+// 语料缺失时这里用 ASSERT 而不是 GTEST_SKIP：结论层守护一旦静默跳过，
+// 整条链就又回到「只有零件级证据」的状态，而且没人会发现。
+// ============================================================
+
+struct ConclusionLayerProbe {
+    RepairResult result;
+    std::string dir;
+    std::string json;
+    std::string text;
+    std::string html;
+};
+
+void WriteConclusionReports(ConclusionLayerProbe* probe, const std::string& prefix) {
+    const auto written = reporting::RepairReportExporter::WriteAll(probe->result, probe->dir + "/" + prefix + ".json",
+                                                                   probe->dir + "/" + prefix + ".txt",
+                                                                   probe->dir + "/" + prefix + ".html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    probe->json = ReadText(probe->dir + "/" + prefix + ".json");
+    probe->text = ReadText(probe->dir + "/" + prefix + ".txt");
+    probe->html = ReadText(probe->dir + "/" + prefix + ".html");
+}
+
+ConclusionLayerProbe RunConclusionLayer(const char* sample, RepairMode mode, const char* tag) {
+    ConclusionLayerProbe probe;
+    probe.dir = MakeTempDir(std::string("k_") + tag);
+    RepairRequest request =
+        MakeRequest(RealCorpusSample(sample), probe.dir + "/out", RepairVerificationLevel::V1_FrameSample);
+    request.mode = mode;
+    probe.result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    if (probe.result.output_published)
+        WriteConclusionReports(&probe, "r");
+    return probe;
+}
+
+bool ConclusionTextHas(const ConclusionLayerProbe& probe, const char* needle) {
+    // TXT 是 "key: value"，HTML 是 <th>key</th><td>value</td> —— 带冒号的整串
+    // 在 HTML 里永远找不到。要求 TXT 出现完整行、HTML 同时出现 key 与 value，
+    // 既不放松「三格式同源」，也不会因排版差异假红。
+    const std::string full(needle);
+    const std::size_t sep = full.find(": ");
+    if (sep == std::string::npos)
+        return probe.text.find(full) != std::string::npos && probe.html.find(full) != std::string::npos;
+    const std::string key = full.substr(0, sep);
+    const std::string value = full.substr(sep + 2);
+    return probe.text.find(full) != std::string::npos && probe.html.find(key) != std::string::npos &&
+           probe.html.find(value) != std::string::npos;
+}
+
+bool ConclusionTextLacks(const ConclusionLayerProbe& probe, const char* needle) {
+    return probe.text.find(needle) == std::string::npos && probe.html.find(needle) == std::string::npos;
+}
+
+void RequireRealCorpus(const char* sample) {
+    ASSERT_TRUE(std::filesystem::exists(RealCorpusSample(sample)))
+        << "缺受控损坏语料 " << sample << "，先跑 tests/corpus/generate_real_corpus.py";
+}
+
+TEST(RepairEngine, RealCorpusPreserveModeReportsFullConclusionLayer) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    RequireRealCorpus("real_h264_aac_mid_damaged.mp4");
+
+    struct Case {
+        const char* tag;
+        const char* sample;
+        bool expect_loss;
+    };
+    const Case cases[] = {
+        {"k_preserve_healthy", "real_h264_aac_faststart.mp4", false},
+        {"k_preserve_mid", "real_h264_aac_mid_damaged.mp4", true},
+    };
+    for (const auto& c : cases) {
+        const ConclusionLayerProbe probe = RunConclusionLayer(c.sample, RepairMode::PreserveBitstream, c.tag);
+        ASSERT_TRUE(probe.result.output_published)
+            << c.tag << ": " << probe.result.summary << " | " << probe.result.error;
+        // 真实语料是音视频混合文件，逐轨覆盖必须真的接了账本且两轨都在。
+        EXPECT_TRUE(probe.result.sample_ledger.available) << c.tag;
+        ASSERT_TRUE(probe.result.track_coverage.available)
+            << c.tag << ": " << probe.result.track_coverage.unavailable_reason;
+        ASSERT_EQ(probe.result.track_coverage.tracks.size(), 2u) << c.tag;
+        for (const auto& track : probe.result.track_coverage.tracks) {
+            EXPECT_GT(track.samples, 0u) << c.tag;
+            EXPECT_TRUE(track.span_known) << c.tag << "：保码流路径样本带容器时间戳";
+            EXPECT_EQ(track.samples_without_timestamp, 0u) << c.tag;
+            EXPECT_FALSE(track.codec.empty()) << c.tag;
+        }
+        EXPECT_TRUE(probe.result.track_coverage.common_span_known) << c.tag;
+        EXPECT_GT(probe.result.track_coverage.common_end_seconds, probe.result.track_coverage.common_start_seconds)
+            << c.tag << "：音画共同覆盖不能是空区间";
+        EXPECT_EQ(probe.result.timeline_basis.mode, "container_pts") << c.tag;
+        EXPECT_FALSE(probe.result.fidelity.transcode.inspected) << c.tag << "：保码流路径不许声称做过转码属性探测";
+        EXPECT_EQ(probe.result.lost_ranges.empty(), !c.expect_loss) << c.tag;
+
+        // 三格式同源：JSON 有结构，TXT/HTML 有同一批可读结论。
+        EXPECT_NE(probe.json.find("\"track_coverage\""), std::string::npos) << c.tag;
+        EXPECT_NE(probe.json.find("\"timeline_basis\""), std::string::npos) << c.tag;
+        EXPECT_NE(probe.json.find("\"display_order\""), std::string::npos) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "时基依据: 容器时间戳")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "音画共同覆盖")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "轨 0（video")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "转码保真探测: 未探测")) << c.tag;
+        // 显示顺序本策略没测，必须显式说「未测量」，不能整节消失。
+        EXPECT_TRUE(ConclusionTextHas(probe, "显示顺序: 未测量")) << c.tag;
+        EXPECT_TRUE(ConclusionTextLacks(probe, "本次执行没有样本账本")) << c.tag;
+    }
+}
+
+TEST(RepairEngine, RealCorpusTailTruncationNeverMarksCoverageComplete) {
+    RequireRealCorpus("real_h264_aac_tail_truncated.mp4");
+    const ConclusionLayerProbe probe =
+        RunConclusionLayer("real_h264_aac_tail_truncated.mp4", RepairMode::PreserveBitstream, "k_tail");
+    ASSERT_TRUE(probe.result.output_published) << probe.result.summary << " | " << probe.result.error;
+    ASSERT_TRUE(probe.result.track_coverage.available);
+    ASSERT_EQ(probe.result.track_coverage.tracks.size(), 2u);
+    // 尾部被截断 = 没走到源末尾。此时逐轨 span 只是前缀，标 complete 会让
+    // 「扫了前半段」被读成「整段都检查过、没有缺口」。
+    EXPECT_FALSE(probe.result.track_coverage.complete) << probe.result.summary;
+    EXPECT_TRUE(ConclusionTextHas(probe, "逐轨覆盖只统计到已扫描前缀"));
+    EXPECT_NE(probe.json.find("\"complete\": false"), std::string::npos);
+}
+
+TEST(RepairEngine, RealCorpusTranscodePathReportsTrackCoverageWithoutFakeSpans) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    RequireRealCorpus("real_h264_aac_mid_damaged.mp4");
+
+    struct Case {
+        const char* tag;
+        const char* sample;
+    };
+    const Case cases[] = {
+        {"k_recover_healthy", "real_h264_aac_faststart.mp4"},
+        {"k_recover_mid", "real_h264_aac_mid_damaged.mp4"},
+    };
+    for (const auto& c : cases) {
+        const ConclusionLayerProbe probe = RunConclusionLayer(c.sample, RepairMode::RecoverContent, c.tag);
+        ASSERT_TRUE(probe.result.output_published)
+            << c.tag << ": " << probe.result.summary << " | " << probe.result.error;
+        EXPECT_TRUE(probe.result.fidelity.transcode.inspected) << c.tag;
+        EXPECT_TRUE(probe.result.fidelity.video_reencoded) << c.tag;
+        EXPECT_TRUE(probe.result.sample_ledger.available) << c.tag;
+        EXPECT_GT(probe.result.sample_ledger.total_samples, 0u) << c.tag;
+
+        // 核心回归：S08 接了样本账本，逐轨覆盖就不许再说「未接入」。
+        ASSERT_TRUE(probe.result.track_coverage.available)
+            << c.tag << "：有 " << probe.result.sample_ledger.total_samples
+            << " 个样本却把逐轨覆盖整块丢掉，报告会写成「没有账本」";
+        EXPECT_TRUE(probe.result.track_coverage.complete) << c.tag << "：正常跑到源末尾，逐轨覆盖不该被标成未完成";
+        ASSERT_EQ(probe.result.track_coverage.tracks.size(), 2u) << c.tag;
+        for (const auto& track : probe.result.track_coverage.tracks) {
+            EXPECT_GT(track.samples, 0u) << c.tag;
+            EXPECT_FALSE(track.codec.empty()) << c.tag;
+            EXPECT_FALSE(track.kind.empty()) << c.tag;
+            // S08 样本没有输入侧时间戳：不许填假 span，也不许把「没有时间戳」
+            // 的样本算成缺口（0 缺口是「未判定」，不是「无损」）。
+            EXPECT_FALSE(track.span_known) << c.tag;
+            EXPECT_EQ(track.samples_without_timestamp, track.samples) << c.tag;
+            EXPECT_EQ(track.gap_count, 0u) << c.tag;
+        }
+        EXPECT_FALSE(probe.result.track_coverage.common_span_known) << c.tag;
+        EXPECT_FALSE(probe.result.track_coverage.common_span_note.empty()) << c.tag;
+        bool axis_limited = false;
+        for (const auto& item : probe.result.track_coverage.limitations)
+            if (item.find("不可与损失区间相减") != std::string::npos)
+                axis_limited = true;
+        EXPECT_TRUE(axis_limited) << c.tag << "：产物时间轴与输入时间轴不同轴，必须写明不可相减";
+
+        EXPECT_EQ(probe.result.timeline_basis.mode, "unknown") << c.tag;
+        EXPECT_EQ(probe.result.fidelity.timeline_status, "modified") << c.tag;
+
+        EXPECT_NE(probe.json.find("\"track_coverage\""), std::string::npos) << c.tag;
+        EXPECT_NE(probe.json.find("\"samples_without_timestamp\": \""), std::string::npos) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "覆盖区间未知")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "未取得源侧时基证据")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "显示顺序: 未测量")) << c.tag;
+        EXPECT_TRUE(ConclusionTextHas(probe, "不可与损失区间相减")) << c.tag;
+        // 反向守护：账本明明在，任何格式都不能写「本次执行没有样本账本」。
+        EXPECT_TRUE(ConclusionTextLacks(probe, "本次执行没有样本账本")) << c.tag;
+    }
+}
+
+TEST(RepairEngine, CoverageUnavailableReasonDistinguishesMissingLedgerFromMissingStats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    ConclusionLayerProbe probe =
+        RunConclusionLayer("real_h264_aac_faststart.mp4", RepairMode::PreserveBitstream, "k_reason");
+    ASSERT_TRUE(probe.result.output_published);
+
+    // 有账本但没上抛统计：只准说「没统计」，不准说「没有账本」。
+    probe.result.track_coverage = RepairTrackCoverageSummary{};
+    probe.result.track_coverage.available = false;
+    probe.result.sample_ledger.available = true;
+    WriteConclusionReports(&probe, "has_ledger");
+    EXPECT_TRUE(ConclusionTextHas(probe, "有样本账本但未产出逐轨覆盖统计"));
+    EXPECT_TRUE(ConclusionTextLacks(probe, "本次执行没有样本账本"));
+
+    // 反向：确实没账本时才允许这句，且原因要能区分开。
+    probe.result.sample_ledger.available = false;
+    WriteConclusionReports(&probe, "no_ledger");
+    EXPECT_TRUE(ConclusionTextHas(probe, "本次执行没有样本账本"));
+    EXPECT_TRUE(ConclusionTextLacks(probe, "有样本账本但未产出逐轨覆盖统计"));
+}
+
+TEST(RepairEngine, TimelineUnknownAndDisplayOrderUnmeasuredAreExplicitInAllFormats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    ConclusionLayerProbe probe =
+        RunConclusionLayer("real_h264_aac_faststart.mp4", RepairMode::PreserveBitstream, "k_unknown");
+    ASSERT_TRUE(probe.result.output_published);
+
+    // 真实语料是 container_pts：先钉住「有证据」时的正向文案，防止下面的
+    // 改动只是把两个分支都写成同一句。
+    ASSERT_EQ(probe.result.timeline_basis.mode, "container_pts");
+    EXPECT_TRUE(ConclusionTextHas(probe, "时基依据: 容器时间戳"));
+    EXPECT_TRUE(ConclusionTextLacks(probe, "未取得源侧时基证据"));
+
+    probe.result.timeline_basis.mode = "unknown";
+    WriteConclusionReports(&probe, "unknown");
+    EXPECT_TRUE(ConclusionTextHas(probe, "未取得源侧时基证据（unknown）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "不能作为源片时间轴的证据")) << probe.text;
+    EXPECT_NE(probe.json.find("\"mode\": \"unknown\""), std::string::npos);
+    EXPECT_TRUE(ConclusionTextLacks(probe, "时基依据: 容器时间戳"));
+
+    // 显示顺序：analyzed=false 时必须有「未测量」行，不能被静默省略成
+    // 「看起来测过且没问题」。
+    probe.result.display_order.analyzed = false;
+    probe.result.display_order.available = false;
+    WriteConclusionReports(&probe, "unmeasured");
+    EXPECT_TRUE(ConclusionTextHas(probe, "显示顺序: 未测量")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "不能据此断言显示序与源片一致")) << probe.text;
+    EXPECT_NE(probe.json.find("\"analyzed\": false"), std::string::npos);
+}

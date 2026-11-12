@@ -176,6 +176,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | H | 参考辅助重建写 ctts（放开「参考无 ctts」） | C + E | 完成（`a8029e9`） |
 | I | VFR 逐帧时长（参考 stts 非常量） | C + H | 完成（`1a7ebaf`） |
 | J | S08 源侧保真属性探测与显式记账（阶段 6 起步） | I | 完成（`c4d1672`） |
+| K | 真实损坏语料上的结论层守护（修 2 个真 bug） | A–J | 完成 |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -458,6 +459,45 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   逐项验证判别力 + 两个端到端三格式一致性 + 两个逐帧缩放状态守护）；
   11 组判别力变异全部精确判红后按字节恢复复跑绿。
 
+### 4.11 切片 K：真实损坏语料上的结论层守护
+
+- **为什么先做这一片**：A–J 给每个新字段都写了单测，但「真实受控损坏语料跑完整条链
+  之后，报告还能不能逐轨说明恢复了哪些轨道 / 哪些区间 / 发生了什么损失」一直没人验。
+  原 `RealCorpus*` 5 条用例只断言 `output_published` / 状态 / 段数 / 可解码帧数；
+  `timeline_basis` / `display_order` / `fidelity.transcode` 在 `test_repair_engine.cpp`
+  里**零引用**。另有 `lost_ranges` 与 `sample_ledger` 的端到端用例，但用的是
+  `CreateTestMedia` 合成媒体，不是从完整文件受控制造损坏、有原片基准的语料。
+- **摸底实测**（5 个场景：healthy / mid-damaged / tail-truncated × 保码流；
+  healthy / mid-damaged × RecoverContent）暴露的不只是「缺断言」：
+  1. **S08 路径报告撒谎**：`sample_ledger.available=1`、88 个样本，
+     但 `track_coverage.available=0` / `tracks=0` / `unavailable_reason` 为空；
+     TXT 因此写「逐轨覆盖: 未接入（**本次执行没有样本账本**）」。
+     把「没统计」报成「没数据」，正是红线第 1 条禁止的错误结论。
+  2. **时基无证据时静默省略**：`timeline_basis.mode=unknown`（S08 按推定帧率重建）
+     时，TXT/HTML 整个「时基依据」章节消失，读者只能默认「时间轴大概没问题」。
+  3. **显示顺序未测量时静默省略**：`display_order.analyzed=false` 时同样整节消失。
+  4. `RepairSampleScan::Coverage()` 在没有任何样本时写「没有任何样本带时间戳」，
+     把「没样本」说成「没时间戳」，口径不准（顺手修正）。
+- **改法**：
+  - `RepairTolerantTranscode` 收尾上抛 `sample_ledger.Coverage()`，按输出流下标填
+    `kind` / `codec`（在流创建时捕获，`out`/`in` 释放前），`complete` 用本次执行的
+    真实终止原因计算，并追加一条时间轴口径限制。
+  - **刻意不补输入侧时间戳**：S08 产物时间轴按推定帧率从零重建，与 `lost_ranges`
+    的输入时间轴不同轴；解码器异步、源包与输出帧不是一一对应，硬关联只会造出
+    假区间。因此如实给「每轨恢复了多少样本 + 全部无输入侧时间戳 + 覆盖区间未知
+    + 不可与损失区间相减」，而不是编一段 span。`gap_count=0` 的语义是「未判定」，
+    不是「无损」。
+  - 报告层：`available=false` 时按 `sample_ledger.available` 区分「有账本但没统计」
+    与「确实没有账本」；`timeline_basis.mode=unknown`、
+    `display_order.analyzed=false` 两种未测量态在 TXT/HTML 显式出行。
+  - 同步修正 `RepairTypes.h` / `RepairExecutor.h` 里「例如转码路径没有账本」的过时注释。
+- **验收**：5 个端到端用例（保码流三态 / 截断不许标完整 / S08 不许伪造 span /
+  兜底文案反向守护 / 未测量态三格式）；10 组判别力变异全部精确判红后按字节恢复
+  复跑绿。语料缺失用 `ASSERT_TRUE` 而非 `GTEST_SKIP` —— 结论层守护静默跳过等于没守护。
+- **明确不做**：S08 输入时间轴覆盖区间的重建（需另做源包→输出帧映射并验证 B 帧
+  重排）；`elst` 等「明确不恢复项」的显式标注（下一片 L）；参考辅助重建路径
+  （C/H/I）尚未纳入这张真实语料矩阵。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -562,6 +602,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | I VFR 逐帧时长 | 完成（本轮） | `1a7ebaf` | 参考 stts 非常量不再整份拒绝；产物 `stts` 逐段等于参考、`mdhd` 时长取合计、逐包 DTS 间隔与逐帧表一致、VFR 下不写 ctts；新增 5 个用例与 5 组判别力变异（全部精确判红）。见 §4.9 |
 | 阶段 5 时间轴 / 音画同步 | 部分（显示顺序 / ctts / 时基证据 / 逐轨覆盖 / VFR 逐帧时长已落地，只剩 `elst`） | | 见 §4.5–§4.9 |
 | J S08 源侧保真属性探测 | 完成（本轮） | `c4d1672` | 位深 / 色彩 / 旋转 / HDR / 动态分辨率逐项实测并同源写进三种报告；可零风险继承的已继承；`sws` 按帧尺寸重建修掉越界读；15 个用例 + 11 组判别力变异全部精确判红。见 §4.10 |
+| K 真实语料结论层守护 | 完成（本轮） | 待回填 | 实测查出 S08「有账本却报没有账本」与时基 / 显示顺序未测量态静默省略两个真 bug；S08 上抛逐轨覆盖且不许伪造 span；5 个用例 + 10 组判别力变异全部精确判红。见 §4.11 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -953,3 +994,48 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **动态分辨率端到端语料缺失**：`TranscodeScaleState` 已单测，但没有
   「真实中途变尺寸的 MP4 → 跑完整 S08」的用例；产物里那些帧仍按首帧尺寸
   缩放，不是原样保留。
+
+### 切片 K 验收记录（2026-11-12）
+
+**交付**
+
+- `core/repair/RepairTolerantTranscode.cpp`：输出流创建时捕获 `stream_meta`
+  （输出流下标 → kind / codec 名）；收尾上抛 `sample_ledger.Coverage()`，
+  `complete` 由 `stop` / 读错 / 写失败 / 资源失败 / 达上限共同判定；
+  追加「产物时间轴从零重建，不可与损失区间相减」限制项。
+- `core/reporting/RepairReportExporter.cpp`：`available=false` 的兜底文案按
+  `sample_ledger.available` 分叉；时基 `unknown`、显示顺序 `analyzed=false`
+  各补显式行；逐轨行的「覆盖区间未知」不再与下一行重复。
+- `core/repair/RepairSampleScan.cpp`：空账本的 `unavailable_reason` 改为
+  「本次执行没有登记任何样本」，不再误称「没有带时间戳的样本」。
+- `RepairTypes.h` / `RepairExecutor.h`：同步过时注释。
+- `tests/unit/test_repair_engine.cpp`：新增 5 个用例与
+  `ConclusionLayerProbe` / `RunConclusionLayer` / `WriteConclusionReports`
+  / `ConclusionTextHas` / `ConclusionTextLacks` / `RequireRealCorpus` 辅助。
+
+**验证**
+
+- 5 个用例：`RealCorpusPreserveModeReportsFullConclusionLayer`（healthy + mid 表驱动，
+  逐轨覆盖 / 共同区间 / 时基 / 三格式同源）、
+  `RealCorpusTailTruncationNeverMarksCoverageComplete`、
+  `RealCorpusTranscodePathReportsTrackCoverageWithoutFakeSpans`、
+  `CoverageUnavailableReasonDistinguishesMissingLedgerFromMissingStats`（正反双向）、
+  `TimelineUnknownAndDisplayOrderUnmeasuredAreExplicitInAllFormats`（正反双向）。
+- 判别力 10 组全部精确判红后按字节恢复复跑绿：M1 S08 不上抛覆盖、
+  M2 不写时间轴口径、M3 保码流 `complete` 恒 true、M4 S08 `complete` 恒 false、
+  M5 兜底恢复硬编码「没有账本」、M6 时基 unknown 整节不出行、
+  M7 显示顺序未测量不出行、M8 引擎不上抛、M9 账本不统计无时间戳样本、
+  M10 给 S08 样本伪造 PTS 制造假 span。
+- `ConclusionTextHas` 的口径：TXT 是 `key: value`、HTML 是 `<th>key</th><td>value</td>`，
+  带冒号的整串在 HTML 里永远找不到。要求 TXT 出现完整行、HTML 同时出现 key 与 value，
+  既不放松「三格式同源」也不因排版假红。
+
+**未覆盖（如实记账）**
+
+- **S08 仍给不出输入时间轴上的逐轨覆盖区间**：这是本次刻意保留的物理限制，
+  不是遗漏。要做需先建立「源包 → 解码帧 → 编码包」映射并验证 B 帧重排与
+  解码延迟，否则就是编一段假 span。
+- **`elst` / 开放 GOP 前导图像 / VFR+B 帧退回解码序等「明确不恢复项」**
+  仍未在报告里逐项显式标注（下一片 L）。
+- **参考辅助重建路径（C/H/I）未纳入这张真实语料矩阵**：目前 K 只钉住
+  保码流与 S08 两条主路径。

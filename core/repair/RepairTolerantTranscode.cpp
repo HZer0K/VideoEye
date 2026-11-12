@@ -672,6 +672,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     video_out->time_base = encoder->time_base;
     video_out->avg_frame_rate = fps;
     const int video_out_index = static_cast<int>(out->nb_streams) - 1;
+    // 逐轨覆盖要按输出流下标交代「恢复的是哪条轨、什么编码」。收尾时 out / in
+    // 都已释放，所以流类型与编码名必须在这里就地捕获。
+    std::map<int, std::pair<std::string, std::string>> stream_meta;
+    stream_meta[video_out_index] = {"video", avcodec_get_name(encoder->codec_id)};
 
     // 音频：尽量按原码流复制；失败 / 不兼容的轨道逐项记账。
     std::vector<int> audio_map(in->nb_streams, -1);
@@ -691,6 +695,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         av_dict_copy(&dst->metadata, src->metadata, 0);
         dst->disposition = src->disposition;
         audio_map[i] = static_cast<int>(out->nb_streams) - 1;
+        stream_meta[audio_map[i]] = {"audio", avcodec_get_name(src->codecpar->codec_id)};
     }
 
     if (avio_open(&out->pb, paths.part_path.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -1049,6 +1054,29 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 覆盖所有写包过的返回路径（取消 / 超时 / 写失败 / 达上限）：账本里是
     // 实测的部分值，不能事后伪装成完整扫描。
     outcome.sample_ledger = sample_ledger.Summary();
+    // 切片 K：S08 同样接了样本账本，逐轨覆盖不能再整块丢掉。旧实现只有
+    // sample_ledger 没有 track_coverage，报告兜底还会写「本次执行没有样本账本」
+    // —— 有 88 个样本却说没有账本，属于把「没统计」报成「没数据」。
+    // 这里只上抛账本里**确实有的事实**：每轨样本数、无时间戳样本数。
+    // S08 的样本没有输入侧时间戳（产物时间轴按推定帧率从零重建），所以
+    // span_known=false / common_span_known=false 是如实结论，不填假区间。
+    outcome.track_coverage = sample_ledger.Coverage();
+    outcome.track_coverage.complete =
+        !stop.canceled && !stop.timed_out && !outcome.read_error && !write_failed && !resource_failed && !size_capped;
+    for (auto& track : outcome.track_coverage.tracks) {
+        const auto it = stream_meta.find(track.output_stream_index);
+        if (it != stream_meta.end()) {
+            track.kind = it->second.first;
+            track.codec = it->second.second;
+        } else if (track.kind.empty()) {
+            track.kind = "other";
+        }
+    }
+    outcome.track_coverage.limitations.push_back(
+        "S08 重编码：产物时间轴按推定帧率从零重建，样本未携带输入侧时间戳；逐轨覆盖只能说明每轨恢复"
+        "了多少样本，不能给出输入时间轴上的覆盖区间，也不可与损失区间相减");
+    if (!outcome.track_coverage.complete)
+        outcome.track_coverage.limitations.push_back("本次执行未走到源末尾或中途失败，逐轨覆盖只统计到已写入的前缀");
 
     outcome.canceled = stop.canceled;
     outcome.timed_out = stop.timed_out;

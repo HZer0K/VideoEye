@@ -801,7 +801,8 @@ struct RepairResult {
     // S04 跳过的源时间区间：由 recovered_segments 派生，供报告逐段说明损失。
     std::vector<RepairLostRange> lost_ranges;
     // 切片 G：逐轨覆盖 / 逐轨缺口 / 音画共同覆盖区间。available=false 表示本次
-    // 执行没有接入样本账本（例如转码或参考辅助重建路径），不能当成「零缺口」。
+    // 执行没有产出逐轨覆盖统计（切片 K 起 S08 转码路径也已接入账本并上抛），
+    // 不能当成「零缺口」；报告须区分「没有账本」与「有账本但没统计」。
     RepairTrackCoverageSummary track_coverage;
     RepairTimelineRepair timeline_repair;
     // 参考样片辅助重建（切片 C）：借了哪些解码配置、布局线索如何在源侧自证。
