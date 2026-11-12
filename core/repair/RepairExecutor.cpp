@@ -423,11 +423,23 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                     outcome.reference_assist = rebuilt.assist;
                     // 切片 H：参考辅助重建也会实测显示顺序并写 ctts，结论必须原样上报。
                     outcome.display_order = rebuilt.display_order;
+                    // 切片 M：这条路的 mdhd timescale / stts sample_delta 是从参考样片
+                    // 借来的，源侧 moov 已丢失，没有独立时基证据。重封装阶段只在
+                    // mode==unknown 时补 container_pts，这里先占住，否则报告会把
+                    // 「借来的时基」写成「源容器时间戳」，与同一份报告的时基核对
+                    // 结论自相矛盾。
+                    outcome.timeline_basis.mode = "reference_borrowed";
+                    outcome.timeline_basis.frame_rate = "unknown";
+                    outcome.timeline_basis.constant = false;
+                    outcome.timeline_basis.detail =
+                        "mdhd timescale / stts sample_delta 借自同源参考样片；源侧 moov 已丢失，没有独立时基证据";
+                    outcome.timeline_basis.limitations.push_back(
+                        "逐帧时长 / 帧率来自参考样片的样本表，不是损坏文件里的实测值，不能作为源片时间轴的证据");
                     // 显式帧率只对"无参考扫描"这条路有意义：参考辅助重建的时基来自
-                    // 参考初始化段并与源侧证据交叉核验过，不能用用户输入覆盖它。
+                    // 参考样片的样本表，不能用用户输入覆盖它。
                     // 但要说话 —— 否则用户设了 25 fps 却什么都没发生。
                     if (request.HasAssumedFrameRate())
-                        rebuild_note += "；本次走参考样片辅助重建，显式帧率参数未参与（时基来自参考初始化段）";
+                        rebuild_note += "；本次走参考样片辅助重建，显式帧率参数未参与（时基来自参考样片样本表）";
                 }
             } else {
                 // 切片 F：源侧没有帧率证据时，允许调用方显式给一个（报告里标成

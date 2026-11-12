@@ -969,7 +969,9 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
         fidelity.limitations.push_back("未做音频载荷哈希比对");
     if (!full)
         fidelity.limitations.push_back("未做 V2 全包音画同步扫描");
-    fidelity.limitations.push_back("未做逐帧画质 / 感知保真度评估（需要参考样片）");
+    // 切片 M：本层不知道调用方是否提供了参考样片，不能写「需要参考样片」——
+    // 参考样片辅助重建那条路明明有参考，这句会和结论层自相矛盾。
+    fidelity.limitations.push_back("未做逐帧画质 / 感知保真度评估（本次未启用画质比对）");
     fidelity.limitations.push_back("解码器未设置 CORRUPT / decode_error_flags 的失真无法被本检查发现");
 
     Emit(progress, 96, verification.evidence);

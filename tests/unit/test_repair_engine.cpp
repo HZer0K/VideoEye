@@ -2378,3 +2378,173 @@ TEST(RepairEngine, DeclaredExclusionsUnavailableStateIsExplicitInThreeFormats) {
     EXPECT_NE(probe.json.find("\"available\": false"), std::string::npos);
     EXPECT_TRUE(ConclusionTextLacks(probe, "edit_list_not_rebuilt")) << "未评估态不得列具体条目";
 }
+
+// ============================================================
+// 切片 M：把参考样片辅助重建（C/H/I）纳入真实语料结论层矩阵
+//
+// K/L 只钉住「保码流」与「S08 转码」两条主路径。C/H/I 是第三条主链：
+// 普通 MP4 缺 moov + 同源参考 MP4，重建时 mdhd timescale / stts 是从参考
+// 借来的。摸底实测发现这条链上有四处自相矛盾的结论 —— 报告的能力契约
+// 自己写着「timeline_status 只能是 modified / unknown」，结论却写 unchanged。
+// 这里守住整条链跑完之后三格式说的是同一件事。
+//
+// 语料缺失同样用 ASSERT 而不是 GTEST_SKIP：结论层守护静默跳过等于没守护。
+// ============================================================
+
+ConclusionLayerProbe RunReferenceAssistConclusionLayer(const char* sample, const char* reference, const char* tag) {
+    ConclusionLayerProbe probe;
+    probe.dir = MakeTempDir(std::string("m_") + tag);
+    RepairRequest request =
+        MakeRequest(RealCorpusSample(sample), probe.dir + "/out", RepairVerificationLevel::V2_FullDecode);
+    request.reference_path = RealCorpusSample(reference);
+    probe.result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    if (probe.result.output_published)
+        WriteConclusionReports(&probe, "r");
+    return probe;
+}
+
+TEST(RepairEngine, RealCorpusReferenceAssistConclusionLayerIsConsistentInAllFormats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    RequireRealCorpus("real_h264_aac_missing_moov.mp4");
+    const ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer("real_h264_aac_missing_moov.mp4",
+                                                                         "real_h264_aac_faststart.mp4", "ref_verified");
+    ASSERT_TRUE(probe.result.output_published) << probe.result.summary << " | " << probe.result.error;
+
+    // 1. 确实走的是 C/H/I，而不是无参考扫描或普通重封装。
+    ASSERT_TRUE(probe.result.reference_assist.used) << probe.result.summary;
+    EXPECT_EQ(probe.result.reference_assist.compatibility, "verified");
+    EXPECT_FALSE(probe.result.reference_assist.borrowed_parameters.empty());
+    EXPECT_TRUE(probe.result.display_order.analyzed) << "切片 H：参考路径必须实测显示顺序";
+    EXPECT_TRUE(probe.result.display_order.ctts_written) << "该语料有 B 帧重排，必须写 ctts";
+
+    // 2. 时基证据：借来的时基不能冒充「源容器时间戳」，也不能只写一行 mode
+    //    让读者误读成「源片时间轴已核验」。
+    EXPECT_EQ(probe.result.timeline_basis.mode, "reference_borrowed");
+    EXPECT_TRUE(ConclusionTextHas(probe, "时基依据: 参考样片时基（借用，源侧无独立证据）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "时基证据边界: 源侧 moov 已丢失，无独立时基证据")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "借用的时基不能作为源片时间轴的证据")) << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "时基依据: 容器时间戳")) << probe.text;
+    EXPECT_NE(probe.json.find("\"mode\": \"reference_borrowed\""), std::string::npos);
+
+    // 3. R03 红线：源侧 moov 已丢失，没有可核验的独立时基基线。写 unchanged /
+    //    Repaired 等于把推断伪装成实测。
+    EXPECT_EQ(probe.result.fidelity.timeline_status, "unknown") << probe.result.fidelity.timeline_note;
+    EXPECT_EQ(probe.result.status, RepairBusinessStatus::PartiallyRecovered) << probe.result.summary;
+    EXPECT_TRUE(ConclusionTextHas(probe, "时间轴结论: unknown")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "不能断言时间轴与源片一致")) << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "时间轴改写: no（时基已核验且时长一致）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "时间轴是否改变无法确定")) << probe.text;
+
+    // 4. 保真度与参考辅助章节同源：以前一个说 verified、另一个说 not_applicable。
+    EXPECT_EQ(probe.result.fidelity.reference_compatibility, probe.result.reference_assist.compatibility);
+    EXPECT_TRUE(ConclusionTextHas(probe, "参考段兼容性: verified")) << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "参考段兼容性: not_applicable")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "参考样片辅助重建: real_h264_aac_faststart.mp4（兼容性 verified）"))
+        << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "借用: ftyp 兼容 brands")) << probe.text;
+    // 有同源参考样片 ≠ 没有参考样片，也不等于做过感知比对。
+    EXPECT_EQ(probe.result.fidelity.perceptual_fidelity, "not_measured_with_reference");
+    EXPECT_TRUE(ConclusionTextHas(probe, "感知保真度: not_measured_with_reference")) << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "感知保真度: unknown_without_reference")) << probe.text;
+    // 借用参数与时间轴说明必须从执行层真的上抛进保真度章节 —— 只出现在「恢复区间」
+    // 的 reference_assist 那一份不算同源（这一条最初没覆盖，变异 M5 因此判绿）。
+    EXPECT_TRUE(ConclusionTextHas(probe, "借用参数: ftyp 兼容 brands（原样）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "；本次由同源参考样片辅助重建 moov，借用了解码配置与 mdhd 时基（兼容性 "
+                                         "verified）"))
+        << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "（需要参考样片）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "未做逐帧画质 / 感知保真度比对")) << probe.text;
+
+    // 5. 结论层其余维度在这条链上也必须真的接了账本，不能因为走参考路径就退化。
+    ASSERT_TRUE(probe.result.sample_ledger.available);
+    EXPECT_GT(probe.result.sample_ledger.total_samples, 0u);
+    ASSERT_TRUE(probe.result.track_coverage.available) << probe.result.track_coverage.unavailable_reason;
+    ASSERT_EQ(probe.result.track_coverage.tracks.size(), 2u);
+    for (const auto& track : probe.result.track_coverage.tracks) {
+        EXPECT_GT(track.samples, 0u);
+        EXPECT_TRUE(track.span_known);
+        EXPECT_FALSE(track.codec.empty());
+    }
+    EXPECT_FALSE(probe.result.fidelity.transcode.inspected) << "保码流路径不许声称做过转码属性探测";
+    EXPECT_TRUE(ConclusionTextHas(probe, "转码保真探测: 未探测"));
+
+    // 6. 切片 L 的目录也要认这条路径：逐帧时长借自参考，不是源侧实测。
+    ASSERT_TRUE(probe.result.declared_exclusions.available);
+    EXPECT_TRUE(HasDeclaredCode(probe.result, "vfr_frame_durations_not_recovered"));
+    const auto* vfr = FindDeclaredItem(probe.result, "vfr_frame_durations_not_recovered");
+    ASSERT_NE(vfr, nullptr);
+    EXPECT_NE(std::find(vfr->trigger_facts.begin(), vfr->trigger_facts.end(), "timeline_basis.mode=reference_borrowed"),
+              vfr->trigger_facts.end())
+        << "触发事实必须是结构化字段，不许从 summary / limitations 反推";
+    EXPECT_TRUE(ConclusionTextHas(probe, "vfr_frame_durations_not_recovered")) << probe.text;
+
+    // JSON 同源：三格式说的是同一批结论，不是只在 TXT/HTML 里补文案。
+    EXPECT_NE(probe.json.find("\"reference_assist\""), std::string::npos);
+    EXPECT_NE(probe.json.find("\"reference_compatibility\": \"verified\""), std::string::npos);
+    EXPECT_NE(probe.json.find("\"perceptual_fidelity\": \"not_measured_with_reference\""), std::string::npos);
+    EXPECT_NE(probe.json.find("\"timeline_status\": \"unknown\""), std::string::npos);
+}
+
+TEST(RepairEngine, RealCorpusReferenceAssistUnmeasuredStatesAreExplicitInAllFormats) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    RequireRealCorpus("real_h264_aac_missing_moov.mp4");
+    ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer("real_h264_aac_missing_moov.mp4",
+                                                                   "real_h264_aac_faststart.mp4", "ref_unmeasured");
+    ASSERT_TRUE(probe.result.output_published) << probe.result.summary;
+
+    // 先钉住正向态，防止下面只是把两个分支写成同一句。
+    ASSERT_EQ(probe.result.timeline_basis.mode, "reference_borrowed");
+    ASSERT_TRUE(probe.result.display_order.analyzed);
+    EXPECT_TRUE(ConclusionTextHas(probe, "时基依据: 参考样片时基（借用，源侧无独立证据）"));
+
+    // 只改结论层字段、不重跑引擎：参考路径的未测量态也必须显式出行，
+    // 不许整节消失，更不许倒退回「容器时间戳」。
+    probe.result.timeline_basis.mode = "unknown";
+    probe.result.display_order.analyzed = false;
+    probe.result.display_order.available = false;
+    WriteConclusionReports(&probe, "unmeasured");
+    EXPECT_TRUE(ConclusionTextHas(probe, "未取得源侧时基证据（unknown）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "显示顺序: 未测量")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(probe, "不能据此断言显示序与源片一致")) << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "参考样片时基（借用")) << probe.text;
+    EXPECT_NE(probe.json.find("\"mode\": \"unknown\""), std::string::npos);
+    EXPECT_NE(probe.json.find("\"analyzed\": false"), std::string::npos);
+}
+
+// 反向守护：新的「借用时基」口径只属于 C/H/I，不能串到 K/L 已钉住的两条主路径。
+TEST(RepairEngine, MainPathsDoNotLeakReferenceBorrowedConclusions) {
+    RequireRealCorpus("real_h264_aac_faststart.mp4");
+    const ConclusionLayerProbe preserve =
+        RunConclusionLayer("real_h264_aac_faststart.mp4", RepairMode::PreserveBitstream, "m_no_leak_preserve");
+    ASSERT_TRUE(preserve.result.output_published) << preserve.result.summary;
+    EXPECT_EQ(preserve.result.timeline_basis.mode, "container_pts");
+    EXPECT_EQ(preserve.result.fidelity.timeline_status, "unchanged");
+    EXPECT_EQ(preserve.result.fidelity.reference_compatibility, "not_applicable");
+    EXPECT_EQ(preserve.result.fidelity.perceptual_fidelity, "unknown_without_reference");
+    EXPECT_FALSE(HasDeclaredCode(preserve.result, "vfr_frame_durations_not_recovered"));
+    EXPECT_TRUE(ConclusionTextHas(preserve, "时基依据: 容器时间戳"));
+    EXPECT_TRUE(ConclusionTextLacks(preserve, "参考样片时基（借用"));
+    EXPECT_TRUE(ConclusionTextLacks(preserve, "时基证据边界"));
+    EXPECT_TRUE(ConclusionTextLacks(preserve, "感知保真度: not_measured_with_reference"));
+
+    const ConclusionLayerProbe transcode =
+        RunConclusionLayer("real_h264_aac_faststart.mp4", RepairMode::RecoverContent, "m_no_leak_transcode");
+    ASSERT_TRUE(transcode.result.output_published) << transcode.result.summary;
+    EXPECT_EQ(transcode.result.timeline_basis.mode, "unknown");
+    EXPECT_EQ(transcode.result.fidelity.reference_compatibility, "not_applicable");
+    EXPECT_FALSE(transcode.result.reference_assist.used);
+    EXPECT_TRUE(ConclusionTextLacks(transcode, "参考样片时基（借用"));
+    EXPECT_TRUE(ConclusionTextLacks(transcode, "参考段兼容性: verified"));
+}
+
+// 异源参考：拒绝发布时也不许把「没核验」写成「已核验」。
+TEST(RepairEngine, RealCorpusForeignReferenceNeverClaimsVerifiedBasis) {
+    RequireRealCorpus("real_h264_aac_missing_moov.mp4");
+    RequireRealCorpus("real_h264_inband_faststart.mp4");
+    const ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer(
+        "real_h264_aac_missing_moov.mp4", "real_h264_inband_faststart.mp4", "ref_foreign");
+    EXPECT_FALSE(probe.result.output_published) << probe.result.summary;
+    EXPECT_FALSE(probe.result.reference_assist.used);
+    EXPECT_NE(probe.result.fidelity.reference_compatibility, "verified") << probe.result.summary;
+    EXPECT_TRUE(probe.json.empty()) << "未发布产物时不应写出成功态报告";
+}

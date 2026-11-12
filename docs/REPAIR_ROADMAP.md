@@ -177,6 +177,8 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | I | VFR 逐帧时长（参考 stts 非常量） | C + H | 完成（`1a7ebaf`） |
 | J | S08 源侧保真属性探测与显式记账（阶段 6 起步） | I | 完成（`c4d1672`） |
 | K | 真实损坏语料上的结论层守护（修 2 个真 bug） | A–J | 完成（`4856937`） |
+| L | 本次明确未恢复项的显式标注（能力目录 8 条） | K | 完成（`6cd0a8a`） |
+| M | 参考辅助重建路径（C/H/I）的结论层收敛 | K + L | 完成（本轮，见 §4.13） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -496,7 +498,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
   复跑绿。语料缺失用 `ASSERT_TRUE` 而非 `GTEST_SKIP` —— 结论层守护静默跳过等于没守护。
 - **明确不做**：S08 输入时间轴覆盖区间的重建（需另做源包→输出帧映射并验证 B 帧
   重排）；`elst` 等「明确不恢复项」的显式标注由切片 L 落地（见 §4.12）；
-  参考辅助重建路径（C/H/I）尚未纳入这张真实语料矩阵。
+  参考辅助重建路径（C/H/I）的纳入由切片 M 落地（见 §4.13）。
 
 ### 4.12 切片 L：本次明确未恢复项的显式标注
 
@@ -537,7 +539,81 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 
 **明确不做**：任何一条排除项的「实际恢复」都不在本片范围（L 只把口径说清，
 不重建 `elst`、不继承旋转 / HDR、不插合成帧、不做 GOP 局部重编码）；
-参考辅助重建路径（C/H/I）仍未纳入真实语料矩阵；S08 输入侧覆盖区间仍不给。
+参考辅助重建路径（C/H/I）由切片 M 纳入真实语料矩阵（见 §4.13）；S08 输入侧覆盖区间仍不给。
+
+### 4.13 切片 M：参考辅助重建路径（C/H/I）的结论层收敛
+
+**目标**：K/L 的真实语料矩阵只钉住保码流与 S08 两条主路径。把 C/H/I
+（普通 MP4 缺 moov + 同源参考 MP4 → `container.mdat_reference_assisted`）
+纳入矩阵，先做**摸底实测**再决定改什么 —— 结果在一次执行里抓到 **4 处自相矛盾
+的结论**，全部是「无事实却给结论」这一类错误：
+
+1. `fidelity.timeline_status = "unchanged"`：这条路的 `mdhd timescale` /
+   `stts sample_delta` 是从参考片借的，源侧 moov 已丢失，没有独立时基基线。
+   能力契约自己写着「只能是 `modified` / `unknown`」，代码却写了 `unchanged`。
+   根因是 R03 那条红线只覆盖 fMP4 初始化段借用（`reference_init`），没覆盖
+   `reference_assist`。
+2. `fidelity.reference_compatibility = "not_applicable"`：同一份报告的
+   「恢复区间」章节写着 `reference_assist.compatibility = verified`，
+   保真度章节却说参考不适用。`borrowed_parameters` 同样没上抛。
+3. `fidelity.perceptual_fidelity = "unknown_without_reference"`：本次明明**有**
+   同源参考样片，只是没做逐帧画质比对。把「有参考但没测」写成「没有参考」
+   是事实错误。
+4. 「恢复区间」把时基依据写成「容器时间戳」：重封装阶段只在 `mode == "unknown"`
+   时补 `container_pts`，参考辅助路径没提前占住 mode，于是「借来的时基」
+   被渲染成「源容器时间戳」。
+
+另外 `RepairVerifier` 的画质限制文案硬写「需要参考样片」—— 它不知道调用方
+有没有给参考，这条路明明有参考，同一份报告里两句直接打架。
+
+**做法**
+
+- `RepairExecutor`：参考辅助重建成功后写 `timeline_basis.mode = "reference_borrowed"`、
+  `frame_rate = "unknown"`、`constant = false`，并附「逐帧时长来自参考样本表，
+  不是损坏文件实测值」的限制行。占住 mode 的另一个作用：不让重封装阶段把它
+  改写成 `container_pts`。
+- `RepairEngine`：`timeline_unknown` 并入 `reference_assist_used`；
+  unknown 分支的 note 按来源分岔（参考样片借用 / fMP4 初始化段借用）；
+  参考辅助分支上抛 `reference_compatibility` 与 `borrowed_parameters`，
+  兼容性非 `verified` 时把 `compatibility_reason` 落进 limitations，
+  `perceptual_fidelity` 改 `not_measured_with_reference` 并明说
+  「有同源参考但未做逐帧比对，不能声称画质无损」。
+- `RepairReportExporter`：`reference_borrowed` 渲染成「参考样片时基（借用，
+  源侧无独立证据）」，并额外出一行「时基证据边界」+ 一条「借用的时基不能作为
+  源片时间轴的证据」—— 只写 mode 会让读者把「有依据」误读成「源片已核验」。
+- `RepairVerifier`：文案改「本次未启用画质比对」，不再替调用方断言有没有参考。
+- `RepairDeclaredExclusions`：`vfr_frame_durations_not_recovered` 增加
+  `timeline_basis.mode=reference_borrowed` 触发事实（目录仍 8 条），
+  让「逐帧时长不可信」在这条路上也有结构化依据。
+
+**守护**
+
+- `RealCorpusReferenceAssistConclusionLayerIsConsistentInAllFormats`：真实语料
+  `real_h264_aac_missing_moov.mp4` + 同源 `real_h264_aac_faststart.mp4`，
+  钉住 `timeline_status=unknown`、`reference_compatibility` 与恢复区间同源、
+  `perceptual_fidelity=not_measured_with_reference`、三格式都出行。
+- `RealCorpusReferenceAssistUnmeasuredStatesAreExplicitInAllFormats`：未测量态
+  （时基 / 显示序 / 画质）必须显式出行，不许静默省略。
+- `MainPathsDoNotLeakReferenceBorrowedConclusions`：**反向守护** —— 保码流与
+  S08 两条主路径不得出现「参考样片时基」这类结论（防止修一处串味两处）。
+- `RealCorpusForeignReferenceNeverClaimsVerifiedBasis`：不相干参考片（源侧
+  重建失败）不得被说成 `verified` 依据。
+- `RepairDeclaredExclusions.ReferenceBorrowedBasisIsAnExplicitStructuredFact`：
+  纯函数正反表驱动 + 目录覆盖守护，目录条数不变。
+
+**判别力变异查出的两个覆盖缺口**（第一轮 M5 / M7 判绿）
+
+1. `fidelity.borrowed_parameters` 没有任何断言：用例只覆盖了「恢复区间」章节里
+   `reference_assist.borrowed_parameters` 那一份，保真度章节即使不上抛也照样绿。
+   已补「借用参数: ftyp 兼容 brands（原样）」与「时间轴说明里带参考借用句」两条断言。
+2. `if (assist.compatibility != "verified")` 这条限制**永远不触发**：`used == true`
+   时兼容性由重建器唯一写入点保证是 `verified`，留着就是假覆盖。已删除，并留下
+   注释说明契约与「哪天放开必须加回 + 配用例」。真正该守的不变量
+   （非 `verified` 的参考根本不会被 `used`）由 `ForeignReferenceNeverClaimsVerifiedBasis` 守着。
+
+**明确不做**：借来的时基**仍是借的** —— 本片只把口径写对，不做「用参考片
+反推源片时间轴」的独立核验；S08 输入侧覆盖区间仍不给；逐轨转码决策 /
+其他容器 / 多候选规划器仍属 §5.2。
 
 ---
 
@@ -645,6 +721,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | J S08 源侧保真属性探测 | 完成（本轮） | `c4d1672` | 位深 / 色彩 / 旋转 / HDR / 动态分辨率逐项实测并同源写进三种报告；可零风险继承的已继承；`sws` 按帧尺寸重建修掉越界读；15 个用例 + 11 组判别力变异全部精确判红。见 §4.10 |
 | K 真实语料结论层守护 | 完成（本轮） | `4856937` | 实测查出 S08「有账本却报没有账本」与时基 / 显示顺序未测量态静默省略两个真 bug；S08 上抛逐轨覆盖且不许伪造 span；5 个用例 + 10 组判别力变异全部精确判红。见 §4.11 |
 | L 本次明确未恢复项显式标注 | 完成（本轮） | `6cd0a8a` | 8 条能力目录 + 结构化触发矩阵；9 个纯函数用例 + 3 个真实语料端到端用例；172/172 ctest（1938 gtest）；13 组判别力变异全部精确判红后按字节恢复复跑绿。见 §4.12 与下方「切片 L 验收记录」 |
+| M 参考辅助重建路径（C/H/I）结论层收敛 | 完成（本轮） | `待回填` | 摸底实测一次抓到 4 处自相矛盾结论（借来的时基写成 `unchanged`、兼容性 `not_applicable`、有参考却说没有参考、借用时基渲染成容器时间戳）；5 个用例（含主路径反向守护）；172/172 ctest（1943 gtest）；11 组判别力变异全部精确判红（首轮 M5/M7 判绿，补断言 + 删不可达分支后转红）。见 §4.13 与下方「切片 M 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1080,8 +1157,9 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - **`elst` / 开放 GOP 前导图像 / VFR+B 帧退回解码序等「明确不恢复项」**
   K 时仍未在报告里逐项显式标注；**切片 L 已落地**（见 §4.12），但只标注口径，
   不实际恢复。
-- **参考辅助重建路径（C/H/I）未纳入这张真实语料矩阵**：K 与 L 都只钉住
-  保码流与 S08 两条主路径。
+- **参考辅助重建路径（C/H/I）**：K 与 L 当时只钉住保码流与 S08 两条主路径；
+  **切片 M 已把它纳入真实语料矩阵**（见 §4.13），并修掉了该链上把借用时基
+  写成 `unchanged` 等四处错误结论。
 
 ### 切片 L 验收记录（2026-11-12）
 
@@ -1133,6 +1211,43 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 
 - 8 条排除项**只标注口径，不实际恢复**：仍不重建 `elst`、不继承旋转 / HDR、
   不补 10-bit、不插黑帧 / 静音 / 重复帧、不做分片重同步与 GOP 局部重编码。
-- **参考辅助重建路径（C/H/I）未纳入真实语料矩阵**；S08 输入侧时间轴覆盖
-  区间仍不给（需先做源包 → 解码帧 → 编码包映射并验证 B 帧重排）。
+- **参考辅助重建路径（C/H/I）已由切片 M 纳入真实语料矩阵**（见 §4.13）；
+  S08 输入侧时间轴覆盖区间仍不给（需先做源包 → 解码帧 → 编码包映射并验证 B 帧重排）。
 - 逐轨转码决策 / 其他容器 / 多候选规划器仍属 §5.2 未完成部分。
+
+### 切片 M 验收记录（2026-11-13）
+
+**范围**：§4.13。真实语料 `real_h264_aac_missing_moov.mp4`（由 `real_h264_aac_faststart.mp4`
+去 moov 派生，天然同源）+ 同源参考，走 `container.mdat_reference_assisted`。
+
+- 摸底实测（临时探针，落地前删除）一次打出 4 处自相矛盾：`timeline_status=unchanged`、
+  `reference_compatibility=not_applicable`、`perceptual_fidelity=unknown_without_reference`、
+  时基依据渲染成「容器时间戳」。四处全部修掉。
+- 能力契约自证：R03 的注释写着 `timeline_status` 只能是 `modified` / `unknown`，
+  代码却写 `unchanged` —— 这条红线原先只钉 fMP4 初始化段借用。
+- 新增 5 个用例：真实语料三格式同源（36 条断言）、未测量态显式出行、主路径反向守护、
+  不相干参考不得声称 `verified`、目录纯函数正反表驱动。
+- 验证：172/172 ctest（1943 gtest）、离屏 `rc=124`、clang-format 18.1.8、
+  AUTOMOC / 分层 / 命名空间 / 链接可见性 / README 快照（153·153·1943·19）/
+  `git diff --check` 全绿。
+- 判别力 **11 组全部精确判红**后按字节恢复 + `os.utime` 复跑 64/10/15/36 全绿：
+  M1 时基口径退回 `container_pts`、M2 参考辅助不算作时基无证据、M3 借来的时基仍写
+  `unchanged`、M4 参考兼容性不上抛、M5 借用参数不上抛、M6 有参考却说没有参考、
+  M7 时间轴说明不透传参考借用、M8 报告不出时基证据边界、M9 时基依据显示成容器时间戳、
+  M10 声明目录丢 `reference_borrowed` 事实、M11 画质限制文案退回「需要参考样片」。
+
+**首轮判绿的两组（覆盖缺口，已修）**
+
+1. M5：只覆盖了「恢复区间」里的 `reference_assist.borrowed_parameters`，保真度章节
+   不上抛也照样绿 → 补「借用参数: ftyp 兼容 brands（原样）」断言。
+2. M7：原变异打的是 `if (assist.compatibility != "verified")`，实测该分支**不可达**
+   （`used == true` ⇒ 兼容性由重建器唯一写入点保证 `verified`），属假覆盖 →
+   删除分支并留注释；改为变异「时间轴说明不透传参考借用」，同时补该句断言。
+
+**未覆盖（如实记账）**
+
+- 借来的时基**仍是借的**：没有做「用参考片反推源片时间轴」的独立核验，
+  报告只声明 `unknown` + 证据边界。
+- 真实语料矩阵仍只有保码流 / S08 / C-H-I 三条路径；`reference_init`（fMP4 初始化段）
+  路径暂无真实语料端到端用例。
+- S08 输入侧时间轴覆盖区间仍不给；逐轨转码决策 / 其他容器 / 多候选规划器仍属 §5.2。

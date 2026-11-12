@@ -202,6 +202,18 @@ TEST(RepairDeclaredExclusions, TriggerMatrixMatchesExactlyOnStructuredFacts) {
              r.executions.push_back(AttemptedExecution());
          },
          {"edit_list_not_rebuilt", "vfr_frame_durations_not_recovered"}},
+        // 切片 M：参考样片辅助重建（C/H/I）借的是参考片的 stts/mdhd，源侧 moov
+        // 已丢失。它必须挂 VFR 声明，但不能串到普通 container_pts 路径。
+        {"reference_borrowed_mode",
+         [](RepairResult& r) { r.timeline_basis.mode = "reference_borrowed"; },
+         {"vfr_frame_durations_not_recovered"}},
+        {"reference_borrowed_with_execution",
+         [](RepairResult& r) {
+             r.timeline_basis.mode = "reference_borrowed";
+             r.executions.push_back(AttemptedExecution());
+         },
+         {"edit_list_not_rebuilt", "vfr_frame_durations_not_recovered"}},
+        {"container_pts_does_not_trigger_vfr", [](RepairResult& r) { r.timeline_basis.mode = "container_pts"; }, {}},
         {"display_order_analyzed",
          [](RepairResult& r) { r.display_order.analyzed = true; },
          {"original_display_offsets_not_restored"}},
@@ -307,6 +319,28 @@ TEST(RepairDeclaredExclusions, TriggerFactsAreStructuredFieldValues) {
     EXPECT_NE(std::find(transcode->trigger_facts.begin(), transcode->trigger_facts.end(),
                         "fidelity.transcode.lost_properties[]=旋转矩阵"),
               transcode->trigger_facts.end());
+}
+
+TEST(RepairDeclaredExclusions, ReferenceBorrowedBasisIsAnExplicitStructuredFact) {
+    RepairResult result = EvaluatedBaseline();
+    result.timeline_basis.mode = "reference_borrowed";
+    const auto declared = repair::BuildDeclaredExclusions(result);
+    ASSERT_TRUE(declared.available);
+    const auto* item = FindItem(declared, "vfr_frame_durations_not_recovered");
+    ASSERT_NE(item, nullptr);
+    EXPECT_NE(
+        std::find(item->trigger_facts.begin(), item->trigger_facts.end(), "timeline_basis.mode=reference_borrowed"),
+        item->trigger_facts.end())
+        << "触发事实必须是 字段=值，不许写成「参考辅助路径」这类自由文本";
+    EXPECT_EQ(item->status, "not_attempted") << "本片只标注口径，不实际恢复逐帧时长";
+
+    // 反向守护：没有该结构化事实（保码流 / S08）时，连自由文本写着「时基来自
+    // 参考样片」也不得挂这条，防止新触发条件被放宽成「看着像就挂」。
+    RepairResult plain = EvaluatedBaseline();
+    plain.timeline_basis.mode = "container_pts";
+    plain.reference_assist.used = false;
+    plain.fidelity.timeline_note = "时基来自参考样片";
+    EXPECT_EQ(FindItem(repair::BuildDeclaredExclusions(plain), "vfr_frame_durations_not_recovered"), nullptr);
 }
 
 TEST(RepairDeclaredExclusions, ThreeFormatsShareSameCodeSet) {

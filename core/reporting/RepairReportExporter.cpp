@@ -984,8 +984,16 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             mode_text = "容器时间戳";
         else if (basis.mode == "adts_sample_rate")
             mode_text = "ADTS 采样率";
+        else if (basis.mode == "reference_borrowed")
+            mode_text = "参考样片时基（借用，源侧无独立证据）";
         const bool has_rate = basis.frame_rate != "unknown";
         recovery.rows.emplace_back("时基依据", has_rate ? mode_text + "（" + basis.frame_rate + "）" : mode_text);
+        if (basis.mode == "reference_borrowed") {
+            // 切片 M：借用时基不是「拿到了证据」，而是「证据来自另一份文件」。
+            // 只写一行 mode 会让读者把「有依据」误读成「源片时间轴已核验」。
+            recovery.rows.emplace_back("时基证据边界", "源侧 moov 已丢失，无独立时基证据");
+            recovery.items.push_back("时基结论: 借用的时基不能作为源片时间轴的证据，逐帧时长与源片可能不同");
+        }
         recovery.rows.emplace_back("帧时长是否恒定", basis.constant ? "是" : "否（逐帧时长无证据）");
         if (basis.vfr_declared)
             recovery.rows.emplace_back("码流声明非恒定帧率", "是（fixed_frame_rate_flag=0，按名义帧率重建）");

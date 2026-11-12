@@ -45,6 +45,10 @@ std::vector<std::string> TriggerFactsFor(const std::string& code, const model::R
         // 的事实：预检失败 / 诊断之前就结束的路径不得借它挂免责声明。
         if (result.timeline_basis.mode == "unknown" && AnyAttemptedExecution(result))
             facts.push_back("timeline_basis.mode=unknown");
+        // 切片 M：参考样片辅助重建（C/H/I）的逐帧时长来自参考片的 stts/mdhd，
+        // 源侧 moov 已丢失。这是「借来的时基」而非源侧实测，同样适用本条声明。
+        if (result.timeline_basis.mode == "reference_borrowed")
+            facts.push_back("timeline_basis.mode=reference_borrowed");
     } else if (code == "original_display_offsets_not_restored") {
         if (result.display_order.analyzed) {
             facts.push_back("display_order.analyzed=true");
@@ -88,11 +92,12 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
                                  "路线图 F/I/K 明确不做 elst 重建：负偏移用 ctts version 1 表达，"
                                  "不做「整体平移 + 裁开头」；没有样本表就没有逐帧时长的证据。"));
         items.push_back(MakeBase("vfr_frame_durations_not_recovered", "VFR 逐帧时长不恢复",
-                                 "时基证据不足 / 码流声明变帧率",
-                                 "样本时长只能按名义或推定恒定帧率写入；若源为 VFR，逐帧时长与原始不一致，"
-                                 "报告不得据此声称逐帧时长已恢复。",
+                                 "时基证据不足 / 码流声明变帧率 / 参考样片辅助重建",
+                                 "样本时长只能按名义或推定恒定帧率写入、或从参考样片借用样本时长表；"
+                                 "若源为 VFR，逐帧时长与原始不一致，报告不得据此声称逐帧时长已恢复。",
                                  "参考路径 I 只重建完整 stts run 序列；无参考且无样本表时逐帧时长没有证据，"
-                                 "时基 unknown 时按推定帧率从零重建（切片 K）。"));
+                                 "时基 unknown 时按推定帧率从零重建（切片 K）。参考样片辅助重建（C/H/I）"
+                                 "借的是参考片的 stts/mdhd，源侧 moov 已丢失，逐帧时长同样没有独立证据（切片 M）。"));
         items.push_back(MakeBase("original_display_offsets_not_restored", "原始 B 帧显示偏移不恢复",
                                  "做过显示顺序分析的路径",
                                  "产物里的显示顺序是 POC 推导的重建值（或保持解码序），不是原始 ctts；"

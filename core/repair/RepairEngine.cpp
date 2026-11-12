@@ -401,8 +401,16 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     const bool reference_unverified =
         inspect.reference_init.has_value() && inspect.reference_init->compatibility != "verified";
     const bool timeline_mismatch = verified.verification.timeline_mismatch;
-    const bool timeline_unknown = borrowed_reference && !timeline_mismatch &&
-                                  (reference_unverified || !verified.verification.timeline_comparable);
+    // 切片 M：普通 MP4 缺 moov 走「参考样片辅助重建」时，同样借用了参考文件的
+    // mdhd timescale / stts，而源侧 moov 已丢失，根本没有可核验的独立时基基线。
+    // R03 这条红线原先只覆盖 fMP4 初始化段借用（reference_init），C/H/I 路径
+    // 绕过它把推断写成 unchanged，还与同一份报告的能力契约
+    // 「timeline_status 只能是 modified / unknown」自相矛盾。
+    const bool reference_assist_used = execution.reference_assist.used;
+    const bool timeline_unknown =
+        !timeline_mismatch &&
+        ((borrowed_reference && (reference_unverified || !verified.verification.timeline_comparable)) ||
+         reference_assist_used);
 
     // ---- 5. 发布（R06：提交前的最后一个取消/预算检查点）----
     Emit(progress, 97, stage::Publishing(), "发布产物");
@@ -489,8 +497,12 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
                                       "」生成产物，片段内部时间关系保持不变";
     } else if (timeline_unknown) {
         fidelity.timeline_status = "unknown";
-        fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
-                                 "源侧缺少可核验的独立证据，不能断言时间轴未改变";
+        fidelity.timeline_note =
+            reference_assist_used
+                ? "产物时间轴的 mdhd timescale / stts 借自同源参考样片；源侧 moov 已丢失，没有可核验的独立时基基线，"
+                  "不能断言时间轴与源片一致"
+                : "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
+                  "源侧缺少可核验的独立证据，不能断言时间轴未改变";
     } else {
         fidelity.timeline_status = "unchanged";
         fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未补齐 / 未合成";
@@ -625,7 +637,9 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     if (timeline_mismatch)
         fidelity.limitations.push_back("时间轴实测与源侧估算不符，播放时长 / 速度可能已被改变");
     if (timeline_unknown)
-        fidelity.limitations.push_back("借用的参考时基未经源侧独立证据核验，时间轴是否改变无法确定");
+        fidelity.limitations.push_back(
+            reference_assist_used ? "参考样片辅助重建借用了参考文件的时基；源侧 moov 已丢失，时间轴是否改变无法确定"
+                                  : "借用的参考时基未经源侧独立证据核验，时间轴是否改变无法确定");
     if (reference_unverified)
         fidelity.limitations.push_back("参考段兼容性未核验，完整性结论只覆盖实际写入并被验证的包");
     if (segment_split) {
@@ -714,6 +728,23 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
             finding.limitations.push_back("没有原始完整视频，无法给出确定的无失真结论或恢复百分比");
             result.residual_findings.push_back(std::move(finding));
         }
+    } else if (execution.reference_assist.used) {
+        // 切片 M：参考样片辅助重建（C/H/I）借的是完整 MP4 的 moov，不是 fMP4
+        // 初始化段。保真度结论必须与「恢复区间与时间轴」里的 reference_assist
+        // 同源 —— 以前一个说 verified、另一个说 not_applicable。
+        const model::RepairReferenceAssist& assist = execution.reference_assist;
+        fidelity.reference_compatibility = assist.compatibility;
+        fidelity.borrowed_parameters = assist.borrowed_parameters;
+        fidelity.timeline_note +=
+            "；本次由同源参考样片辅助重建 moov，借用了解码配置与 mdhd 时基（兼容性 " + assist.compatibility + "）";
+        // 这里刻意不写「兼容性非 verified 时记账」的分支：`used == true` 时兼容性
+        // 由重建器唯一写入点保证为 verified，分支永远不触发，留着就是假覆盖。
+        // 「非 verified 的参考根本不会被 used」由 ForeignReferenceNeverClaimsVerifiedBasis
+        // 守护；若哪天重建器允许 used && !verified，这条限制必须加回并配用例。
+        // 有同源参考样片 ≠ 做过感知比对。默认 unknown_without_reference 会把
+        // 「有参考但没测」写成「没有参考」，是事实错误。
+        fidelity.perceptual_fidelity = "not_measured_with_reference";
+        fidelity.limitations.push_back("本次有同源参考样片，但未做逐帧画质 / 感知保真度比对，不能声称画质无损");
     }
 
     // 逐轨守恒失败必须落到状态与保真度上，不能被大轨道掩盖。
