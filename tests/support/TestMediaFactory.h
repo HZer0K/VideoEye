@@ -102,6 +102,14 @@ struct MediaProbe {
     double audio_start_seconds = 0.0;
     int marked_frames = 0;  // 实测 decode_error_flags != 0 的帧数（错误隐藏帧）
     int corrupt_frames = 0; // 实测 AV_FRAME_FLAG_CORRUPT 的帧数（FFmpeg 8.x 上常为 0）
+    // 视频流方向信息（displaymatrix）。容器里没有这份 side data 时 has=false、
+    // 角度保持 0 —— 「没有方向信息」和「旋转 0°」必须能区分开，否则产物到底
+    // 继承了没有就没法验。
+    bool has_display_matrix = false;
+    double video_rotation_degrees = 0.0;
+    // 视频流上的 HDR 静态元数据（mastering display / content light level），
+    // 任一份存在即为 true。同样是为了验「产物到底继承了没有」。
+    bool has_hdr_metadata = false;
     std::string error;
 };
 

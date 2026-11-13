@@ -182,6 +182,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | N | fMP4 借参考初始化段路径的结论层收敛（修 3 个真 bug） | M | 完成（见 §4.14） |
 | O | S08 重编码的编码器口径收敛（libx264 → 实测编码器） | N | 完成（见 §4.15） |
 | P | S08 音画起点对齐（统一原点，保留源侧 Δ） | O | 完成（见 §4.16） |
+| Q | 容器级 side data 真正继承（旋转矩阵 / HDR 静态元数据） | P | 完成（见 §4.17） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -803,6 +804,109 @@ FFmpeg 是 **LGPL 变体**（`cmake/ffmpeg-version.json`：
 
 ---
 
+### 4.17 切片 Q：容器级 side data 的真正继承（旋转矩阵 / HDR 静态元数据）
+
+**起点**：§5.2 一直把「旋转 displaymatrix 与 HDR 静态元数据的实际继承」列为待补。
+摸底时发现旧实现的问题比「缺能力」更微妙 —— 它**根本不去看产物**：
+
+```cpp
+if (fidelity.has_display_matrix) {
+    fidelity.lost_properties.push_back("画面旋转 / 镜像矩阵（…°）未继承：…");
+}
+```
+
+这句话是从「我们没拷 side data」推出来的。产物侧一次都没打开过。哪天 muxer 自己
+继承了、或者拷贝逻辑改了却忘了改文案，同一份报告就会自相矛盾 —— 与 M / N / O / P
+是同一类错误：**拿意图当事实**。
+
+而且这两项根本不需要重编码代价：旋转矩阵和 HDR 静态元数据都是**流级 side data**，
+mp4 muxer 在写 header 时从输出流的 `codecpar->coded_side_data` 取。挂上去就完事。
+
+**实测（探针，落地前删除）**
+
+```
+源片：has_display_matrix=1 deg=-90   mastering=1 cll=1
+产物：has_display_matrix=0 deg=0     ← 旧实现确实丢了，像素横着存 → 播放器不转正
+```
+
+拷 side data 之后：
+
+```
+产物：has_display_matrix=1 deg=-90   mastering=1 cll=1
+      attach_m=1 attach_hdr=1 out_has_m=1 out_has_hdr=1 measured=1
+```
+
+即 `movenc` 确实会把 `AV_PKT_DATA_DISPLAYMATRIX` 写进 `tkhd`、把
+`MASTERING_DISPLAY_METADATA` / `CONTENT_LIGHT_LEVEL` 写进 `mdcv` / `clli` —— 这是本轮
+实测出来的事实，不是查文档推断的。
+
+**做法**
+
+- **拷贝**：在 `avformat_write_header` **之前**把源侧（`codecpar` 优先，首帧 side data
+  兜底，见 `SourceDisplayMatrix`）的矩阵与两份 HDR 元数据挂到输出视频流的
+  `codecpar->coded_side_data`。拷贝动作单独记 `display_matrix_attached` /
+  `hdr_metadata_attached`。
+- **实测**：`av_write_trailer` + 关输入之后，重新打开产物文件，逐项读回它**自己**声明
+  的方向矩阵与 HDR 元数据，落 `output_has_display_matrix` / `output_rotation_degrees` /
+  `output_has_hdr_metadata` / `side_data_output_measured`。
+  ❗ 只在写成功时测：写失败 / 截断的产物可能连 `moov` 都不完整，打开失败本身不该被读成
+  「产物缺少方向信息」。
+- **结论**（`FinalizeSideDataInheritance`，唯一入口）：
+  | 源侧 | 产物侧实测 | 结论 |
+  |---|---|---|
+  | 有 | 有且角度一致（≤0.5°） | preserved「已在产物中实测到相同角度」 |
+  | 有 | 有但角度不同 | lost「角度已改变」 |
+  | 有 | 无 | lost「产物实测无方向信息」 |
+  | 有 | **未实测** | unverified（第三类） |
+  | 无 | — | 不提（印「源未声明」），不进任何一张表 |
+- **HDR 有位深前提**：只有 `源位深 == 产物位深` 才拷（`TranscodeHdrInheritable`）。
+  10 bit 源压成 8 bit 产物后照搬 HDR 标记，会让播放器把一个 SDR 画面按 HDR 渲染 ——
+  与「色彩标记只在位深不变时继承」是同一条理由，只是这份元数据挂在容器侧，更容易漏。
+  位深降级时 `hdr_inherit_blocked_by_bit_depth=true`，结论里写明「主动不沿用」，
+  与「muxer 丢了」分开表述。
+  ❗ 还加了**矛盾检测**：若 `blocked=true` 而产物实测仍有 HDR，报
+  「位深降级却仍在产物中（异常）」—— 这比「拷贝逻辑写对了」更强：它连未来改坏
+  拷贝条件也能自曝。
+- **第三类清单** `unverified_properties`：这是本轮引入的新机制。「没查」和「查了没有」
+  必须分开 —— 旧模型只有 lost / preserved 两张表，任何「不知道」都会被挤进其中一张。
+  `all_properties_preserved` 的计算也随之分两档：`InspectTranscodeFidelity` 与
+  `FinalizeTranscodeFidelity` 用**保守式**（源侧还挂着待验证 side data 就恒 false），
+  只有 `FinalizeSideDataInheritance` 拿到实测后才能抬回 true。
+- 报告：「旋转 / 镜像矩阵」「HDR 静态元数据」两行的文案由修复层一次渲染
+  （`display_matrix_note` / `hdr_metadata_note`，源侧事实与产物实测同源），报告层只决定
+  印不印；「源侧属性结论」行在有未实测项时追加「，N 项未实测」；items 追加
+  「转码属性未实测: …」；JSON 落全部机读字段。
+
+**守护**
+
+- `S08InheritsRotationMatrixAndVerifiesInOutput`：端到端。源 90° → 断言**产物文件本身**
+  带相同角度、`side_data_output_measured=true`、报告三格式同源，且不许出现「未实测」。
+- `S08InheritsHdrStaticMetadata`：同上，针对 mastering + cll。
+- `SourceWithoutSideDataClaimsNothing`：反向守护 —— 源片没有方向 / HDR 时不许印任何
+  结论，也不许因为「没查到」把「属性均已保留」拉成 false。
+- `RotationMatrixWithoutOutputEvidenceStaysUnverified`：只有源侧事实时不许下结论；
+  未实测进 unverified，不进 lost。
+- `MeasuredOutputWithoutMatrixReportsLoss` / `RotationAngleChangeIsNotSilentlyTreatedAsPreserved`：
+  实测无矩阵、以及「有矩阵但角度变了」都必须报损失，后者尤其容易漏（只要有矩阵就算通过）。
+- `HdrMetadataFollowsSameThreeStateRule`：HDR 同一套三态规则。
+- `HdrInheritanceRequiresSameBitDepth`：位深前提四态（8→8 / 10→10 可继承，10→8 / 0→8
+  不可），以及「主动不沿用」与「muxer 丢了」文案不许混用、矛盾检测必须报异常。
+
+**明确不做**
+
+- 不碰 **HDR 动态元数据**（逐帧 SEI 里的 ST.2086 / 杜比视界 RPU）：那是码流内载荷，
+  重编码后必须由编码器重新生成，不是拷 side data 能解决的。
+- 不碰 10-bit：`libopenh264` 不支持（`pix_fmts` 只有 yuv420p / yuvj420p），
+  等价于换 FFmpeg 变体（许可证问题，见 §4.15）。
+- 不判断「这份 HDR 元数据与重编码后的画面是否仍然相符」：本轮只保证**声明被搬运**且
+  **位深前提成立**，不保证色彩体系自洽。
+- **10 → 8 这条路径没有端到端语料**：本构建里唯一的 10-bit 编码器是 `ffv1`
+  （yuv420p10le 可用），但要造「10-bit + HDR + 能被 S08 接受」的 mp4 样本，
+  得先给 `TestMediaFactory` 加 10-bit 源支持。本轮用「纯函数四态 + 矛盾检测」兜住，
+  如实记为**已知未覆盖**。
+
+---
+
 ## 5. 后续阶段与架构前置
 
 ### 5.1 阶段 5：时间轴与音画同步（先解决接入条件）
@@ -839,8 +943,11 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
   HDR 元数据与 SEI、旋转 displaymatrix。补之前产物不能声称视觉无损。~~
   **切片 J 已部分解决**（见 §4.10）：这些属性现在逐项实测并写进报告，SAR /
   色度采样位置 / 同色深色彩标记已继承；动态分辨率按帧重建 `sws` 并计数。
-  **仍待补**：旋转 displaymatrix 与 HDR 静态元数据的实际继承（需先用真实
-  旋转 / HDR 语料验证 muxer 行为）、10-bit 编码器选型与全链路 10-bit 保真。
+  **切片 Q 已解决**（见 §4.17）：旋转 displaymatrix 与 HDR 静态元数据现在真的拷进
+  产物（挂输出流 `codecpar` 的 side data，`movenc` 写 `tkhd` / `mdcv` + `clli` 已实测
+  证实），并由收尾处重新打开产物逐项实测后才下结论；HDR 带位深前提与矛盾检测。
+  **仍待补**：HDR **动态**元数据（逐帧 SEI / 杜比视界 RPU，必须由编码器重新生成）、
+  10-bit 编码器选型与全链路 10-bit 保真。
   在这些能力落地前，产物只能说「属性损失已列明」，不能说「视觉无损」。
 - **黑帧 / 静音 / 重复帧**：目前完全没有，属空能力。接入时由用户**显式选择**并单独记账，
   且不计入恢复率分子；`synthetic_frames_inserted` 恒 false 的现状要同步改掉。
@@ -913,6 +1020,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | N fMP4 借参考初始化段路径结论层收敛 | 完成（本轮） | | 摸底实测抓到 3 处「无事实却给结论」（借用时基渲染成容器时间戳、产物实测时长写成 0.000s、恢复比例基线来源说反）；1 个真实语料端到端用例 + 2 条主路径反向断言；172/172 ctest（1944 gtest）；4 组判别力变异全部精确判红。见 §4.14 与下方「切片 N 验收记录」 |
 | O S08 重编码的编码器口径收敛 | 完成（本轮） | | 实测证实本构建无 libx264（LGPL 变体），S08 实际用 libopenh264；三处静态文案把首选名写成了既成事实；新增结构化编码器 / profile 字段与 5 个用例；172/172 ctest（1949 gtest）；5 组判别力变异全部精确判红。见 §4.15 与下方「切片 O 验收记录」 |
 | P S08 音画起点对齐（统一原点） | 完成（本轮） | | 实测抓到旧实现把源侧 0.48 s 音画起点差静默抹成 0 且报告不提；改为两轨减同一原点，差值保留并进报告；新增 3 个用例；172/172 ctest（1952 gtest）；P1/P3 精确判红、P2 判绿（如实记账：现有语料不可判别）。见 §4.16 与下方「切片 P 验收记录」 |
+| Q 容器级 side data 真正继承 | 完成（本轮） | | 实测：旋转矩阵 / HDR 静态元数据旧实现全丢，`movenc` 其实支持（tkhd / mdcv+clli）；改为写头前拷 side data + 收尾打开产物实测；新增第三类 `unverified_properties` 与 HDR 位深前提 + 矛盾检测；新增 6 个用例；172/172 ctest（1958 gtest）；7 组判别力变异全部精确判红。见 §4.17 与下方「切片 Q 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1556,3 +1664,77 @@ PTS 相差 ≥ 半帧），本轮未做 —— `avformat` 没有公开的「写 
   报告用的是「音画**起点**差」，文案刻意没写「音画同步已保持」。
 - 视频侧偏移量按 1/fps 取整 → 源侧起点若落在半帧以内（如 0.0061 s），产物会归到
   整数帧边界。这不影响本轮的判据（起点差），但不能拿产物当「逐帧时间戳无损」的证据。
+
+### 切片 Q 验收记录（2026-11-13）
+
+**范围**：§4.17。§5.2 里挂了很久的「旋转 displaymatrix 与 HDR 静态元数据的实际继承」。
+摸底发现旧实现的问题不是「缺能力」，而是**从不看产物**：
+
+```cpp
+if (fidelity.has_display_matrix)
+    fidelity.lost_properties.push_back("画面旋转 / 镜像矩阵（…°）未继承：…");
+```
+
+这句是从「我们没拷 side data」推的。产物侧一次没打开过 —— 与 M / N / O / P 同一类错误。
+
+**实测（探针，落地前删除）**
+
+```
+旧实现  源 has=1 deg=-90 / mastering=1 cll=1
+        产物 has=0 deg=0   / （无）
+拷贝后  产物 has=1 deg=-90 / mastering=1 cll=1
+        attach_m=1 attach_hdr=1 out_has_m=1 out_has_hdr=1 measured=1
+```
+
+即 `movenc` 确实会从输出流 `codecpar->coded_side_data` 写 `tkhd` 矩阵与 `mdcv` / `clli`
+—— 这是实测出来的，不是查文档推断的。两处 `avformat_write_header` 之前的拷贝是关键。
+
+**做法**
+
+- 拷贝（写头前）：矩阵 + 两份 HDR side data 挂到输出视频流 `codecpar`；
+  记 `display_matrix_attached` / `hdr_metadata_attached`。
+- 实测（trailer + 关输入后）：重新打开产物，逐项读回它自己声明的元数据；
+  记 `output_*` / `side_data_output_measured`。只在写成功时测（残缺产物打不开，
+  不该被读成「缺少方向信息」）。
+- 结论（`FinalizeSideDataInheritance`，唯一入口）：一致 → preserved；角度不同 →
+  lost「角度已改变」；产物无 → lost「产物实测无方向信息」；**未实测 → unverified**。
+- 引入第三类清单 `unverified_properties`：「没查」不能挤进 lost 或 preserved。
+  `all_properties_preserved` 因此分两档 —— `InspectTranscodeFidelity` /
+  `FinalizeTranscodeFidelity` 用保守式（源侧还有待验证 side data 就恒 false），
+  只有拿到产物实测才抬回 true。
+- HDR 加**位深前提**（`TranscodeHdrInheritable`）+ **矛盾检测**（决定不拷、产物却带着
+  → 报异常）；「主动不沿用」与「muxer 丢了」文案分开。
+- 报告：「旋转 / 镜像矩阵」「HDR 静态元数据」两行读修复层渲染的 note；
+  「源侧属性结论」追「，N 项未实测」；items 追「转码属性未实测: …」；JSON 落 10 个机读字段。
+
+**验证**：172/172 ctest（1958 gtest）、离屏 `rc=124`、门禁全绿（clang-format 18.1.8 /
+AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·153·1958·19）/
+`git diff --check`。新增 6 个用例（4 个纯函数 + 2 个端到端 + 位深四态）。
+
+**判别力变异**
+
+| 变异 | 破坏点 | 结果 |
+|---|---|---|
+| Q1 | 不挂矩阵 side data（退回旧行为） | 精确判红 `S08InheritsRotationMatrixAndVerifiesInOutput` |
+| Q2 | 不做产物实测（measured 恒 false） | 精确判红旋转 / HDR / 无 side data 三条 |
+| Q3 | 有矩阵就算保留（不看角度） | 精确判红 `RotationAngleChangeIsNotSilentlyTreatedAsPreserved` |
+| Q4 | 未实测写成「丢失」 | 精确判红 `RotationMatrixWithoutOutputEvidenceStaysUnverified` |
+| Q5 | 保守结论退回（去掉待验证条件） | 精确判红同一条 |
+| Q6 | 位深前提恒 true | 精确判红 `HdrInheritanceRequiresSameBitDepth` |
+| Q7 | 矛盾检测失效 | 精确判红同一条 |
+
+❗ **变异脚本的 mtime 坑（本轮新踩）**：`os.utime(p, None)` 只把 mtime 设成「当前」，
+同一秒内连续两次改动会让 ninja 认为文件没变而**跳过重编** —— Q7 首轮就是跑在 Q6 的
+二进制上，报出的红是假的。修法是 `os.utime(p, (now + 2, now + 2))` 保证严格递增；
+并且每组变异都要确认「构建真的编译过」（`grep -c "Building CXX"` > 0）。
+
+**未覆盖（如实记账）**
+
+- **10 → 8 的端到端语料没有**：本构建唯一支持 10-bit 的编码器是 `ffv1`
+  （`yuv420p10le / yuv422p10le / yuv444p10le`），而 H.264 只有 `libopenh264`
+  （`pix_fmts` 仅 `yuv420p / yuvj420p`）。要造「10-bit + HDR + S08 可接受」的 mp4 样本，
+  得先给 `TestMediaFactory` 加 10-bit 源支持。本轮用纯函数四态 + 矛盾检测兜住，
+  但**S08 侧那句 `hdr_inheritable` 判断本身没有端到端守护**（8-bit 语料上恒为 true）。
+- HDR 元数据只在 `codecpar` 侧拷贝；若某容器的 HDR 元数据只挂在**解码帧** side data 上，
+  本版不会拷（矩阵侧有帧兜底，HDR 侧没有）。会如实报「产物实测无」。
+- 不碰动态 HDR（逐帧 SEI / RPU）与 10-bit 编码，理由同 §4.17「明确不做」。

@@ -693,6 +693,58 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     std::map<int, std::pair<std::string, std::string>> stream_meta;
     stream_meta[video_out_index] = {"video", avcodec_get_name(encoder->codec_id)};
 
+    // ---- 切片 Q：容器级 side data 的继承（方向矩阵 / HDR 静态元数据）----
+    //
+    // 这两份都是**流级** side data，不跟着像素走。手机竖拍的片子是「画面横着存 +
+    // 矩阵声明 90°」，只重编码像素会让产物躺倒。旧实现两份都不拷，报告写
+    // 「未继承」—— 恰好蒙对，但那是从「我们没拷」推出来的，产物侧一次没量过。
+    //
+    // muxer 在 avformat_write_header 时从输出流的 codecpar->coded_side_data 取
+    // 矩阵写 tkhd、取 HDR 元数据写 mdcv / clli，所以必须赶在写头之前挂上。
+    // ❗ 拷贝成功 ≠ 产物真的有：真正有没有由收尾处打开产物实测，不拿意图当结论。
+    bool display_matrix_attached = false;
+    bool hdr_metadata_attached = false;
+    // HDR 元数据有位深前提：10 bit 源压成 8 bit 产物后，照搬 HDR 标记会让播放器把
+    // 一个 SDR 画面按 HDR 渲染。这里主动不拷，并把「为什么没拷」记进结论层。
+    const bool hdr_inheritable = TranscodeHdrInheritable(
+        TranscodeBitDepth(static_cast<AVPixelFormat>(first_frame->format)), TranscodeBitDepth(encoder_format));
+    bool hdr_inherit_blocked = false;
+    {
+        std::size_t matrix_size = 0;
+        const std::uint8_t* matrix = SourceDisplayMatrix(video_in->codecpar, first_frame, &matrix_size);
+        if (matrix != nullptr) {
+            AVPacketSideData* copied =
+                av_packet_side_data_new(&video_out->codecpar->coded_side_data, &video_out->codecpar->nb_coded_side_data,
+                                        AV_PKT_DATA_DISPLAYMATRIX, matrix_size, 0);
+            if (copied != nullptr) {
+                std::memcpy(copied->data, matrix, matrix_size);
+                display_matrix_attached = true;
+            }
+        }
+        const bool source_has_hdr =
+            av_packet_side_data_get(video_in->codecpar->coded_side_data, video_in->codecpar->nb_coded_side_data,
+                                    AV_PKT_DATA_MASTERING_DISPLAY_METADATA) != nullptr ||
+            av_packet_side_data_get(video_in->codecpar->coded_side_data, video_in->codecpar->nb_coded_side_data,
+                                    AV_PKT_DATA_CONTENT_LIGHT_LEVEL) != nullptr;
+        if (source_has_hdr && !hdr_inheritable)
+            hdr_inherit_blocked = true;
+        for (const AVPacketSideDataType type :
+             {AV_PKT_DATA_MASTERING_DISPLAY_METADATA, AV_PKT_DATA_CONTENT_LIGHT_LEVEL}) {
+            if (!hdr_inheritable)
+                break;
+            const AVPacketSideData* source = av_packet_side_data_get(video_in->codecpar->coded_side_data,
+                                                                     video_in->codecpar->nb_coded_side_data, type);
+            if (source == nullptr || source->size == 0)
+                continue;
+            AVPacketSideData* copied = av_packet_side_data_new(
+                &video_out->codecpar->coded_side_data, &video_out->codecpar->nb_coded_side_data, type, source->size, 0);
+            if (copied != nullptr) {
+                std::memcpy(copied->data, source->data, source->size);
+                hdr_metadata_attached = true;
+            }
+        }
+    }
+
     // 音频：尽量按原码流复制；失败 / 不兼容的轨道逐项记账。
     std::vector<int> audio_map(in->nb_streams, -1);
     for (unsigned i = 0; i < in->nb_streams; ++i) {
@@ -1116,14 +1168,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     }
     // 逐帧实测的动态分辨率帧数并进同一个保真结论，写在所有返回路径之前：
     // 后面失败 / 取消 / 截断的分支也得带上这份实测，不能退回去用空表自证。
+    // 注意：这里还不算最终结论 —— 方向矩阵 / HDR 的继承要等产物写完后实测定论，
+    // 所以 transcode_note 里的项数统计放在收尾处（见 FinalizeSideDataInheritance 之后）。
     FinalizeTranscodeFidelity(outcome.transcode_fidelity, scale_state.resolution_changed_frames);
-    if (outcome.transcode_fidelity.inspected) {
-        const model::RepairTranscodeFidelity& fidelity = outcome.transcode_fidelity;
-        outcome.transcode_note += "；源侧保真探测=" + fidelity.source_pixel_format + "→" +
-                                  fidelity.output_pixel_format + "，丢失属性 " +
-                                  std::to_string(fidelity.lost_properties.size()) + " 项，继承 " +
-                                  std::to_string(fidelity.preserved_properties.size()) + " 项";
-    }
 
     // 关闭输入上下文（in / video_in）之前先固化 track id：验证目标与守恒记录
     // 之后还要用到这些值，直接访问已释放的 AVFormatContext 会导致崩溃。
@@ -1153,6 +1200,58 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     av_frame_free(&frame);
     avcodec_free_context(&decoder);
     avformat_close_input(&in);
+
+    // ---- 切片 Q：打开产物实测两份容器级 side data 到底进没进去 ----
+    //
+    // 「拷了」和「产物里真的有」是两件事：muxer 可能不支持该盒，也可能因为
+    // 参数不合规静默丢弃。结论必须来自产物本身，不拿意图当事实。
+    // 只在写成功时测：写失败 / 截断的产物可能连 moov 都不完整，打开失败本身
+    // 不该被读成「产物缺少方向信息」。
+    bool side_data_measured = false;
+    bool output_has_matrix = false;
+    bool output_has_hdr = false;
+    double output_rotation = 0.0;
+    if (!write_failed) {
+        AVFormatContext* verify = nullptr;
+        if (avformat_open_input(&verify, paths.part_path.c_str(), nullptr, nullptr) >= 0) {
+            for (unsigned i = 0; i < verify->nb_streams; ++i) {
+                const AVStream* stream = verify->streams[i];
+                if (stream->codecpar == nullptr || stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+                    continue;
+                const AVPacketSideData* display = av_packet_side_data_get(
+                    stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+                if (display != nullptr && display->size >= 9 * sizeof(std::int32_t)) {
+                    std::int32_t matrix[9] = {};
+                    std::memcpy(matrix, display->data, sizeof(matrix));
+                    output_has_matrix = true;
+                    output_rotation = av_display_rotation_get(matrix);
+                }
+                output_has_hdr =
+                    av_packet_side_data_get(stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_MASTERING_DISPLAY_METADATA) != nullptr ||
+                    av_packet_side_data_get(stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_CONTENT_LIGHT_LEVEL) != nullptr;
+                side_data_measured = true;
+                break;
+            }
+            avformat_close_input(&verify);
+        }
+    }
+    outcome.transcode_fidelity.display_matrix_attached = display_matrix_attached;
+    outcome.transcode_fidelity.hdr_metadata_attached = hdr_metadata_attached;
+    outcome.transcode_fidelity.hdr_inherit_blocked_by_bit_depth = hdr_inherit_blocked;
+    FinalizeSideDataInheritance(outcome.transcode_fidelity, side_data_measured, output_has_matrix, output_rotation,
+                                output_has_hdr);
+    // 丢失 / 继承项数在这里才齐全（方向与 HDR 的结论刚落地），统计只能放这里。
+    if (outcome.transcode_fidelity.inspected) {
+        const model::RepairTranscodeFidelity& fidelity = outcome.transcode_fidelity;
+        outcome.transcode_note += "；源侧保真探测=" + fidelity.source_pixel_format + "→" +
+                                  fidelity.output_pixel_format + "，丢失属性 " +
+                                  std::to_string(fidelity.lost_properties.size()) + " 项，继承 " +
+                                  std::to_string(fidelity.preserved_properties.size()) + " 项";
+        if (!fidelity.unverified_properties.empty())
+            outcome.transcode_note += "，未实测 " + std::to_string(fidelity.unverified_properties.size()) + " 项";
+    }
 
     // 覆盖所有写包过的返回路径（取消 / 超时 / 写失败 / 达上限）：账本里是
     // 实测的部分值，不能事后伪装成完整扫描。

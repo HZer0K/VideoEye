@@ -13,6 +13,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/display.h>
 #include <libavutil/frame.h>
 #include <libavutil/opt.h>
 }
@@ -615,6 +616,20 @@ MediaProbe ProbeMediaFile(const std::string& path) {
                 if (stream->start_time != AV_NOPTS_VALUE && stream->time_base.den)
                     probe.video_start_seconds = static_cast<double>(stream->start_time) * av_q2d(stream->time_base);
                 probe.video_nb_frames = stream->nb_frames;
+                // 方向信息：FFmpeg 8 挂在 codecpar->coded_side_data 上（mp4 的 tkhd matrix）。
+                const AVPacketSideData* display = av_packet_side_data_get(
+                    stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+                if (display != nullptr && display->size >= 9 * sizeof(int32_t)) {
+                    int32_t matrix[9] = {};
+                    std::memcpy(matrix, display->data, sizeof(matrix));
+                    probe.has_display_matrix = true;
+                    probe.video_rotation_degrees = av_display_rotation_get(matrix);
+                }
+                probe.has_hdr_metadata =
+                    av_packet_side_data_get(stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_MASTERING_DISPLAY_METADATA) != nullptr ||
+                    av_packet_side_data_get(stream->codecpar->coded_side_data, stream->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_CONTENT_LIGHT_LEVEL) != nullptr;
             }
         } else if (type == AVMEDIA_TYPE_AUDIO) {
             ++probe.audio_streams;

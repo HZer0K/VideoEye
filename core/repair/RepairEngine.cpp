@@ -521,6 +521,9 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
                 fidelity.limitations.push_back("转码属性损失：" + lost);
             for (const auto& kept : fidelity.transcode.preserved_properties)
                 fidelity.limitations.push_back("转码属性继承：" + kept);
+            // 切片 Q：「没实测」是第三种状态，不能并进损失表，也不能悄悄不提。
+            for (const auto& unverified : fidelity.transcode.unverified_properties)
+                fidelity.limitations.push_back("转码属性未实测：" + unverified);
         }
         // 切片 O：编码器事实单独一条。它是「选型取舍」，不是源侧属性损失，
         // 因此不塞进 lost_properties —— 那张表只放实测到的画质属性差异。

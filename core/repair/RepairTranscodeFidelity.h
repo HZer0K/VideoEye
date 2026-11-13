@@ -11,7 +11,9 @@
 //
 // 边界（必须随结论一起报出去）：
 //   * 只看首帧与容器声明，不扫描全程；动态分辨率由调用方在逐帧循环里补记；
-//   * 旋转矩阵 / HDR 元数据本版只如实记账，不尝试继承（见 §4.10）；
+//   * 旋转矩阵 / HDR 静态元数据：切片 Q 起由 S08 真的拷进产物，并由收尾处
+//     重新打开产物实测后才下结论（见 FinalizeSideDataInheritance）；
+//     没实测就进 unverified —— 既不说保留，也不说丢失；
 //   * 色彩标记只在位深不变时继承：给 8-bit SDR 画面贴 bt2020/smpte2084
 //     会让播放器按 HDR 渲染，比不写标记更糟。
 
@@ -117,6 +119,43 @@ inline bool ApplyTranscodeFrameProperties(AVFrame* output_frame, const AVStream*
         return false;
     output_frame->chroma_location = stream->codecpar->chroma_location;
     return true;
+}
+
+// HDR 静态元数据能不能跟着重编码产物走：**只有位深不变时**才允许。
+//
+// 位深降级（10 → 8）后画面的亮度范围已经变了，照搬 HDR 标记会让播放器把一个
+// SDR 画面按 HDR 渲染 —— 与「色彩标记只在位深不变时继承」是同一条理由，只是这份
+// 元数据挂在容器侧而不是编码器上，容易漏掉这个前提。
+inline bool TranscodeHdrInheritable(int source_bit_depth, int output_bit_depth) {
+    return source_bit_depth > 0 && source_bit_depth == output_bit_depth;
+}
+
+// 源侧方向矩阵（displaymatrix）：codecpar 里的流级 side data 优先，解码帧上的兜底。
+// 返回 nullptr = 源片没有方向信息 —— 这与「旋转 0°」不是一回事，调用方必须区分。
+//
+// 抽成一个函数是因为「源侧到底有没有矩阵」现在有两个消费方：属性探测（写结论）
+// 与 S08 的拷贝动作（真的挂到输出流）。两处各写一份判断必然漂移。
+inline const std::uint8_t* SourceDisplayMatrix(const AVCodecParameters* par, const AVFrame* frame, std::size_t* size) {
+    if (size != nullptr)
+        *size = 0;
+    if (par != nullptr) {
+        const AVPacketSideData* display =
+            av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+        if (display != nullptr && display->size >= 9 * sizeof(std::int32_t)) {
+            if (size != nullptr)
+                *size = display->size;
+            return display->data;
+        }
+    }
+    if (frame != nullptr) {
+        const AVFrameSideData* frame_display = av_frame_get_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
+        if (frame_display != nullptr && frame_display->size >= 9 * sizeof(std::int32_t)) {
+            if (size != nullptr)
+                *size = frame_display->size;
+            return frame_display->data;
+        }
+    }
+    return nullptr;
 }
 
 // 逐帧缩放状态：把「sws 是针对哪种源尺寸建的」和「有多少帧尺寸与产物不同」
@@ -236,15 +275,10 @@ inline model::RepairTranscodeFidelity InspectTranscodeFidelity(const AVStream* s
 
     // 旋转 / 镜像矩阵：FFmpeg 8 起流级 side data 挂在 codecpar->coded_side_data，
     // 解码后的帧也可能带一份；两处任一存在都算「源片有方向信息」。
-    const AVPacketSideData* display =
-        av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
-    const AVFrameSideData* frame_display = av_frame_get_side_data(first_frame, AV_FRAME_DATA_DISPLAYMATRIX);
-    const std::uint8_t* display_data = display != nullptr ? display->data : nullptr;
-    std::size_t display_size = display != nullptr ? display->size : 0;
-    if (display_data == nullptr && frame_display != nullptr) {
-        display_data = frame_display->data;
-        display_size = frame_display->size;
-    }
+    // 这里**只记源侧事实**。「有没有继承」由 FinalizeSideDataInheritance 按产物
+    // 实测决定 —— 旧实现直接在这里写 lost，等于拿「我们没拷」冒充实测。
+    std::size_t display_size = 0;
+    const std::uint8_t* display_data = SourceDisplayMatrix(par, first_frame, &display_size);
     if (display_data != nullptr && display_size >= 9 * sizeof(std::int32_t)) {
         std::int32_t matrix[9] = {};
         std::memcpy(matrix, display_data, sizeof(matrix));
@@ -293,19 +327,86 @@ inline model::RepairTranscodeFidelity InspectTranscodeFidelity(const AVStream* s
             fidelity.lost_properties.push_back("色度采样位置 " + fidelity.chroma_location + " 未继承");
         }
     }
+    // 源侧有矩阵 / HDR、但产物侧还没实测时，两条都先留空 —— 等 S08 打开产物
+    // 回填（FinalizeSideDataInheritance）。这里直接写 lost 是「无事实给结论」，
+    // 直接写 preserved 是假覆盖。
+    //
+    // ❗ 因此这一处（以及 FinalizeTranscodeFidelity）算的是**保守结论**：
+    // 只要源侧还挂着待验证的 side data，就不许说「属性均已保留」。
+    // 只有 FinalizeSideDataInheritance 拿到产物实测后才能把它抬回 true。
+    fidelity.all_properties_preserved = fidelity.lost_properties.empty() && fidelity.unverified_properties.empty() &&
+                                        !fidelity.has_display_matrix && !fidelity.has_hdr_metadata;
+    return fidelity;
+}
+
+// 切片 Q：容器级 side data（方向矩阵 / HDR 静态元数据）的继承结论。
+//
+// 三个输入事实：源侧有没有（已经记在 fidelity 里）、我们挂没挂上
+// （*_attached）、产物侧实测到没有（measured + output_*）。结论按实测落，
+// **没实测就进 unverified** —— 既不许说保留，也不许说丢失。
+inline void FinalizeSideDataInheritance(model::RepairTranscodeFidelity& fidelity, bool measured, bool output_has_matrix,
+                                        double output_rotation_degrees, bool output_has_hdr) {
+    fidelity.side_data_output_measured = measured;
+    fidelity.output_has_display_matrix = output_has_matrix;
+    fidelity.output_rotation_degrees = output_rotation_degrees;
+    fidelity.output_has_hdr_metadata = output_has_hdr;
+
+    char source_deg[32] = {};
+    char output_deg[32] = {};
+    std::snprintf(source_deg, sizeof(source_deg), "%.1f", fidelity.rotation_degrees);
+    std::snprintf(output_deg, sizeof(output_deg), "%.1f", fidelity.output_rotation_degrees);
+
     if (fidelity.has_display_matrix) {
-        char degrees[32] = {};
-        std::snprintf(degrees, sizeof(degrees), "%.1f", fidelity.rotation_degrees);
-        fidelity.lost_properties.push_back(std::string("画面旋转 / 镜像矩阵（") + degrees +
-                                           "°）未继承：产物画面方向可能与源片不同");
-    }
-    if (fidelity.has_hdr_metadata) {
-        fidelity.lost_properties.push_back(
-            "HDR 静态元数据（mastering display / content light level）未继承：重编码产物不能沿用源 HDR 标记");
+        const std::string source_text = std::string("画面旋转 / 镜像矩阵（") + source_deg + "°）";
+        if (!measured) {
+            fidelity.unverified_properties.push_back(source_text + "：产物侧未实测，不能断言已继承");
+            fidelity.display_matrix_note = "源片 " + std::string(source_deg) + "°，产物侧未实测";
+        } else if (output_has_matrix && std::abs(output_rotation_degrees - fidelity.rotation_degrees) <= 0.5) {
+            fidelity.preserved_properties.push_back(source_text + "已在产物中实测到相同角度");
+            fidelity.display_matrix_note =
+                "源片 " + std::string(source_deg) + "°，产物实测 " + std::string(output_deg) + "°（一致）";
+        } else if (output_has_matrix) {
+            fidelity.lost_properties.push_back(source_text + "：产物实测为 " + output_deg + "°，角度已改变");
+            fidelity.display_matrix_note =
+                "源片 " + std::string(source_deg) + "°，产物实测 " + std::string(output_deg) + "°（角度不同）";
+        } else {
+            fidelity.lost_properties.push_back(source_text + "未继承：产物实测无方向信息，画面方向与源片不同");
+            fidelity.display_matrix_note = "源片 " + std::string(source_deg) + "°，产物实测无方向信息";
+        }
+    } else {
+        fidelity.display_matrix_note.clear();
     }
 
-    fidelity.all_properties_preserved = fidelity.lost_properties.empty();
-    return fidelity;
+    if (fidelity.has_hdr_metadata) {
+        const std::string hdr_text = "HDR 静态元数据（mastering display / content light level）";
+        if (!measured) {
+            fidelity.unverified_properties.push_back(hdr_text + "：产物侧未实测，不能断言已继承");
+            fidelity.hdr_metadata_note = "产物侧未实测";
+        } else if (output_has_hdr && fidelity.hdr_inherit_blocked_by_bit_depth) {
+            // 位深降级时我们**主动不拷**，产物却带着 —— 说明拷贝逻辑被改坏了、或者
+            // muxer 从别处捡到了这份元数据。自相矛盾必须报出来，不能当成功。
+            fidelity.lost_properties.push_back(hdr_text + "在产物中仍存在，但源位深已降级："
+                                                          "播放器可能把一个 SDR 画面按 HDR 渲染");
+            fidelity.hdr_metadata_note = "位深降级却仍在产物中（异常）";
+        } else if (output_has_hdr) {
+            fidelity.preserved_properties.push_back(hdr_text + "已在产物中实测到");
+            fidelity.hdr_metadata_note = "产物实测有（保留）";
+        } else if (fidelity.hdr_inherit_blocked_by_bit_depth) {
+            // 「我们故意不拷」与「muxer 丢了」是两件事，原因必须分开写。
+            fidelity.lost_properties.push_back(hdr_text + "未继承：源 " + std::to_string(fidelity.source_bit_depth) +
+                                               " bit → 产物 " + std::to_string(fidelity.output_bit_depth) +
+                                               " bit，位深已降级，照搬会让播放器按 HDR 渲染一个 SDR 画面");
+            fidelity.hdr_metadata_note = "位深降级，主动不沿用";
+        } else {
+            fidelity.lost_properties.push_back(hdr_text + "未继承：产物实测无该元数据，不能沿用源 HDR 标记");
+            fidelity.hdr_metadata_note = "产物实测无（未保留）";
+        }
+    } else {
+        fidelity.hdr_metadata_note.clear();
+    }
+
+    // 走到这里说明两条都已按产物实测定论，可以给权威结论。
+    fidelity.all_properties_preserved = fidelity.lost_properties.empty() && fidelity.unverified_properties.empty();
 }
 
 // 逐帧循环实测出的动态分辨率帧数要并进同一个结论；直接改列表比事后在报告层
@@ -324,7 +425,10 @@ inline void FinalizeTranscodeFidelity(model::RepairTranscodeFidelity& fidelity,
         fidelity.lost_properties.push_back("动态分辨率：" + std::to_string(resolution_changed_frames) +
                                            " 帧的尺寸与首帧不同，产物按首帧尺寸缩放，不是原样保留");
     }
-    fidelity.all_properties_preserved = fidelity.lost_properties.empty();
+    // 保守结论：这里可能跑在「产物还没写出来」的时刻，源侧还有待验证的
+    // side data 就不许说「属性均已保留」。
+    fidelity.all_properties_preserved = fidelity.lost_properties.empty() && fidelity.unverified_properties.empty() &&
+                                        !fidelity.has_display_matrix && !fidelity.has_hdr_metadata;
 }
 
 } // namespace repair

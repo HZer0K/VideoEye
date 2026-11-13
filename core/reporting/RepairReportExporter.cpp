@@ -355,6 +355,18 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
     object.Set("av_start_offset_seconds", JSeconds(transcode.av_start_offset_seconds));
     object.Set("av_start_offset_preserved", JsonValue(transcode.av_start_offset_preserved));
     object.Set("av_sync_note", JText(transcode.av_sync_note));
+    // 切片 Q：容器级 side data 的三段事实分开落 —— 拷贝动作 / 产物实测 / 结论。
+    // 合成一个布尔会让「没查」和「查了没有」长得一样。
+    object.Set("display_matrix_attached", JsonValue(transcode.display_matrix_attached));
+    object.Set("output_has_display_matrix", JsonValue(transcode.output_has_display_matrix));
+    object.Set("output_rotation_degrees", JNum(transcode.output_rotation_degrees));
+    object.Set("hdr_metadata_attached", JsonValue(transcode.hdr_metadata_attached));
+    object.Set("output_has_hdr_metadata", JsonValue(transcode.output_has_hdr_metadata));
+    object.Set("hdr_inherit_blocked_by_bit_depth", JsonValue(transcode.hdr_inherit_blocked_by_bit_depth));
+    object.Set("side_data_output_measured", JsonValue(transcode.side_data_output_measured));
+    object.Set("display_matrix_note", JText(transcode.display_matrix_note));
+    object.Set("hdr_metadata_note", JText(transcode.hdr_metadata_note));
+    object.Set("unverified_properties", BuildStringArray(transcode.unverified_properties));
     object.Set("preserved_properties", BuildStringArray(transcode.preserved_properties));
     object.Set("lost_properties", BuildStringArray(transcode.lost_properties));
     return object;
@@ -1275,19 +1287,28 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         fidelity.rows.emplace_back("色彩标记", tags.empty() ? "源未声明" : tags);
         fidelity.rows.emplace_back("像素宽高比",
                                    transcode.sample_aspect_ratio.empty() ? "未声明" : transcode.sample_aspect_ratio);
-        fidelity.rows.emplace_back("旋转 / 镜像矩阵", transcode.has_display_matrix
-                                                          ? "有（" + std::to_string(transcode.rotation_degrees) + "°）"
-                                                          : "无");
-        fidelity.rows.emplace_back("HDR 静态元数据", transcode.has_hdr_metadata ? "有" : "无");
+        // 方向 / HDR 两行的文案由修复层渲染（源侧事实 + 产物实测同源），
+        // 报告层只决定「这行印不印」，不自己拼「已继承 / 未继承」。
+        fidelity.rows.emplace_back("旋转 / 镜像矩阵",
+                                   transcode.display_matrix_note.empty() ? "源未声明" : transcode.display_matrix_note);
+        fidelity.rows.emplace_back("HDR 静态元数据",
+                                   transcode.hdr_metadata_note.empty() ? "源未声明" : transcode.hdr_metadata_note);
         fidelity.rows.emplace_back("动态分辨率帧", std::to_string(transcode.resolution_changed_frames));
-        fidelity.rows.emplace_back("源侧属性结论",
-                                   transcode.all_properties_preserved
-                                       ? "实测可继承属性全部保留（重编码代际损失另计）"
-                                       : "实测 " + std::to_string(transcode.lost_properties.size()) + " 项未保留");
+        std::string verdict;
+        if (transcode.all_properties_preserved) {
+            verdict = "实测可继承属性全部保留（重编码代际损失另计）";
+        } else {
+            verdict = "实测 " + std::to_string(transcode.lost_properties.size()) + " 项未保留";
+            if (!transcode.unverified_properties.empty())
+                verdict += "，" + std::to_string(transcode.unverified_properties.size()) + " 项未实测";
+        }
+        fidelity.rows.emplace_back("源侧属性结论", verdict);
         for (const auto& kept : transcode.preserved_properties)
             fidelity.items.push_back("转码属性已继承: " + kept);
         for (const auto& lost : transcode.lost_properties)
             fidelity.items.push_back("转码属性未保留: " + lost);
+        for (const auto& unverified : transcode.unverified_properties)
+            fidelity.items.push_back("转码属性未实测: " + unverified);
     }
     sections.push_back(std::move(fidelity));
 

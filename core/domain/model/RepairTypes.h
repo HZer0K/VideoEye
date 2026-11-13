@@ -450,12 +450,36 @@ struct RepairTranscodeFidelity {
     double rotation_degrees = 0.0;
     bool has_display_matrix = false;
     bool has_hdr_metadata = false;
+    // ---- 容器级 side data 的实际继承（切片 Q）----
+    //
+    // 旋转矩阵与 HDR 静态元数据都是**流 / 容器级** side data，不跟着像素走。
+    // 旧实现只重编码像素、两份都不拷，然后在 InspectTranscodeFidelity 里写死
+    // 「未继承」—— 那句话是从「我们没拷」推出来的，产物侧一次没量过。哪天
+    // muxer 自己继承了、或者拷贝逻辑改了却忘了改文案，结论就会失真。
+    //
+    // 现在分三层落账：拷贝动作（*_attached）、产物实测（output_*）、结论
+    // （*_note + preserved/lost/unverified）。没实测就进 unverified，
+    // 不许冒充「已保留」，也不许冒充「已丢失」。
+    bool display_matrix_attached = false;   // 已挂到输出流（拷贝动作成功）
+    bool output_has_display_matrix = false; // 产物侧实测有方向矩阵
+    double output_rotation_degrees = 0.0;   // 产物侧实测角度
+    bool hdr_metadata_attached = false;
+    bool output_has_hdr_metadata = false;
+    // 位深降级时**主动不拷** HDR 元数据（理由见 TranscodeHdrInheritable）。
+    // 单独记下来，避免报告把「我们故意不拷」和「muxer 丢了」混成一件事。
+    bool hdr_inherit_blocked_by_bit_depth = false;
+    bool side_data_output_measured = false; // 产物侧到底测过没有
+    std::string display_matrix_note;
+    std::string hdr_metadata_note;
+    // 第三类清单：既没有丢失证据、也没有保留证据（产物侧没实测）。
+    // 单列出来是为了让 all_properties_preserved 不会因为「没查」而变 true。
+    std::vector<std::string> unverified_properties;
     // 与首帧尺寸不同的帧数（逐帧实测，不是容器声明）。
     uint64_t resolution_changed_frames = 0;
     std::vector<std::string> preserved_properties;
     std::vector<std::string> lost_properties;
-    // 只有「探测过 + 丢失项为空」才允许为 true。重编码的代际画质损失由
-    // video_reencoded / perceptual_fidelity 单独表达，不混进这个结论。
+    // 只有「探测过 + 丢失项为空 + 未实测项为空」才允许为 true。重编码的代际
+    // 画质损失由 video_reencoded / perceptual_fidelity 单独表达，不混进这个结论。
     bool all_properties_preserved = false;
 
     // ---- 编码器事实（实测，切片 O）----

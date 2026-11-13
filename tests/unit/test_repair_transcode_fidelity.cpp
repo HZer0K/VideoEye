@@ -40,6 +40,10 @@
 #include "infrastructure/serialization/Json.h"
 #include "tests/support/TestMediaFactory.h"
 
+extern "C" {
+#include <libavutil/mastering_display_metadata.h>
+}
+
 namespace {
 
 using namespace videoeye;
@@ -130,6 +134,105 @@ std::string CreateAvOffsetMedia(const std::string& directory, const std::string&
             if (packet->dts != AV_NOPTS_VALUE)
                 packet->dts += ticks;
         }
+        av_interleaved_write_frame(out, packet);
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+    av_write_trailer(out);
+    avio_closep(&out->pb);
+    avformat_free_context(out);
+    avformat_close_input(&in);
+    return out_path;
+}
+
+// ---- 切片 Q：方向信息（displaymatrix）语料 ----
+//
+// 造一份「容器声明了画面旋转」的样本：重封装时给视频流的 codecpar 挂上
+// AV_PKT_DATA_DISPLAYMATRIX，mp4 muxer 会把它写成 tkhd 里的变换矩阵。
+// 像素本身不转 —— 手机竖拍拍出来的就是这种形态（画面横着存、靠矩阵转正），
+// 所以「只拷画面不拷矩阵」会让产物躺倒 90°。
+std::string CreateRotatedMedia(const std::string& directory, const std::string& name, double degrees,
+                               bool with_hdr = false) {
+    const videoeye_test::TestMedia base = videoeye_test::CreateTestMedia(directory, name + "_base");
+    if (!base.ok)
+        return std::string("base media failed: ") + base.error;
+
+    const std::string out_path = directory + "/" + name + ".mp4";
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, base.path.c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(in, nullptr) < 0) {
+        if (in != nullptr)
+            avformat_close_input(&in);
+        return "open base failed";
+    }
+    AVFormatContext* out = nullptr;
+    if (avformat_alloc_output_context2(&out, nullptr, nullptr, out_path.c_str()) < 0 || out == nullptr) {
+        avformat_close_input(&in);
+        return "alloc output failed";
+    }
+    std::vector<int> mapping(in->nb_streams, -1);
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        AVStream* dst = avformat_new_stream(out, nullptr);
+        if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, in->streams[i]->codecpar) < 0) {
+            avformat_free_context(out);
+            avformat_close_input(&in);
+            return "copy stream failed";
+        }
+        dst->codecpar->codec_tag = 0;
+        dst->time_base = in->streams[i]->time_base;
+        if (in->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            std::int32_t matrix[9] = {};
+            av_display_rotation_set(matrix, degrees);
+            AVPacketSideData* side =
+                av_packet_side_data_new(&dst->codecpar->coded_side_data, &dst->codecpar->nb_coded_side_data,
+                                        AV_PKT_DATA_DISPLAYMATRIX, sizeof(matrix), 0);
+            if (side != nullptr)
+                std::memcpy(side->data, matrix, sizeof(matrix));
+            if (with_hdr) {
+                // BT.2020 / 1000 nit 的一组典型 HDR10 静态元数据。数值本身不重要，
+                // 重要的是「源容器确实声明了它」这个事实。
+                AVMasteringDisplayMetadata mastering{};
+                mastering.display_primaries[0][0] = av_make_q(34000, 50000);
+                mastering.display_primaries[0][1] = av_make_q(16000, 50000);
+                mastering.display_primaries[1][0] = av_make_q(13250, 50000);
+                mastering.display_primaries[1][1] = av_make_q(34500, 50000);
+                mastering.display_primaries[2][0] = av_make_q(7500, 50000);
+                mastering.display_primaries[2][1] = av_make_q(3000, 50000);
+                mastering.white_point[0] = av_make_q(15635, 50000);
+                mastering.white_point[1] = av_make_q(16450, 50000);
+                mastering.min_luminance = av_make_q(50, 10000);
+                mastering.max_luminance = av_make_q(1000, 1);
+                mastering.has_primaries = 1;
+                mastering.has_luminance = 1;
+                AVPacketSideData* mastering_side =
+                    av_packet_side_data_new(&dst->codecpar->coded_side_data, &dst->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_MASTERING_DISPLAY_METADATA, sizeof(mastering), 0);
+                if (mastering_side != nullptr)
+                    std::memcpy(mastering_side->data, &mastering, sizeof(mastering));
+                AVContentLightMetadata light{};
+                light.MaxCLL = 1000;
+                light.MaxFALL = 400;
+                AVPacketSideData* light_side =
+                    av_packet_side_data_new(&dst->codecpar->coded_side_data, &dst->codecpar->nb_coded_side_data,
+                                            AV_PKT_DATA_CONTENT_LIGHT_LEVEL, sizeof(light), 0);
+                if (light_side != nullptr)
+                    std::memcpy(light_side->data, &light, sizeof(light));
+            }
+        }
+        mapping[i] = dst->index;
+    }
+    if (avio_open(&out->pb, out_path.c_str(), AVIO_FLAG_WRITE) < 0 || avformat_write_header(out, nullptr) < 0) {
+        avformat_free_context(out);
+        avformat_close_input(&in);
+        return "open output failed";
+    }
+    AVPacket* packet = av_packet_alloc();
+    while (av_read_frame(in, packet) >= 0) {
+        const int src_index = packet->stream_index;
+        const AVRational src_tb = in->streams[src_index]->time_base;
+        packet->stream_index = mapping[src_index];
+        const AVRational dst_tb = out->streams[packet->stream_index]->time_base;
+        av_packet_rescale_ts(packet, src_tb, dst_tb);
         av_interleaved_write_frame(out, packet);
         av_packet_unref(packet);
     }
@@ -254,6 +357,14 @@ bool HasLostItemWith(const RepairTranscodeFidelity& fidelity, const std::string&
 
 bool HasKept(const RepairTranscodeFidelity& fidelity, const std::string& needle) {
     for (const auto& item : fidelity.preserved_properties)
+        if (item.find(needle) != std::string::npos)
+            return true;
+    return false;
+}
+
+// 第三类状态：既没确认丢失、也没确认保留（产物侧没实测）。
+bool HasUnverified(const RepairTranscodeFidelity& fidelity, const std::string& needle) {
+    for (const auto& item : fidelity.unverified_properties)
         if (item.find(needle) != std::string::npos)
             return true;
     return false;
@@ -386,9 +497,15 @@ TEST(RepairTranscodeFidelity, ClaimingChromaInheritanceWithoutWritingFrameIsReje
     EXPECT_FALSE(result.fidelity.all_properties_preserved);
 }
 
-// ---- 旋转 / 镜像、HDR、色度抽样各自可判别 ----
+// ---- 切片 Q：方向矩阵 / HDR 的「三段事实」 ----
+//
+// 旧实现把「未继承」直接写死在 InspectTranscodeFidelity 里 —— 那是从「我们没拷」
+// 推出来的，产物侧一次没量过。现在拷了也测了，结论必须按实测落：
+//   未实测 → unverified（既不能说丢失，也不能说保留）
+//   实测有且一致 → preserved
+//   实测无 / 角度不同 → lost
 
-TEST(RepairTranscodeFidelity, RotationMatrixIsReportedAsLoss) {
+TEST(RepairTranscodeFidelity, RotationMatrixWithoutOutputEvidenceStaysUnverified) {
     FidelityProbe probe;
     ASSERT_TRUE(probe.Ready());
     probe.SetSource(AV_PIX_FMT_YUV420P);
@@ -396,12 +513,58 @@ TEST(RepairTranscodeFidelity, RotationMatrixIsReportedAsLoss) {
     ASSERT_NE(raw, nullptr);
     auto* matrix = reinterpret_cast<std::int32_t*>(raw);
     av_display_rotation_set(matrix, 90.0);
-    const ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
 
+    // 只探测源侧时：源侧事实在，但一条结论都不许下。
     EXPECT_TRUE(result.fidelity.has_display_matrix);
     EXPECT_GT(std::abs(result.fidelity.rotation_degrees), 80.0);
-    EXPECT_TRUE(HasLost(result.fidelity, "旋转 / 镜像"));
+    EXPECT_TRUE(result.fidelity.lost_properties.empty()) << "产物侧还没测，不能说已丢失";
+    EXPECT_TRUE(result.fidelity.preserved_properties.empty()) << "产物侧还没测，不能说已保留";
     EXPECT_FALSE(result.fidelity.all_properties_preserved);
+
+    // 产物侧打不开 / 没测：进第三类，不许冒充任何一种结论。
+    repair::FinalizeSideDataInheritance(result.fidelity, /*measured=*/false, false, 0.0, false);
+    EXPECT_TRUE(HasUnverified(result.fidelity, "旋转 / 镜像"));
+    EXPECT_TRUE(result.fidelity.lost_properties.empty());
+    EXPECT_FALSE(result.fidelity.all_properties_preserved);
+    EXPECT_FALSE(result.fidelity.display_matrix_note.empty());
+    EXPECT_NE(result.fidelity.display_matrix_note.find("未实测"), std::string::npos);
+}
+
+TEST(RepairTranscodeFidelity, MeasuredOutputWithoutMatrixReportsLoss) {
+    FidelityProbe probe;
+    ASSERT_TRUE(probe.Ready());
+    probe.SetSource(AV_PIX_FMT_YUV420P);
+    std::uint8_t* raw = probe.AddSideData(AV_PKT_DATA_DISPLAYMATRIX, 9 * sizeof(std::int32_t));
+    ASSERT_NE(raw, nullptr);
+    auto* matrix = reinterpret_cast<std::int32_t*>(raw);
+    av_display_rotation_set(matrix, 90.0);
+    ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+
+    repair::FinalizeSideDataInheritance(result.fidelity, /*measured=*/true, /*output_has_matrix=*/false, 0.0, false);
+    EXPECT_TRUE(HasLost(result.fidelity, "旋转 / 镜像"));
+    // 文案必须说清这是产物实测结果，不是「我们没拷」的推断。
+    EXPECT_TRUE(HasLost(result.fidelity, "产物实测无方向信息"));
+    EXPECT_FALSE(result.fidelity.all_properties_preserved);
+    EXPECT_TRUE(result.fidelity.unverified_properties.empty());
+}
+
+TEST(RepairTranscodeFidelity, RotationAngleChangeIsNotSilentlyTreatedAsPreserved) {
+    FidelityProbe probe;
+    ASSERT_TRUE(probe.Ready());
+    probe.SetSource(AV_PIX_FMT_YUV420P);
+    std::uint8_t* raw = probe.AddSideData(AV_PKT_DATA_DISPLAYMATRIX, 9 * sizeof(std::int32_t));
+    ASSERT_NE(raw, nullptr);
+    auto* matrix = reinterpret_cast<std::int32_t*>(raw);
+    av_display_rotation_set(matrix, 90.0);
+    ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+
+    // 产物有矩阵但角度不同：这不是「已继承」，必须报角度已改变。
+    repair::FinalizeSideDataInheritance(result.fidelity, /*measured=*/true, /*output_has_matrix=*/true, 0.0, false);
+    EXPECT_TRUE(HasLost(result.fidelity, "角度已改变"));
+    EXPECT_FALSE(HasKept(result.fidelity, "旋转 / 镜像"));
+    EXPECT_TRUE(result.fidelity.output_has_display_matrix);
+    EXPECT_DOUBLE_EQ(result.fidelity.output_rotation_degrees, 0.0);
 }
 
 TEST(RepairTranscodeFidelity, IdentityDisplayMatrixIsNotALoss) {
@@ -412,23 +575,88 @@ TEST(RepairTranscodeFidelity, IdentityDisplayMatrixIsNotALoss) {
     ASSERT_NE(raw, nullptr);
     auto* matrix = reinterpret_cast<std::int32_t*>(raw);
     av_display_rotation_set(matrix, 0.0);
-    const ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
 
     EXPECT_FALSE(result.fidelity.has_display_matrix) << "单位矩阵不含方向信息，不该凭空报损失";
+    repair::FinalizeSideDataInheritance(result.fidelity, true, false, 0.0, false);
     EXPECT_FALSE(HasLost(result.fidelity, "旋转 / 镜像"));
+    EXPECT_FALSE(HasUnverified(result.fidelity, "旋转 / 镜像"));
+    EXPECT_TRUE(result.fidelity.display_matrix_note.empty()) << "源侧没有方向信息，不许印一行「未继承」";
+    EXPECT_TRUE(result.fidelity.all_properties_preserved);
 }
 
-TEST(RepairTranscodeFidelity, HdrSideDataIsReportedAsLoss) {
+// HDR 元数据有位深前提：10 bit 源压成 8 bit 产物后不许照搬 HDR 标记 —— 那会让
+// 播放器把一个 SDR 画面按 HDR 渲染，比不写标记更糟（与色彩标记同一条理由）。
+TEST(RepairTranscodeFidelity, HdrInheritanceRequiresSameBitDepth) {
+    EXPECT_TRUE(repair::TranscodeHdrInheritable(8, 8));
+    EXPECT_TRUE(repair::TranscodeHdrInheritable(10, 10));
+    EXPECT_FALSE(repair::TranscodeHdrInheritable(10, 8)) << "位深降级必须拦住";
+    EXPECT_FALSE(repair::TranscodeHdrInheritable(0, 8)) << "源位深未知时不许当作可继承";
+
+    // 拦下来之后，结论必须说清是「主动不沿用」而不是「muxer 丢了」。
     FidelityProbe probe;
     ASSERT_TRUE(probe.Ready());
-    probe.SetSource(AV_PIX_FMT_YUV420P);
-    ASSERT_NE(probe.AddSideData(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 8), nullptr);
-    ASSERT_NE(probe.AddSideData(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 4), nullptr);
-    const ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    probe.SetSource(AV_PIX_FMT_YUV420P10LE);
+    probe.AddSideData(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 8);
+    probe.AddSideData(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 4);
+    ProbeResult result = Inspect(probe, AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_YUV420P);
+    ASSERT_TRUE(result.fidelity.has_hdr_metadata);
+    ASSERT_FALSE(repair::TranscodeHdrInheritable(result.fidelity.source_bit_depth, result.fidelity.output_bit_depth));
+    result.fidelity.hdr_inherit_blocked_by_bit_depth = true;
+    repair::FinalizeSideDataInheritance(result.fidelity, /*measured=*/true, false, 0.0, /*output_has_hdr=*/false);
+    EXPECT_TRUE(HasLost(result.fidelity, "位深已降级"));
+    EXPECT_FALSE(HasLost(result.fidelity, "产物实测无该元数据")) << "原因不同，文案不能混用";
+    EXPECT_EQ(result.fidelity.hdr_metadata_note, "位深降级，主动不沿用");
 
-    EXPECT_TRUE(result.fidelity.has_hdr_metadata);
-    EXPECT_TRUE(HasLost(result.fidelity, "HDR 静态元数据"));
-    EXPECT_FALSE(result.fidelity.all_properties_preserved);
+    // 矛盾检测：明明决定不拷，产物却带着 → 不能当成功，要报异常。
+    FidelityProbe conflict;
+    ASSERT_TRUE(conflict.Ready());
+    conflict.SetSource(AV_PIX_FMT_YUV420P10LE);
+    conflict.AddSideData(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 8);
+    ProbeResult second = Inspect(conflict, AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_YUV420P);
+    ASSERT_TRUE(second.fidelity.has_hdr_metadata);
+    second.fidelity.hdr_inherit_blocked_by_bit_depth = true;
+    repair::FinalizeSideDataInheritance(second.fidelity, /*measured=*/true, false, 0.0, /*output_has_hdr=*/true);
+    EXPECT_TRUE(HasLost(second.fidelity, "位深已降级")) << "位深降级却仍在产物中，必须报出来而不是记成「已保留」";
+    EXPECT_FALSE(HasKept(second.fidelity, "HDR 静态元数据"));
+    EXPECT_EQ(second.fidelity.hdr_metadata_note, "位深降级却仍在产物中（异常）");
+}
+
+TEST(RepairTranscodeFidelity, HdrMetadataFollowsSameThreeStateRule) {
+    auto make_probe = [](FidelityProbe& probe) {
+        probe.SetSource(AV_PIX_FMT_YUV420P);
+        probe.AddSideData(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 8);
+        probe.AddSideData(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 4);
+    };
+
+    // 未实测 → 第三类。
+    FidelityProbe unmeasured;
+    ASSERT_TRUE(unmeasured.Ready());
+    make_probe(unmeasured);
+    ProbeResult a = Inspect(unmeasured, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    EXPECT_TRUE(a.fidelity.has_hdr_metadata);
+    repair::FinalizeSideDataInheritance(a.fidelity, false, false, 0.0, false);
+    EXPECT_TRUE(HasUnverified(a.fidelity, "HDR 静态元数据"));
+    EXPECT_TRUE(a.fidelity.lost_properties.empty());
+
+    // 实测有 → 保留。
+    FidelityProbe measured;
+    ASSERT_TRUE(measured.Ready());
+    make_probe(measured);
+    ProbeResult b = Inspect(measured, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    repair::FinalizeSideDataInheritance(b.fidelity, true, false, 0.0, /*output_has_hdr=*/true);
+    EXPECT_TRUE(HasKept(b.fidelity, "HDR 静态元数据"));
+    EXPECT_FALSE(HasLost(b.fidelity, "HDR 静态元数据"));
+    EXPECT_TRUE(b.fidelity.all_properties_preserved);
+
+    // 实测无 → 丢失。
+    FidelityProbe missing;
+    ASSERT_TRUE(missing.Ready());
+    make_probe(missing);
+    ProbeResult c = Inspect(missing, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P);
+    repair::FinalizeSideDataInheritance(c.fidelity, true, false, 0.0, /*output_has_hdr=*/false);
+    EXPECT_TRUE(HasLost(c.fidelity, "HDR 静态元数据"));
+    EXPECT_FALSE(c.fidelity.all_properties_preserved);
 }
 
 TEST(RepairTranscodeFidelity, ChromaSubsamplingLossIsReported) {
@@ -839,6 +1067,122 @@ TEST(RepairTranscodeFidelity, VideoOnlySourceClaimsNoAvSync) {
     EXPECT_FALSE(fidelity.av_start_offset_seconds.has_value()) << "没有音频轨就没有起点差";
     EXPECT_TRUE(fidelity.av_sync_note.empty()) << fidelity.av_sync_note;
     EXPECT_FALSE(fidelity.av_start_offset_preserved);
+}
+
+// ==== 端到端：S08 真的把方向矩阵 / HDR 元数据带进产物 ====
+
+// 手机竖拍的片子是「画面横着存 + 容器声明 90°」：只重编码像素、不拷矩阵，
+// 产物就会躺倒。这条钉三件事：拷贝动作、产物自身实测、报告三格式同源。
+TEST(RepairTranscodeFidelity, S08InheritsRotationMatrixAndVerifiesInOutput) {
+    const std::string dir = MakeTempDir("rot_inherit");
+    const std::string source = CreateRotatedMedia(dir, "rot", 90.0);
+    ASSERT_TRUE(fs::exists(source)) << source;
+    const auto source_probe = videoeye_test::ProbeMediaFile(source);
+    ASSERT_TRUE(source_probe.opened) << source_probe.error;
+    ASSERT_TRUE(source_probe.has_display_matrix) << "语料必须先真的带上方向信息";
+    ASSERT_GT(std::abs(source_probe.video_rotation_degrees), 80.0);
+
+    RepairRequest request = MakeRequest(source, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    EXPECT_TRUE(fidelity.display_matrix_attached) << "没挂到输出流就不可能进产物";
+    EXPECT_TRUE(fidelity.side_data_output_measured);
+    EXPECT_TRUE(fidelity.output_has_display_matrix) << fidelity.display_matrix_note;
+    EXPECT_NEAR(fidelity.output_rotation_degrees, source_probe.video_rotation_degrees, 0.5)
+        << fidelity.display_matrix_note;
+
+    // 产物自己必须真的带角度 —— 报告说继承、产物却躺倒就是假结论。
+    const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(output_probe.opened) << output_probe.error;
+    ASSERT_TRUE(output_probe.has_display_matrix) << "产物丢了方向信息，画面会躺倒";
+    EXPECT_NEAR(output_probe.video_rotation_degrees, source_probe.video_rotation_degrees, 0.5);
+
+    EXPECT_TRUE(HasKept(fidelity, "旋转 / 镜像"));
+    EXPECT_FALSE(HasLost(fidelity, "旋转 / 镜像"));
+    EXPECT_FALSE(HasUnverified(fidelity, "旋转 / 镜像"));
+
+    // 三格式同源：行文案由修复层渲染，报告层不另拼一份。
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
+        EXPECT_NE(body.find("旋转 / 镜像矩阵"), std::string::npos);
+        EXPECT_NE(body.find("产物实测"), std::string::npos) << "行文案必须说明产物侧实测结果";
+        EXPECT_EQ(body.find("转码属性未实测"), std::string::npos) << "已经实测过，不该再报「未实测」";
+    }
+    JsonValue root;
+    std::string error;
+    ASSERT_TRUE(JsonParse(ReadText(dir + "/r.json"), root, &error)) << error;
+    const JsonValue* transcode = root.Find("fidelity");
+    ASSERT_NE(transcode, nullptr);
+    const JsonValue* node = transcode->Find("transcode");
+    ASSERT_NE(node, nullptr);
+    EXPECT_TRUE(node->Find("display_matrix_attached")->BoolValueOr(false));
+    EXPECT_TRUE(node->Find("side_data_output_measured")->BoolValueOr(false));
+    EXPECT_TRUE(node->Find("output_has_display_matrix")->BoolValueOr(false));
+}
+
+TEST(RepairTranscodeFidelity, S08InheritsHdrStaticMetadata) {
+    const std::string dir = MakeTempDir("hdr_inherit");
+    const std::string source = CreateRotatedMedia(dir, "hdr", 0.0, /*with_hdr=*/true);
+    ASSERT_TRUE(fs::exists(source)) << source;
+    const auto source_probe = videoeye_test::ProbeMediaFile(source);
+    ASSERT_TRUE(source_probe.opened) << source_probe.error;
+    ASSERT_TRUE(source_probe.has_hdr_metadata) << "语料必须先真的带上 HDR 静态元数据";
+
+    RepairRequest request = MakeRequest(source, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    EXPECT_TRUE(fidelity.has_hdr_metadata);
+    EXPECT_TRUE(fidelity.hdr_metadata_attached);
+    EXPECT_TRUE(fidelity.side_data_output_measured);
+    EXPECT_TRUE(fidelity.output_has_hdr_metadata) << fidelity.hdr_metadata_note;
+
+    const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(output_probe.opened) << output_probe.error;
+    ASSERT_TRUE(output_probe.has_hdr_metadata) << "产物没带上 HDR 静态元数据";
+
+    EXPECT_TRUE(HasKept(fidelity, "HDR 静态元数据"));
+    EXPECT_FALSE(HasLost(fidelity, "HDR 静态元数据"));
+    EXPECT_FALSE(HasUnverified(fidelity, "HDR 静态元数据"));
+
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
+        EXPECT_NE(body.find("HDR 静态元数据"), std::string::npos);
+    }
+}
+
+// 源片没有方向信息时，别凭空印一行「源未声明」以外的任何东西，
+// 更不能因此让「属性均已保留」变成 false。
+TEST(RepairTranscodeFidelity, SourceWithoutSideDataClaimsNothing) {
+    const std::string dir = MakeTempDir("no_side_data");
+    const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir, "plain");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    EXPECT_FALSE(fidelity.has_display_matrix);
+    EXPECT_FALSE(fidelity.has_hdr_metadata);
+    EXPECT_FALSE(fidelity.display_matrix_attached);
+    EXPECT_FALSE(fidelity.hdr_metadata_attached);
+    EXPECT_TRUE(fidelity.side_data_output_measured);
+    EXPECT_TRUE(fidelity.display_matrix_note.empty()) << fidelity.display_matrix_note;
+    EXPECT_TRUE(fidelity.hdr_metadata_note.empty()) << fidelity.hdr_metadata_note;
+    EXPECT_TRUE(fidelity.unverified_properties.empty());
+    EXPECT_FALSE(HasLost(fidelity, "旋转 / 镜像"));
+    EXPECT_FALSE(HasLost(fidelity, "HDR 静态元数据"));
 }
 
 } // namespace
