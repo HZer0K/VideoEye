@@ -45,6 +45,9 @@ struct TestMediaSpec {
     // 让 x264 在每个关键帧前重复写 SPS/PPS（repeat-headers=1），使参数集出现在
     // 码流载荷里而不只是 extradata。自建初始化段需要 in-band 参数集才有证据可用。
     bool repeat_parameter_sets = false;
+    // 额外视频轨数量（默认 0）。用于验证「多条视频轨时哪条被重建、其余怎么交代」：
+    // 第二视频轨在 S08 里没有解码-重编码链，必须被显式列为未保留，不能无声消失。
+    int extra_video_tracks = 0;
 };
 
 struct TestMedia {

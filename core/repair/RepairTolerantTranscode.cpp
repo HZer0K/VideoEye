@@ -11,6 +11,7 @@
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTranscodeFidelity.h"
+#include "core/repair/RepairTranscodeTracks.h"
 #include "core/repair/RepairUtils.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
@@ -477,7 +478,70 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return outcome;
     }
 
-    const int video_index = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    // ---- 切片 T：先给每条输入轨做决策，再按决策建输出 ----
+    //
+    // 旧实现把「主视频轨重编码 + 每条音频轨按原码流复制」写死在流程里，三种后果
+    // 都是实测确认过的：第二视频轨 / 封面 / 字幕 / 数据轨无声消失；音频轨被目标
+    // 容器拒绝时整份产物写头失败；「这条轨为什么重编码」从来没有落过账。
+    const std::string output_ext = paths.extension.empty() ? LowerExtension(paths.part_path) : paths.extension;
+    const char* format_name = FormatNameForExtension(output_ext);
+
+    std::vector<TranscodeTrackProbe> probes;
+    probes.reserve(in->nb_streams);
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        const AVStream* stream = in->streams[i];
+        TranscodeTrackProbe probe;
+        probe.input_stream_index = static_cast<int>(i);
+        probe.kind = TranscodeTrackKindName(stream->codecpar->codec_type,
+                                            (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0);
+        probe.source_codec = avcodec_get_name(stream->codecpar->codec_id);
+        probe.discarded = stream->discard == AVDISCARD_ALL;
+        // 容器接受性只对音频轨有决策意义，且必须实测：avformat_query_codec 会
+        // 对 mpegts 这类没实现 query 的封装器返回垃圾值，按它判会误删轨。
+        if (probe.kind == "audio" && !probe.discarded) {
+            probe.container_fit = ProbeTrackFitsContainer(format_name, stream->codecpar, &probe.container_fit_detail);
+        }
+        probes.push_back(std::move(probe));
+    }
+    // 「该轨有没有编码层损伤」只能来自诊断层的证据，不能从「我们要重编码」反推。
+    const int primary_video_probe = SelectPrimaryVideoIndex(probes);
+    for (auto& probe : probes) {
+        if (probe.input_stream_index != primary_video_probe)
+            continue;
+        for (const auto& finding : diagnosis.findings) {
+            if (finding.layer != model::DamageLayer::Decode)
+                continue;
+            if (finding.location.stream_index && *finding.location.stream_index == probe.input_stream_index) {
+                probe.decode_damage_detected = true;
+                break;
+            }
+        }
+    }
+    const TranscodeTrackPlan track_plan = PlanTranscodeTracks(probes);
+    // 决策表的落账入口只留这一个：后面 `outcome.transcode_fidelity = InspectTranscodeFidelity(...)`
+    // 会整份替换结构体（实测过一次：早写的决策表被那次替换静默抹掉，报告里一条都不剩），
+    // 所以必须在替换之后再调一次，而不是在两处各写一遍赋值。
+    const auto apply_track_plan = [&outcome, &track_plan](int input_streams) {
+        outcome.transcode_fidelity.track_decisions = track_plan.decisions;
+        outcome.transcode_fidelity.track_decision_input_streams = input_streams;
+        outcome.transcode_fidelity.track_decision_summary = track_plan.summary;
+        outcome.transcode_fidelity.track_decision_note = track_plan.note;
+    };
+    // 决策表在任何早退路径上都要带走：转码失败时「哪些轨本来会被丢掉」同样是事实。
+    apply_track_plan(static_cast<int>(in->nb_streams));
+    for (const auto& decision : track_plan.decisions) {
+        if (decision.action == "drop")
+            outcome.omitted_items.push_back(TranscodeTrackOmittedText(decision));
+    }
+    // 输入流下标 → 决策动作（copy / transcode / drop）。后面建输出流、缓存首帧前的
+    // 音频包都只看这张表，不再各自重判一次。
+    std::vector<std::string> track_action(in->nb_streams);
+    for (const auto& decision : track_plan.decisions) {
+        if (decision.input_stream_index >= 0 && decision.input_stream_index < static_cast<int>(in->nb_streams))
+            track_action[static_cast<std::size_t>(decision.input_stream_index)] = decision.action;
+    }
+
+    const int video_index = track_plan.primary_video_index;
     if (video_index < 0) {
         avformat_close_input(&in);
         outcome.error = "源文件没有可转码的视频轨";
@@ -507,8 +571,6 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     }
 
     // ---- 输出上下文 ----
-    const std::string output_ext = paths.extension.empty() ? LowerExtension(paths.part_path) : paths.extension;
-    const char* format_name = FormatNameForExtension(output_ext);
     AVFormatContext* out = nullptr;
     if (avformat_alloc_output_context2(&out, nullptr, format_name, paths.part_path.c_str()) < 0 || out == nullptr) {
         avcodec_free_context(&decoder);
@@ -567,8 +629,13 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             break;
         }
         if (packet->stream_index != video_index) {
-            if (!pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets))
+            // 只缓存「决策 = 复制」的轨：被丢弃的轨（容器拒绝的音频 / 字幕 / 数据）
+            // 缓存起来既无用，还会把 pending 预算吃光，最后误报「音频前缀可能缺失」。
+            const std::size_t index = static_cast<std::size_t>(std::max(packet->stream_index, 0));
+            const bool will_copy = index < track_action.size() && track_action[index] == "copy";
+            if (will_copy && !pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets)) {
                 pending_overflow = true;
+            }
             av_packet_unref(packet);
             continue;
         }
@@ -745,13 +812,14 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
     }
 
-    // 音频：尽量按原码流复制；失败 / 不兼容的轨道逐项记账。
+    // 音频：按决策表决定复制哪些轨。drop 的轨（容器拒绝该编码 / 源侧已标记丢弃）
+    // 不再尝试复制 —— 旧实现一律复制，其中一条被拒就让整份产物写头失败。
     std::vector<int> audio_map(in->nb_streams, -1);
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         const AVStream* src = in->streams[i];
         if (src->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
             continue;
-        if (src->discard == AVDISCARD_ALL)
+        if (i >= track_action.size() || track_action[i] != "copy")
             continue;
         AVStream* dst = avformat_new_stream(out, nullptr);
         if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
@@ -784,7 +852,15 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         avformat_free_context(out);
         avcodec_free_context(&decoder);
         avformat_close_input(&in);
-        outcome.error = "写入封装头失败（音频编码参数可能不被目标容器接受）";
+        // 旧文案「音频编码参数可能不被目标容器接受」是猜的：它把「我们没查」写成
+        // 了「大概是这个原因」。现在被拒的轨已经在决策阶段剔除，这里只能如实说
+        // 清楚「是否还有被拒轨没剔除」。
+        const bool any_rejected = std::any_of(probes.begin(), probes.end(), [](const TranscodeTrackProbe& probe) {
+            return probe.container_fit == TranscodeContainerFit::Rejected;
+        });
+        outcome.error = std::string("写入封装头失败（") + format_name + "）；" +
+                        (any_rejected ? "已按试写头实测剔除被拒音频轨，写头仍然失败，原因不在轨编码兼容性"
+                                      : "逐轨实测没有被目标容器拒绝的轨道，失败原因不在轨编码兼容性");
         return outcome;
     }
 
@@ -913,6 +989,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 前面任何一步失败都保持 inspected=false —— 空表不许冒充「属性均已保留」。
     inherited.chroma_location_copied = ApplyTranscodeFrameProperties(converted, video_in);
     outcome.transcode_fidelity = InspectTranscodeFidelity(video_in, first_frame, encoder_format, inherited);
+    // 整份替换之后把轨级决策补回来（理由见上面 apply_track_plan 的注释）。
+    apply_track_plan(static_cast<int>(in->nb_streams));
     // 切片 O：编码器事实与被探测属性分开落 —— 前者在「没探测到首帧」的路径上
     // 同样成立（编码器已经打开过），不能因为 inspected=false 就一起丢掉。
     outcome.transcode_fidelity.encoder_preferred = kPreferredEncoder;
@@ -1243,6 +1321,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     FinalizeSideDataInheritance(outcome.transcode_fidelity, side_data_measured, output_has_matrix, output_rotation,
                                 output_has_hdr);
     // 丢失 / 继承项数在这里才齐全（方向与 HDR 的结论刚落地），统计只能放这里。
+    // 轨级决策的汇总也放在这里：早写会带上一个悬空的分隔符（那时 transcode_note
+    // 还是空的），而且它和上面那批结论是同一次「收尾统计」。
+    outcome.transcode_note += "；轨道决策=" + track_plan.summary;
     if (outcome.transcode_fidelity.inspected) {
         const model::RepairTranscodeFidelity& fidelity = outcome.transcode_fidelity;
         outcome.transcode_note += "；源侧保真探测=" + fidelity.source_pixel_format + "→" +

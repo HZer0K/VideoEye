@@ -1059,6 +1059,97 @@ moov_rebuild [部分支持] 触发证据: container.moov_missing
 - 不把这条路径的 `timeline_status` 抬回 `unchanged`，除非将来真的拿到与原始 mdhd
   等价的独立基线（例如切片自带 tfdt 且与 sidx 交叉一致）。
 
+### 4.20 切片 T：S08 的轨级决策（copy / transcode / drop）
+
+**起点**：§5.2 阶段 6 的第一条——「S08 写死『视频轨统一按 H.264 重编码 + 逐条音频轨
+按原码流复制』，无『按轨判断是否需转码』」。摸下去发现这不是「还没做选择」，而是
+**三个可观测的结论层缺口**（前两个由代码路径实测，第三个由容器行为实测）：
+
+| 现象 | 旧行为 | 实测证据 |
+|---|---|---|
+| 第二视频轨 / 封面 / 字幕 / 数据轨 | 无声消失，`omitted_items` 里一条都没有 | `audio_map` 之外的流从未被登记；只有音频「复制参数失败」才记账 |
+| 目标容器拒绝某条音频轨 | `avformat_write_header` 整体失败 → **整个转码失败**，退回避重封装 | 内存试写头实测：mp4 拒 truehd、mov 拒 flac / opus / truehd |
+| 「这条轨为什么重编码」 | 只有一句「视频轨经过解码与重编码」 | 读起来像「该轨坏了」；实际多数情况是用户选了救内容模式 |
+
+**判据取证（先量后写）**
+
+- `avformat_query_codec()` **不可用作判据**：实测对 `mpegts` 这类没实现 `query_codec`
+  的封装器返回垃圾值（-1163346256），按它判会误删轨；对 mp4 又会声称 vorbis /
+  truehd 都支持。
+- 改用**内存试写头**：建一个只含该音频轨的输出上下文，`avio_alloc_context` 挂内存
+  写回调（带伪 seek，因为封装器写头时会回填 box 长度），调 `avformat_write_header`。
+  结论与真实落盘写头逐条一致（mp4/truehd、mov/flac、mov/opus、mov/truehd 均拒绝；
+  mp4/aac、mp4/flac 接受）。
+- 实现时踩到一个堆损坏：`avio_context_free(&avio)` 会把 `avio` 置 **NULL**，
+  用「`avio == nullptr`」判「缓冲没被接管」→ 对同一块 buffer double free
+  （`0xc0000374`）。所有权必须在 `avio_alloc_context` 成功后立刻转移，不能事后
+  从指针猜。
+
+**改动**
+
+1. 新模块 `core/repair/RepairTranscodeTracks.{h,cpp}`：纯函数
+   `PlanTranscodeTracks()` 把每条输入轨判成 copy / transcode / drop + 稳定理由码；
+   `ProbeTrackFitsContainer()` 做内存试写头；`TranscodeTrackDecisionText()` /
+   `TranscodeTrackOmittedText()` 是唯一渲染入口。
+2. `RepairTolerantTranscode`：先建探针表 → 决策 → **按决策**建输出流；被丢弃的轨
+   进 `omitted_items`；首帧前的音频包只缓存「决策=复制」的轨（否则被丢的轨会把
+   pending 预算吃光、误报「音频前缀可能缺失」）；主视频轨选择不再用
+   `av_find_best_stream`，改成跳过封面图（`attached_pic`）的第一条视频轨。
+3. 模型加 `RepairTranscodeTrackDecision` 与四个字段（决策表 / 输入流总数 /
+   汇总 / 依据边界），报告层只打印 `text`，不自己拼。
+4. 报告：「轨道决策」汇总行 + 「轨道决策覆盖」行（条数 ≠ 源侧流数时显式告警）
+   + 逐轨决策条目；JSON 落 `track_decisions[]` / `track_decision_count` /
+   `track_decision_input_streams` —— 只有数组时，「少了一条」在 JSON 里看不出来。
+5. 声明排除新增 `extra_tracks_not_rebuilt`；`gop_local_reencode_not_attempted`
+   的证词里「逐轨转码决策仍未实现」已过期，同步改掉（否则报告自相矛盾）。
+
+实际渲染（TXT）：
+
+```
+轨道决策: 复制 1 轨 / 重编码 1 轨 / 未保留 1 轨
+- 轨道决策: 流 #0（video, h264）→ 重编码：主视频轨：该轨未检出编码层损伤证据；
+  本次重编码来自救内容模式的选择，不是该轨必需的修复（可感知画面会有代际损失）
+- 轨道决策: 流 #2（audio, aac）→ 复制：音频轨：目标容器试写头接受该编码，按原码流复制（不重编码）
+- 未保留: 流 #1（video, h264）：第二视频轨：S08 只有一条解码-重编码链，产物未保留该轨
+  （这是本模块的能力边界，不是容器限制）
+```
+
+**判据边界（随结论一起报出）**
+
+- 试写头只放该音频轨一条流：结论覆盖「容器 × 该编码」，不代表整份产物一定写得出来。
+  真实写头失败时，错误文案改成「逐轨实测有没有被拒轨」，不再猜「音频编码参数
+  可能不被接受」。
+- 决策表里 `drop` 的轨**不**在决策行里重复打印（未保留清单已经列过），避免同一条
+  理由出现两次。
+- 源侧 `discard=all` 与容器拒绝是两件事，理由码分开（`stream_marked_discard` /
+  `audio_drop_container_rejected`）。
+
+**守护**
+
+- 纯函数用例 11 个：覆盖自证（每条输入轨恰好一条、下标唯一且与探针集合一致）、
+  封面图不当主轨、音频三态（接受 / 拒绝 / 未测）各自的动作与理由码、
+  主视频轨「有损伤证据 / 只有模式选择」两种理由不许混用、非音视频轨逐类理由码、
+  源侧已丢弃单独理由码、渲染形态。
+- 容器实测用例 1 个：mp4+aac 接受、mp4+flac 接受、mov+flac 拒绝（且带回实测原因）、
+  不存在的封装器 → `Unknown`（不许冒充接受或拒绝）。
+- 端到端 2 个：双视频轨语料（工厂新增 `extra_video_tracks`）——决策表覆盖 3 条流、
+  第二视频轨为 drop、产物只有 1 条视频轨、未保留清单里有它、三格式同源；
+  单视频轨常规路径——决策表 2 条、音频由试写头实测判为接受、汇总串逐字匹配。
+- 判别力 9 组（T1–T9）全部精确判红后按字节恢复复跑绿：
+  容器拒绝改回「照旧复制」、封面图当主轨、覆盖自证不看下标、试写头恒判接受、
+  实测原因不进结论、丢轨不进未保留清单、决策表被 `InspectTranscodeFidelity`
+  整份替换后没补回（真实踩过的坑）、无损伤证据也写成「有损伤」、
+  报告把 drop 重复打印。
+
+**已知未覆盖**
+
+- 「容器拒绝音频轨 → 产物仍然生成且该轨被剔除」这条**端到端**路径没有语料：
+  本构建能造出来的真实源（mp4/mkv + aac / flac / opus）在目标容器里都被接受。
+  目前只在纯函数与容器实测两层覆盖；真实拒绝场景需要外部样本（如 mov+flac）。
+- 音频「转码而不是丢弃」还没做：本轮只做 copy / drop，没有音频重编码链。
+- `track_action` 的 gate 只在「决策=copy」时建音频流；若将来加音频重编码，
+  这里要一起改。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -1088,11 +1179,15 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 
 ### 5.2 阶段 6：容忍式转码与其他容器
 
-- **S08 现状**：写死「视频轨统一按 H.264 重编码 + 逐条音频轨按原码流复制」，无「按轨判断
-  是否需转码」。实际编码器由运行时探测（LGPL 构建不含 libx264，会回退到 libopenh264，
-  见 §4.15），报告按实测名写出，不再写死首选名。
-  先做轨道级选择，再研究 GOP 范围局部重编码；接入前**必须验证编码参数与拼接边界兼容性**
-  （profile / level / 像素格式 / time_base / `max_b_frames`）。
+- **S08 现状**：**切片 T 已落地轨级决策**（见 §4.20）——每条输入轨判成
+  copy / transcode / drop 并给出稳定理由码；容器接受性由内存试写头逐轨实测
+  （`avformat_query_codec` 对 mpegts 返回垃圾值，不可作判据）；被丢弃的轨进
+  「未保留」清单，不再无声消失；容器拒绝的音频轨宁可剔除并报出，也不拖着整份
+  产物写头失败。实际编码器由运行时探测（LGPL 构建不含 libx264，会回退到
+  libopenh264，见 §4.15），报告按实测名写出。
+  **仍待做**：重编码范围仍是整条视频轨——GOP 级局部重编码要先验证编码参数与
+  拼接边界兼容性（profile / level / 像素格式 / time_base / `max_b_frames`）；
+  音频只有 copy / drop，没有「转码成容器能收的编码」这条链。
 - ~~**待补**：动态分辨率（当前固定首帧宽高）、10-bit、`color_primaries/trc/space/range`、
   HDR 元数据与 SEI、旋转 displaymatrix。补之前产物不能声称视觉无损。~~
   **切片 J 已部分解决**（见 §4.10）：这些属性现在逐项实测并写进报告，SAR /
@@ -1177,6 +1272,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | Q 容器级 side data 真正继承 | 完成（本轮） | | 实测：旋转矩阵 / HDR 静态元数据旧实现全丢，`movenc` 其实支持（tkhd / mdcv+clli）；改为写头前拷 side data + 收尾打开产物实测；新增第三类 `unverified_properties` 与 HDR 位深前提 + 矛盾检测；新增 6 个用例；172/172 ctest（1958 gtest）；7 组判别力变异全部精确判红。见 §4.17 与下方「切片 Q 验收记录」 |
 | R 能力边界支持程度口径 | 完成（本轮） | | 三条契约一律 `unsupported` 而 evidence 写着「已实现…」，章节标题还叫「未实现能力边界」；改状态词表（`partially_supported` / `unsupported` / `deferred`）+ 拆出 `covered_scope` / `not_covered_scope` 与物理不可恢复三段，状态词与两张表互为约束；新增 3 个用例；172/172 ctest（1960 gtest）；6 组判别力变异全部精确判红。见 §4.18 与下方「切片 R 验收记录」 |
 | S 合成初始化段时基分级 | 完成（本轮） | | 自建路径不占 `timeline_basis.mode`，回落成「容器时间戳」（源片根本没有 moov），且 `timeline_status=unchanged`；改为 `synthesized_init_timescale` + `unknown`；时基核对可测、可断言「没核对 ≠ 核对通过」；点明时长比对在这条路上是自证；新增 1 个纯函数用例 + 扩写端到端用例；172/172 ctest（1961 gtest）；7 组判别力变异全部精确判红（S4 首轮判绿 → 断言不够严）。见 §4.19 与下方「切片 S 验收记录」 |
+| T S08 的轨级决策 | 完成（本轮） | | 实测三个缺口：第二视频轨/封面/字幕/数据轨无声消失、容器拒绝某条音频轨时整份产物写头失败、「为什么重编码」从未落账；改为逐轨 copy/transcode/drop + 稳定理由码，容器接受性用内存试写头实测（`avformat_query_codec` 对 mpegts 返回垃圾值，不可用）；新增 14 个用例（11 纯函数 + 1 容器实测 + 2 端到端）；173/173 ctest（1976 gtest）；9 组判别力变异全部精确判红。见 §4.20 与下方「切片 T 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -2025,3 +2121,58 @@ AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·15
   的样本得手工改一处 trun，本轮未造 —— 该分支的判据是 `deviation > tolerance`，
   已有代码但无端到端守护。
 - 自建路径仍不重建音频轨，也不重建 edts/ctts，这两条限制沿用 §4.14。
+
+### 切片 T 验收记录（2026-11-13）
+
+**摸底（先量后写）**
+
+| 现象 | 实测结论 |
+|---|---|
+| 第二视频轨 / 封面 / 字幕 / 数据轨 | `RepairTolerantTranscode` 只给 `video_index` 与音频建输出流，其余流从未被登记；`omitted_items` 里也查不到 |
+| 容器拒绝某条音频轨 | `avformat_write_header` 整体失败 → S08 整体失败 → 退回保重封装；旧文案猜「音频编码参数可能不被目标容器接受」，不说是哪条 |
+| 「为什么重编码」 | 只有一句「视频轨经过解码与重编码（N 帧）」，没有证据来源 |
+| `avformat_query_codec` 能否当判据 | **不能**：mpegts 返回 -1163346256（未实现 `query_codec`），mp4 声称 vorbis / truehd 都支持 |
+| 内存试写头能否当判据 | **能**：mp4/truehd 拒、mov/flac 拒、mov/opus 拒、mov/truehd 拒、mp4/aac 与 mp4/flac 接受，与落盘写头逐条一致 |
+
+**做法**：新模块 `RepairTranscodeTracks`（纯决策 + 内存试写头 + 唯一渲染）；S08 先决策
+再建输出；被丢轨进「未保留」；主视频轨跳过封面图；报告出「轨道决策」汇总行与覆盖行；
+JSON 落决策数组 + 两个计数；声明排除新增 `extra_tracks_not_rebuilt` 并修掉
+`gop_local_reencode_not_attempted` 里「逐轨决策未实现」的过期证词。
+
+**验证**：173/173 ctest（1976 gtest）、离屏 `rc=124`、门禁全绿（clang-format 18.1.8 /
+AUTOMOC 9·153 / 分层 / 命名空间 / 链接可见性 / README 快照 154·154·1976·19）、
+`git diff --check`。新增 14 个用例（`test_repair_transcode_tracks`）+ 1 个声明排除用例；
+测试媒体工厂新增 `extra_video_tracks`。
+
+**判别力变异**（`build/mut_t.py`，每组都确认 `Building CXX` > 0）
+
+| 变异 | 破坏点 | 结果 |
+|---|---|---|
+| T1 | 容器拒绝的音频轨改回「照旧复制」 | 精确判红（`AudioRejectedByContainerIsDroppedNotCopied`） |
+| T2 | 封面图被选成主视频轨 | 精确判红（`CoverArtIsNeverThePrimaryVideoTrack`） |
+| T3 | 覆盖自证不看下标唯一性 | 精确判红（`DuplicateIndexBreaksCoverageProof`） |
+| T4 | 试写头无论成败都判「接受」 | 精确判红（`ContainerProbeMeasuresTheRealMuxer`） |
+| T5 | 实测原因（错误码含义）不进结论 | 精确判红（同上） |
+| T6 | 被丢弃的轨不进「未保留」清单 | 精确判红（端到端双视频轨） |
+| T7 | 决策表被 `InspectTranscodeFidelity` 整份替换后没补回 | 精确判红（两个端到端用例） |
+| T8 | 没有损伤证据也写成「该轨有损伤」 | 精确判红（`VideoReasonDistinguishesDamageFromModeChoice`） |
+| T9 | 报告把 drop 决策也当决策行打印 | 精确判红（端到端「不许出现 `轨道决策: 流 #1（video`」） |
+
+**本轮踩到的真 bug（都进了结论层）**
+
+1. **决策表被整份替换抹掉**：`outcome.transcode_fidelity = InspectTranscodeFidelity(...)`
+   是整份赋值，早写的决策表静默消失 —— 报告里一条都没有。修法是把落账收成一个
+   `apply_track_plan()`，替换之后再调一次（不是两处各写一遍赋值）。
+2. **`avio_context_free()` 会把指针置 NULL**：用「`avio == nullptr`」判「缓冲没被接管」
+   导致对同一块 buffer double free（`0xc0000374`）。所有权必须在
+   `avio_alloc_context` 成功后立刻转移。
+3. **`transcode_note` 分隔符悬空**：决策汇总早写时 `transcode_note` 还是空的，
+   渲染成「；轨道决策=…」。汇总挪到收尾统计处。
+
+**未覆盖（如实记账）**
+
+- 「容器拒绝音频轨 → 产物仍生成且该轨被剔除」没有端到端语料：本构建造得出的真实源
+  （mp4 / mkv + aac / flac / opus）在目标容器里都被接受。当前只有纯函数 + 容器实测两层覆盖。
+- 音频只有 copy / drop，没有「转码成容器能收的编码」这条链（需要音频重编码 + 重采样，
+  且要处理 priming 与音画起点，属独立切片）。
+- 第二视频轨的**重建**没做：多视频轨需要并行的解码-重编码链与各自参数集管理。

@@ -122,8 +122,20 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     AVCodecContext* aenc = nullptr;
     AVStream* vst = nullptr;
     AVStream* ast = nullptr;
+    // 额外视频轨：每条一个独立编码器上下文（编码器状态不能共用），
+    // 编的是同一批帧 —— 只为让产物里真的存在第二条视频轨。
+    struct ExtraVideoTrack {
+        AVCodecContext* enc = nullptr;
+        AVStream* stream = nullptr;
+    };
+    std::vector<ExtraVideoTrack> extra_video;
 
     auto finish = [&](bool ok, const std::string& error) {
+        for (auto& extra : extra_video) {
+            if (extra.enc)
+                avcodec_free_context(&extra.enc);
+        }
+        extra_video.clear();
         if (fmt) {
             if (fmt->pb)
                 avio_closep(&fmt->pb);
@@ -208,6 +220,43 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         return finish(false, "写入视频流参数失败");
     vst->time_base = venc->time_base;
     media.video_codec = vcodec->name;
+
+    // ---- 额外视频轨（默认 0 条）----
+    // 只在需要「多视频轨」语义的用例里生成：S08 只重建一条视频链，其余轨必须
+    // 出现在「未保留」清单里，而不是无声消失。
+    for (int i = 0; i < spec.extra_video_tracks; ++i) {
+        ExtraVideoTrack extra;
+        extra.enc = avcodec_alloc_context3(vcodec);
+        if (!extra.enc)
+            return finish(false, "无法分配额外视频编码器上下文");
+        // 先登记再配置：中途任何一步失败都由 finish() 统一释放，不留半开状态。
+        extra_video.push_back(extra);
+        AVCodecContext* enc = extra_video.back().enc;
+        enc->width = spec.width;
+        enc->height = spec.height;
+        enc->pix_fmt = AV_PIX_FMT_YUV420P;
+        enc->time_base = venc->time_base;
+        enc->framerate = venc->framerate;
+        enc->gop_size = venc->gop_size;
+        enc->max_b_frames = venc->max_b_frames;
+        enc->bit_rate = venc->bit_rate;
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+            enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (enc->priv_data) {
+            av_opt_set(enc->priv_data, "preset", "veryfast", 0);
+            if (spec.max_b_frames <= 0)
+                av_opt_set(enc->priv_data, "tune", "zerolatency", 0);
+        }
+        if (avcodec_open2(enc, vcodec, nullptr) < 0)
+            return finish(false, "打开额外视频编码器失败");
+        AVStream* stream = avformat_new_stream(fmt, nullptr);
+        if (!stream)
+            return finish(false, "无法创建额外视频流");
+        if (avcodec_parameters_from_context(stream->codecpar, enc) < 0)
+            return finish(false, "写入额外视频流参数失败");
+        stream->time_base = enc->time_base;
+        extra_video.back().stream = stream;
+    }
 
     // ---- 音频编码器 ----
     if (spec.with_audio) {
@@ -295,8 +344,14 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         FillVideoFrame(frame, i);
         frame->pts = i;
         avcodec_send_frame(venc, frame);
+        // 同帧喂给额外编码器必须在 free 之前：send_frame 只是取引用，
+        // 释放后再送就是悬空帧。
+        for (auto& extra : extra_video)
+            avcodec_send_frame(extra.enc, frame);
         av_frame_free(&frame);
         drain(venc, vst);
+        for (auto& extra : extra_video)
+            drain(extra.enc, extra.stream);
 
         // 音频补到"不落后于当前画面时间", 让 muxer 拿到基本有序的输入
         const double video_time = static_cast<double>(i) * spec.fps_den / spec.fps;
@@ -314,6 +369,10 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
     // 排空两个编码器
     avcodec_send_frame(venc, nullptr);
     drain(venc, vst);
+    for (auto& extra : extra_video) {
+        avcodec_send_frame(extra.enc, nullptr);
+        drain(extra.enc, extra.stream);
+    }
     if (aenc) {
         avcodec_send_frame(aenc, nullptr);
         drain(aenc, ast);

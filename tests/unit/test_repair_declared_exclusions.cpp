@@ -355,6 +355,47 @@ TEST(RepairDeclaredExclusions, TriggerFactsAreStructuredFieldValues) {
               transcode->trigger_facts.end());
 }
 
+// 切片 T：S08 只重建一条视频链 —— 这条能力边界必须能被「未保留的第二视频轨」
+// 触发，但不能被「容器拒绝音频」或「源侧已丢弃」触发（那是别人的决定，不是
+// 我们的能力缺口）。
+TEST(RepairDeclaredExclusions, ExtraTracksNotRebuiltOnlyTriggersOnOurOwnDrops) {
+    RepairResult result = EvaluatedBaseline();
+    result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
+    result.fidelity.video_reencoded = true;
+
+    RepairTranscodeTrackDecision extra_video;
+    extra_video.input_stream_index = 1;
+    extra_video.kind = "video";
+    extra_video.source_codec = "h264";
+    extra_video.action = "drop";
+    extra_video.reason_code = "extra_video_single_chain";
+    extra_video.text = "流 #1（video, h264）→ 未保留：第二视频轨";
+    result.fidelity.transcode.track_decisions.push_back(extra_video);
+
+    const auto with_extra = repair::BuildDeclaredExclusions(result);
+    const auto* item = FindItem(with_extra, "extra_tracks_not_rebuilt");
+    ASSERT_NE(item, nullptr) << "第二视频轨被丢弃了，却没有对应的能力声明";
+    ASSERT_FALSE(item->trigger_facts.empty());
+    const bool mentions_dropped_track =
+        std::any_of(item->trigger_facts.begin(), item->trigger_facts.end(),
+                    [](const std::string& fact) { return fact.find("第二视频轨") != std::string::npos; });
+    EXPECT_TRUE(mentions_dropped_track) << item->trigger_facts[0];
+
+    // 反向守护：容器拒绝 / 源侧已丢弃的丢轨不是「我们不重建」。
+    RepairResult container_result = EvaluatedBaseline();
+    container_result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
+    container_result.fidelity.video_reencoded = true;
+    RepairTranscodeTrackDecision rejected;
+    rejected.input_stream_index = 1;
+    rejected.kind = "audio";
+    rejected.action = "drop";
+    rejected.reason_code = "audio_drop_container_rejected";
+    rejected.text = "流 #1（audio, flac）→ 未保留：目标容器拒绝该编码";
+    container_result.fidelity.transcode.track_decisions.push_back(rejected);
+    EXPECT_TRUE(FindItem(repair::BuildDeclaredExclusions(container_result), "extra_tracks_not_rebuilt") == nullptr)
+        << "容器拒绝音频轨不该被算成「我们不重建」的能力缺口";
+}
+
 TEST(RepairDeclaredExclusions, ReferenceBorrowedBasisIsAnExplicitStructuredFact) {
     RepairResult result = EvaluatedBaseline();
     result.timeline_basis.mode = "reference_borrowed";

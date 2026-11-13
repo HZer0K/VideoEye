@@ -373,6 +373,28 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
     object.Set("unverified_properties", BuildStringArray(transcode.unverified_properties));
     object.Set("preserved_properties", BuildStringArray(transcode.preserved_properties));
     object.Set("lost_properties", BuildStringArray(transcode.lost_properties));
+    // 切片 T：轨级决策。机读字段是 action / reason_code（稳定标识），text 只给人看。
+    // 覆盖自证靠 decision_count 与 input_stream_count 两个数，缺一不可 ——
+    // 只给决策数组的话，「少了一条」在 JSON 里根本看不出来。
+    {
+        JsonValue decisions = JsonValue::MakeArray();
+        for (const auto& decision : transcode.track_decisions) {
+            JsonValue node = JsonValue::MakeObject();
+            node.Set("input_stream_index", JsonValue(decision.input_stream_index));
+            node.Set("kind", JText(decision.kind));
+            node.Set("source_codec", JText(decision.source_codec));
+            node.Set("action", JText(decision.action));
+            node.Set("reason_code", JText(decision.reason_code));
+            node.Set("reason", JText(decision.reason));
+            node.Set("text", JText(decision.text));
+            decisions.PushBack(node);
+        }
+        object.Set("track_decisions", decisions);
+    }
+    object.Set("track_decision_input_streams", JsonValue(transcode.track_decision_input_streams));
+    object.Set("track_decision_count", JsonValue(static_cast<int>(transcode.track_decisions.size())));
+    object.Set("track_decision_summary", JText(transcode.track_decision_summary));
+    object.Set("track_decision_note", JText(transcode.track_decision_note));
     return object;
 }
 
@@ -1285,6 +1307,27 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     }
     if (!transcode.av_sync_note.empty())
         fidelity.rows.emplace_back("音画同步处理", transcode.av_sync_note);
+    // 切片 T：轨级决策。汇总一行、逐轨一行一条 item，另加覆盖自证 ——
+    // 「决策表 3 条 / 源侧流 4 条」必须显式写出来，不能让少掉的那条看起来像没事。
+    if (!transcode.track_decision_summary.empty()) {
+        fidelity.rows.emplace_back("轨道决策", transcode.track_decision_summary);
+        if (transcode.track_decision_input_streams > 0 &&
+            static_cast<int>(transcode.track_decisions.size()) != transcode.track_decision_input_streams) {
+            fidelity.rows.emplace_back("轨道决策覆盖", "决策 " + std::to_string(transcode.track_decisions.size()) +
+                                                           " 条 / 源侧 " +
+                                                           std::to_string(transcode.track_decision_input_streams) +
+                                                           " 条流 —— 不一致，未列出的轨不能当成已保留");
+        }
+        // drop 的轨已经在上面「未保留: …」里逐条列过（含同一条理由），这里不再重复；
+        // 汇总数仍算在「轨道决策」行里，读者不会以为漏了什么。
+        for (const auto& decision : transcode.track_decisions) {
+            if (decision.action == "drop")
+                continue;
+            fidelity.items.push_back("轨道决策: " + decision.text);
+        }
+        if (!transcode.track_decision_note.empty())
+            fidelity.items.push_back("轨道决策依据: " + transcode.track_decision_note);
+    }
     if (!transcode.inspected) {
         fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");
     } else {

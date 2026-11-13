@@ -435,6 +435,30 @@ struct RepairActionExecution {
     uint64_t input_video_packet_count = 0;
 };
 
+// ---- S08 的轨级决策（阶段 6 / 切片 T）----
+//
+// S08 旧实现只有一句隐含策略：「主视频轨重编码 + 每条音频轨按原码流复制」，
+// 其余轨（第二视频轨 / 封面 / 字幕 / 数据）无声消失，音频轨被目标容器拒绝时
+// 整个转码直接失败。这里把「每条输入轨到底怎么处理」显式落成表：
+//   action        copy / transcode / drop
+//   reason_code   稳定标识（测试钉它，不钉中文文案）
+//   reason        渲染好的一句话（唯一渲染入口在 repair 层）
+//
+// 覆盖口径：一条输入轨恰好一条决策。调用方必须同时给出
+// `input_stream_count`，报告用它自证「决策表覆盖了全部输入轨」——
+// 少了任何一条都说明有轨被静默吞掉，而这正是本切片要修的病。
+struct RepairTranscodeTrackDecision {
+    int input_stream_index = -1;
+    std::string kind; // "video" / "attached_pic" / "audio" / "subtitle" / "data" / "attachment" / "other"
+    std::string source_codec;
+    std::string action;      // "copy" / "transcode" / "drop"
+    std::string reason_code; // 稳定标识，见 repair::TranscodeReasonFor
+    std::string reason;      // 渲染好的说明（唯一渲染入口在 repair 层）
+    // 整行渲染结果（"流 #2（audio, aac）→ 复制：…"）。报告层只打印这一行 ——
+    // core/reporting 不链 core/repair，自己拼就会和决策表漂移。
+    std::string text;
+};
+
 // ---- 转码保真属性清单（阶段 6 / 切片 J）----
 //
 // S08 把解码帧重新编码成 8-bit yuv420p。源侧的「像素位深 / 色彩标记 / 旋转
@@ -526,6 +550,18 @@ struct RepairTranscodeFidelity {
     // 且没有包被截到 0 时才为 true。
     bool av_start_offset_preserved = false;
     std::string av_sync_note;
+
+    // ---- 轨级决策（切片 T）----
+    //
+    // 每条输入轨一条决策，顺序与输入流下标一致。input_stream_count 是源侧实测的
+    // 流总数，用来自证覆盖：两者不等就说明决策表不完整，报告必须明写，
+    // 不能拿「表里没写」当成「这条轨没问题」。
+    std::vector<RepairTranscodeTrackDecision> track_decisions;
+    int track_decision_input_streams = 0;
+    // 「复制 N 轨 / 重编码 N 轨 / 未保留 N 轨」——渲染在 repair 层，报告只打印。
+    std::string track_decision_summary;
+    // 决策依据的边界说明（例如：容器接受性由试写头实测，不是查表推断）。
+    std::string track_decision_note;
 };
 
 // ---- 保真度 ----

@@ -2833,6 +2833,27 @@ target_link_libraries(test_repair_transcode_fidelity PRIVATE
 add_test(NAME RepairTranscodeFidelityTests COMMAND test_repair_transcode_fidelity)
 
 # =================================================
+# 测试：S08 的轨级决策（阶段 6 / 切片 T）
+#
+# 每条输入轨恰好一条决策（copy / transcode / drop + 稳定理由码），容器接受性由
+# 内存试写头实测；第二视频轨 / 封面 / 字幕 / 数据轨必须显式列为未保留，
+# 容器拒绝的音频轨不能拖着整份产物一起写头失败。
+# =================================================
+videoeye_add_test(test_repair_transcode_tracks
+    unit/test_repair_transcode_tracks.cpp
+)
+target_link_libraries(test_repair_transcode_tracks PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil)
+add_test(NAME RepairTranscodeTracksTests COMMAND test_repair_transcode_tracks)
+
+# =================================================
 # 测试：修复结论层「本次明确未恢复项」（阶段 5 / 切片 L）
 #
 # 静态目录覆盖守护 + 结构化触发矩阵（含未探测 / 已补齐 / 预检早退等反向守护）
