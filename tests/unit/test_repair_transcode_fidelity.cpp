@@ -71,6 +71,76 @@ RepairRequest MakeRequest(const std::string& source, const std::string& output_d
     return request;
 }
 
+// ---- 切片 P：音画起点语料 ----
+//
+// 造一份「合法但音画起点不同」的样本：把前 N 个视频包整个丢掉再重封装。
+// 得到的文件容器自洽、能正常播放，只是视频从 N/fps 秒才开始（音频仍从 0 开始）。
+// 这正是 S08 要面对的典型源：录音被打断 / 首段视频丢失 / 设备把音频先落盘。
+// 不用「破坏字节」是因为 H.264 会做错误隐藏，样本行为不稳定；丢包是确定性的。
+std::string CreateAvOffsetMedia(const std::string& directory, const std::string& name, int shift_video_frames) {
+    const videoeye_test::TestMedia base = videoeye_test::CreateTestMedia(directory, name + "_base");
+    if (!base.ok)
+        return std::string("base media failed: ") + base.error;
+
+    const std::string out_path = directory + "/" + name + ".mp4";
+    AVFormatContext* in = nullptr;
+    if (avformat_open_input(&in, base.path.c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(in, nullptr) < 0) {
+        if (in != nullptr)
+            avformat_close_input(&in);
+        return "open base failed";
+    }
+    AVFormatContext* out = nullptr;
+    if (avformat_alloc_output_context2(&out, nullptr, nullptr, out_path.c_str()) < 0 || out == nullptr) {
+        avformat_close_input(&in);
+        return "alloc output failed";
+    }
+    std::vector<int> mapping(in->nb_streams, -1);
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        AVStream* dst = avformat_new_stream(out, nullptr);
+        if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, in->streams[i]->codecpar) < 0) {
+            avformat_free_context(out);
+            avformat_close_input(&in);
+            return "copy stream failed";
+        }
+        dst->codecpar->codec_tag = 0;
+        dst->time_base = in->streams[i]->time_base;
+        mapping[i] = dst->index;
+    }
+    if (avio_open(&out->pb, out_path.c_str(), AVIO_FLAG_WRITE) < 0 || avformat_write_header(out, nullptr) < 0) {
+        avformat_free_context(out);
+        avformat_close_input(&in);
+        return "open output failed";
+    }
+    AVPacket* packet = av_packet_alloc();
+    while (av_read_frame(in, packet) >= 0) {
+        const int src_index = packet->stream_index;
+        const AVRational src_tb = in->streams[src_index]->time_base;
+        const bool is_video = in->streams[src_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO;
+        packet->stream_index = mapping[src_index];
+        const AVRational dst_tb = out->streams[packet->stream_index]->time_base;
+        av_packet_rescale_ts(packet, src_tb, dst_tb);
+        if (is_video) {
+            // 整体推后 shift_video_frames 帧：音频仍从 0 开始，于是源片
+            // 自带一段 A/V 起点差（相当于 -itsoffset）。
+            const int64_t ticks =
+                av_rescale(shift_video_frames, dst_tb.den, static_cast<int64_t>(dst_tb.num) * base.fps);
+            if (packet->pts != AV_NOPTS_VALUE)
+                packet->pts += ticks;
+            if (packet->dts != AV_NOPTS_VALUE)
+                packet->dts += ticks;
+        }
+        av_interleaved_write_frame(out, packet);
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+    av_write_trailer(out);
+    avio_closep(&out->pb);
+    avformat_free_context(out);
+    avformat_close_input(&in);
+    return out_path;
+}
+
 // 纯内存构造 AVStream / AVFrame / AVCodecContext：不落盘、不解码，
 // 让「探测函数本身」的判别力可以单独验证。
 class FidelityProbe {
@@ -670,6 +740,105 @@ TEST(RepairTranscodeFidelity, NonTranscodePathHasNoEncoderFact) {
     for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
         EXPECT_EQ(body.find("重编码编码器"), std::string::npos) << "保码流路径不得凭空出现编码器行";
     }
+}
+
+// ---- 切片 P：音画起点必须保留，不能各自归零 ----
+
+// 源片自带 0.48 s 的音画起点差（视频比音频晚 12 帧）。旧实现把视频按帧序号、
+// 音频按各自首包都归零，产物两边都是 0 —— 差值被静默抹掉，报告一个字都不提。
+TEST(RepairTranscodeFidelity, S08PreservesAudioVideoStartOffset) {
+    const std::string dir = MakeTempDir("av_offset");
+    const int shift_frames = 12;
+    const std::string source = CreateAvOffsetMedia(dir, "av_offset", shift_frames);
+    ASSERT_TRUE(fs::exists(source)) << source;
+    const auto source_probe = videoeye_test::ProbeMediaFile(source);
+    ASSERT_TRUE(source_probe.opened) << source_probe.error;
+    const double source_offset = source_probe.video_start_seconds - source_probe.audio_start_seconds;
+    ASSERT_GT(source_offset, 0.4) << "语料必须先真的带上起点差";
+
+    RepairRequest request = MakeRequest(source, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    // 1. 结论层必须量到这个差值，并声明保留。
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    ASSERT_TRUE(fidelity.av_start_offset_seconds.has_value()) << "两条轨都有起点，必须比对";
+    EXPECT_NEAR(*fidelity.av_start_offset_seconds, source_offset, 0.03) << fidelity.av_sync_note;
+    EXPECT_TRUE(fidelity.av_start_offset_preserved) << fidelity.av_sync_note;
+    EXPECT_NE(fidelity.av_sync_note.find("相对关系保留"), std::string::npos) << fidelity.av_sync_note;
+
+    // 2. 产物自身必须真的保住这个差值 —— 报告说保留、产物却对齐了就是假结论。
+    const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(output_probe.opened) << output_probe.error;
+    const double output_offset = output_probe.video_start_seconds - output_probe.audio_start_seconds;
+    EXPECT_NEAR(output_offset, source_offset, 0.03)
+        << "产物音画起点差被改写了：source=" << source_offset << " output=" << output_offset;
+
+    // 3. 三格式同源。
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    JsonValue root;
+    std::string error;
+    ASSERT_TRUE(JsonParse(ReadText(dir + "/r.json"), root, &error)) << error;
+    const JsonValue* transcode = root.Find("fidelity");
+    ASSERT_NE(transcode, nullptr);
+    const JsonValue* node = transcode->Find("transcode");
+    ASSERT_NE(node, nullptr);
+    EXPECT_TRUE(node->Find("av_start_offset_seconds")->IsNumber()) << "JSON 必须是数字而不是文案";
+    EXPECT_TRUE(node->Find("av_start_offset_preserved")->BoolValueOr(false));
+    for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
+        EXPECT_NE(body.find("音画起点差"), std::string::npos);
+        EXPECT_NE(body.find("音画同步处理"), std::string::npos);
+    }
+}
+
+// 反向守护：源片没有起点差时不得凭空造一个。这条钉的是「锚点取容器呈现起点」
+// —— 拿首包/首帧的原始 pts 当锚点会稳定多出一帧（AAC priming 是负的）。
+TEST(RepairTranscodeFidelity, S08DoesNotInventAvOffsetWhenSourceHasNone) {
+    const std::string dir = MakeTempDir("av_aligned");
+    const std::string source = CreateAvOffsetMedia(dir, "av_aligned", 0);
+    ASSERT_TRUE(fs::exists(source)) << source;
+    const auto source_probe = videoeye_test::ProbeMediaFile(source);
+    ASSERT_TRUE(source_probe.opened) << source_probe.error;
+    ASSERT_NEAR(source_probe.video_start_seconds - source_probe.audio_start_seconds, 0.0, 0.01);
+
+    RepairRequest request = MakeRequest(source, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    ASSERT_TRUE(fidelity.av_start_offset_seconds.has_value());
+    EXPECT_NEAR(*fidelity.av_start_offset_seconds, 0.0, 0.01) << fidelity.av_sync_note;
+    EXPECT_NE(fidelity.av_sync_note.find("相对关系保留"), std::string::npos);
+
+    const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(output_probe.opened) << output_probe.error;
+    // 一帧以内：不允许因为「把 priming 负值当起点」而稳定多出一帧。
+    EXPECT_NEAR(output_probe.video_start_seconds - output_probe.audio_start_seconds, 0.0, 0.03)
+        << "video=" << output_probe.video_start_seconds << " audio=" << output_probe.audio_start_seconds;
+    EXPECT_NEAR(output_probe.video_start_seconds, 0.0, 0.03) << "产物视频不该一开始就晚一帧";
+}
+
+// 单轨视频没有音画同步可言：不许写「音画同步已保持」这类没有对象的结论。
+TEST(RepairTranscodeFidelity, VideoOnlySourceClaimsNoAvSync) {
+    const std::string dir = MakeTempDir("video_only_sync");
+    videoeye_test::TestMediaSpec spec;
+    spec.with_audio = false;
+    const auto media = videoeye_test::CreateTestMedia(dir, "video_only", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    EXPECT_FALSE(fidelity.av_start_offset_seconds.has_value()) << "没有音频轨就没有起点差";
+    EXPECT_TRUE(fidelity.av_sync_note.empty()) << fidelity.av_sync_note;
+    EXPECT_FALSE(fidelity.av_start_offset_preserved);
 }
 
 } // namespace

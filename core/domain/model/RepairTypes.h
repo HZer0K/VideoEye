@@ -479,6 +479,17 @@ struct RepairTranscodeFidelity {
     // 文案 —— 一旦两处各拼一份，又会出现「契约说 A、限制项说 B」的老问题。
     std::string encoder_note;
     std::string profile_note;
+
+    // ---- 音画起点（切片 P）----
+    //
+    // 源侧起点差 = 视频起点 − 音频起点（秒，负值表示视频更早）。只有两条轨都
+    // 实测到起点时才赋值：只有一条轨时「差值」不存在，不能填 0 冒充「已对齐」。
+    std::optional<double> av_start_offset_seconds;
+    // 产物是否保留了这个差值。旧实现视频按帧序号归零、音频按各自首包归零，
+    // 两者互不知情，差值被静默抹成 0。现在按统一原点平移，只有真的平移成功
+    // 且没有包被截到 0 时才为 true。
+    bool av_start_offset_preserved = false;
+    std::string av_sync_note;
 };
 
 // ---- 保真度 ----

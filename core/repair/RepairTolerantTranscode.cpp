@@ -756,6 +756,73 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     converted->format = encoder_format;
     converted->width = width;
     converted->height = height;
+
+    // ---- 切片 P：音画起点用「统一原点」平移，不再每条轨各自归零 ----
+    //
+    // 旧实现：视频 PTS = 帧序号（永远从 0 开始），音频 PTS = 各自首包 PTS 归零。
+    // 两条轨互不知情，源里视频比音频晚 Δ 秒时（首段视频丢失 / 录音被打断 /
+    // -itsoffset），产物把 Δ 静默抹成 0，报告一个字都不提 —— 用户看到的是
+    // 「修好了但口型对不上」。实测 1.6 s 样本：源 video_start=0.48 / audio_start=0，
+    // 产物两者都变 0。
+    //
+    // 现在：先取两条轨的源侧起点，取较小者作统一原点，两条轨都减同一个原点。
+    // 起点差因此被保留，且 Δ 会写进报告（transcode.av_start_offset_seconds）。
+    const double fps_value = fps.num > 0 && fps.den > 0 ? static_cast<double>(fps.num) / fps.den : 25.0;
+    std::optional<double> source_video_start_seconds;
+    std::optional<double> source_audio_start_seconds;
+    // 每条轨的「呈现起点」：优先用容器声明的 stream->start_time —— 它已经包含
+    // elst 补偿，是播放器实际看到的起点；只有容器没声明时才退回首帧 / 首包时间戳。
+    // ❗ 不能直接用首包 PTS：AAC 的首包 PTS 常是负的（编码器 priming，实测
+    // -0.0232 s），容器用 elst 把它补到 0。拿它当起点会让每条产物凭空多一帧。
+    std::vector<std::optional<double>> stream_start_seconds(in->nb_streams);
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        const AVStream* stream = in->streams[i];
+        if (stream->start_time != AV_NOPTS_VALUE)
+            stream_start_seconds[i] = static_cast<double>(stream->start_time) * av_q2d(stream->time_base);
+    }
+    if (first_frame->pts != AV_NOPTS_VALUE) {
+        const double video_frame_seconds = static_cast<double>(first_frame->pts) * av_q2d(video_in->time_base);
+        if (!stream_start_seconds[video_index] || video_frame_seconds < *stream_start_seconds[video_index])
+            stream_start_seconds[video_index] = video_frame_seconds;
+    }
+    for (const AVPacket* cached : pending_nonvideo.items()) {
+        if (cached->stream_index < 0 || cached->stream_index >= static_cast<int>(in->nb_streams))
+            continue;
+        const std::size_t index = static_cast<std::size_t>(cached->stream_index);
+        if (audio_map[index] < 0 || stream_start_seconds[index].has_value())
+            continue;
+        const int64_t pts = cached->pts != AV_NOPTS_VALUE ? cached->pts : cached->dts;
+        if (pts != AV_NOPTS_VALUE)
+            stream_start_seconds[index] = static_cast<double>(pts) * av_q2d(in->streams[index]->time_base);
+    }
+    // 统一原点 = 已参与输出的轨里最早的呈现起点。两条轨都减它，相对关系因此保留。
+    source_video_start_seconds = stream_start_seconds[video_index];
+    std::optional<double> origin_seconds_option;
+    if (source_video_start_seconds)
+        origin_seconds_option = *source_video_start_seconds;
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        if (audio_map[i] < 0 || !stream_start_seconds[i])
+            continue;
+        if (!origin_seconds_option || *stream_start_seconds[i] < *origin_seconds_option)
+            origin_seconds_option = *stream_start_seconds[i];
+        if (!source_audio_start_seconds || *stream_start_seconds[i] < *source_audio_start_seconds)
+            source_audio_start_seconds = *stream_start_seconds[i];
+    }
+    // 负的呈现起点只有一个来源：容器已经把编码器 priming 用 elst 补偿掉了
+    // （实测 AAC 首包 -0.0232 s，而 stream->start_time 报 NOPTS）。播放器看到的
+    // 起点是 0，锚点也必须取 0 —— 否则「没有起点差」的源会被算出 0.023 s 的假差值。
+    if (source_video_start_seconds && *source_video_start_seconds < 0.0)
+        source_video_start_seconds = 0.0;
+    if (source_audio_start_seconds && *source_audio_start_seconds < 0.0)
+        source_audio_start_seconds = 0.0;
+    if (origin_seconds_option && *origin_seconds_option < 0.0)
+        origin_seconds_option = 0.0;
+    const double origin_seconds = origin_seconds_option.value_or(0.0);
+    // 视频侧平移量落在编码器时基（1/fps）上，按帧取整。
+    const int64_t video_pts_offset_frames =
+        source_video_start_seconds ? std::llround((*source_video_start_seconds - origin_seconds) * fps_value) : 0;
+    std::vector<int64_t> audio_origin_ticks(in->nb_streams, AV_NOPTS_VALUE);
+
     sws = sws_getContext(width, height, static_cast<AVPixelFormat>(first_frame->format), width, height, encoder_format,
                          SWS_BILINEAR, nullptr, nullptr, nullptr);
     // 切片 J：sws 是按「首帧尺寸 + 首帧像素格式」建的。源片中途换尺寸 / 换像素
@@ -819,14 +886,14 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     bool size_capped = false;
     uint64_t write_attempts = 0;
     const uint64_t max_output_bytes = request.limits.max_output_bytes;
-    const double fps_value = fps.num > 0 && fps.den > 0 ? static_cast<double>(fps.num) / fps.den : 25.0;
     const double frame_seconds = av_q2d(encoder->time_base);
     // 报告时长取实际写出包的 PTS 跨度，不再用 encoded_frames/fps 自证。
     bool video_pts_seen = false;
     double video_pts_min = 0.0;
     double video_pts_max = 0.0;
-    // 视频 PTS 从零重建，音频按各自首包 PTS 归零，避免两条轨起点错开。
-    std::vector<int64_t> audio_start_pts(in->nb_streams, AV_NOPTS_VALUE);
+    // 切片 P：报告用的源侧音频起点（跨轨取最小）。它只用于结论层，
+    // 不参与平移 —— 平移量统一由 origin_seconds 决定。
+    std::optional<double> observed_audio_start_seconds = source_audio_start_seconds;
 
     auto drain_encoder = [&]() -> bool {
         for (;;) {
@@ -882,7 +949,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 sample.config_id = "s08_reencoded_video";
                 sample.decode_ordinal = sample_ledger.CountForTrack(video_out_index);
                 sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
-                sample.inference_basis = "S08 视频重编码，时间戳按首包归零重建";
+                sample.inference_basis = "S08 视频重编码，时间戳按统一原点平移重建";
                 sample.confidence = model::SampleConfidence::Inferred;
                 sample_ledger.Add(sample);
             }
@@ -916,7 +983,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         sws_scale(sws, (const uint8_t* const*)source->data, source->linesize, 0, scale_state.source_height,
                   converted->data, converted->linesize);
         // encoder->time_base = av_inv_q(fps)，PTS 每帧 +1 tick = 1/fps 秒。
-        converted->pts = static_cast<int64_t>(encoded_frames);
+        converted->pts = static_cast<int64_t>(encoded_frames) + video_pts_offset_frames;
         if (avcodec_send_frame(encoder, converted) < 0) {
             ++outcome.dropped_video_frames;
         } else {
@@ -938,15 +1005,25 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             return true;
         AVStream* src = in->streams[in_index];
         AVStream* dst = out->streams[out_index];
-        if (audio_start_pts[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
-            const int64_t first = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
-            audio_start_pts[static_cast<std::size_t>(in_index)] = first == AV_NOPTS_VALUE ? 0 : first;
+        // 切片 P：所有音频轨减同一个原点（按各自时基换算），不再逐轨归零。
+        if (audio_origin_ticks[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
+            audio_origin_ticks[static_cast<std::size_t>(in_index)] =
+                av_rescale_q(std::llround(origin_seconds * AV_TIME_BASE), AV_TIME_BASE_Q, src->time_base);
         }
-        const int64_t offset = audio_start_pts[static_cast<std::size_t>(in_index)];
-        if (pkt->pts != AV_NOPTS_VALUE)
+        const int64_t offset = audio_origin_ticks[static_cast<std::size_t>(in_index)];
+        if (pkt->pts != AV_NOPTS_VALUE) {
+            // 负的首包是 priming（容器用 elst 补掉），呈现起点不是负数：
+            // 这里也要夹到 0，否则「本来对齐」的源会被算出一个 AAC 帧的假差值。
+            const double source_seconds = std::max(0.0, static_cast<double>(pkt->pts) * av_q2d(src->time_base));
+            if (!observed_audio_start_seconds || source_seconds < *observed_audio_start_seconds)
+                observed_audio_start_seconds = source_seconds;
             pkt->pts -= offset;
+        }
         if (pkt->dts != AV_NOPTS_VALUE)
             pkt->dts -= offset;
+        // 平移后仍为负的包只可能来自编码器 priming（AAC 首包实测 -0.0232 s），
+        // 挪到 0 反而会让音频整体晚一个 priming。原样交给封装器：mov 会用 elst
+        // 把这段补偿掉，和源片一致。
         av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
         pkt->stream_index = out_index;
         const int written = pkt->size;
@@ -971,7 +1048,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             sample.config_id = "s08_copied_audio";
             sample.decode_ordinal = sample_ledger.CountForTrack(out_index);
             sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
-            sample.inference_basis = "S08 音频码流复制，PTS 按首包归零重写";
+            sample.inference_basis = "S08 音频码流复制，PTS 按统一原点平移";
             sample.confidence = model::SampleConfidence::Inferred;
             sample_ledger.Add(sample);
         }
@@ -1118,6 +1195,22 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     outcome.output_start_seconds = 0.0;
     outcome.output_end_seconds =
         measured_span > 0.0 ? measured_span : (fps_value > 0.0 ? static_cast<double>(encoded_frames) / fps_value : 0.0);
+    // 切片 P：音画起点差的结论层。只有「两条轨都有实测起点」才算量到了差值；
+    // 单轨视频没有音画同步可言，一声不响即可；有音频却没量到起点则明说没比对。
+    {
+        const bool has_audio = std::any_of(audio_map.begin(), audio_map.end(), [](int mapped) { return mapped >= 0; });
+        if (has_audio && source_video_start_seconds && observed_audio_start_seconds) {
+            const double offset = *source_video_start_seconds - *observed_audio_start_seconds;
+            outcome.transcode_fidelity.av_start_offset_seconds = offset;
+            outcome.transcode_fidelity.av_start_offset_preserved = true;
+            outcome.transcode_fidelity.av_sync_note = "源侧音画起点差 " + FormatSeconds(offset) + "（视频" +
+                                                      (offset >= 0.0 ? "较晚" : "较早") +
+                                                      "）；产物按统一原点平移，相对关系保留";
+        } else if (has_audio) {
+            outcome.transcode_fidelity.av_sync_note =
+                "音频轨存在但没有取得可比的源侧起点，本次未做音画起点比对（不声称音画同步已保持）";
+        }
+    }
     if (size_capped) {
         outcome.transcode_note += "；超过输出字节上限 " + std::to_string(max_output_bytes) + " 字节，仅交付前 " +
                                   FormatSeconds(*outcome.output_end_seconds) + " 的可播放前缀，之后的源内容未恢复";

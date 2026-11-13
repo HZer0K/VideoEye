@@ -351,6 +351,10 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
     object.Set("output_profile", JText(transcode.output_profile));
     object.Set("encoder_note", JText(transcode.encoder_note));
     object.Set("profile_note", JText(transcode.profile_note));
+    // 切片 P：音画起点差是实测值，缺证据时留 null，不能用 0 冒充「已对齐」。
+    object.Set("av_start_offset_seconds", JSeconds(transcode.av_start_offset_seconds));
+    object.Set("av_start_offset_preserved", JsonValue(transcode.av_start_offset_preserved));
+    object.Set("av_sync_note", JText(transcode.av_sync_note));
     object.Set("preserved_properties", BuildStringArray(transcode.preserved_properties));
     object.Set("lost_properties", BuildStringArray(transcode.lost_properties));
     return object;
@@ -1237,6 +1241,13 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         fidelity.rows.emplace_back("重编码编码器", transcode.encoder_note);
     if (!transcode.profile_note.empty())
         fidelity.rows.emplace_back("重编码 profile", transcode.profile_note);
+    if (transcode.av_start_offset_seconds.has_value()) {
+        const double av_offset = *transcode.av_start_offset_seconds;
+        fidelity.rows.emplace_back("音画起点差",
+                                   FixedSeconds(av_offset) + " s（视频" + (av_offset >= 0.0 ? "较晚" : "较早") + "）");
+    }
+    if (!transcode.av_sync_note.empty())
+        fidelity.rows.emplace_back("音画同步处理", transcode.av_sync_note);
     if (!transcode.inspected) {
         fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");
     } else {

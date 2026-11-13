@@ -534,6 +534,11 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         }
         if (!fidelity.transcode.profile_note.empty())
             fidelity.limitations.push_back("重编码 profile: " + fidelity.transcode.profile_note);
+        // 切片 P：音画起点被截（有音频包早于统一原点）时，产物可能已经偏了，
+        // 必须进「已知限制」，不能只在保真度章节当一个中性数字。
+        if (fidelity.transcode.av_start_offset_seconds.has_value() && !fidelity.transcode.av_start_offset_preserved) {
+            fidelity.limitations.push_back("音画同步: " + fidelity.transcode.av_sync_note);
+        }
         if (execution.psnr_samples > 0) {
             std::ostringstream psnr_note;
             psnr_note.setf(std::ios::fixed);
