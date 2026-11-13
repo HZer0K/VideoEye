@@ -183,6 +183,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | O | S08 重编码的编码器口径收敛（libx264 → 实测编码器） | N | 完成（见 §4.15） |
 | P | S08 音画起点对齐（统一原点，保留源侧 Δ） | O | 完成（见 §4.16） |
 | Q | 容器级 side data 真正继承（旋转矩阵 / HDR 静态元数据） | P | 完成（见 §4.17） |
+| R | 能力边界的「支持程度」口径收敛（状态词表 + 三段范围） | Q | 完成（见 §4.18） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -907,6 +908,71 @@ mp4 muxer 在写 header 时从输出流的 `codecpar->coded_side_data` 取。挂
 
 ---
 
+### 4.18 切片 R：能力边界的「支持程度」口径收敛
+
+**问题**：三条能力契约一律 `status = "unsupported"`，而它们自己的 `evidence` 里分别写着
+「当前版本已实现受限版无参考重建」「当前版本已能借同源初始化段…」「S08 已实现并可运行」。
+同一份报告自相矛盾。更糟的是章节标题就叫「未实现能力边界（本次命中）」——
+读者通常只看标题与状态词，于是把「这次已经靠借参数集修好了」读成「这次没做到」。
+
+**根因**：`status` 想表达「本版本实现程度」，读者读成「本次是否生效」；而「做到哪 /
+没做哪 / 做不了哪」全压在 `evidence` 一段散文里，状态词只能靠散文自辩——原文就有一句
+「本契约的 unsupported 指的是尚未覆盖的范围」。用一句话给一个词打补丁，正是
+范围没结构化的信号（与切片 Q 的 `unverified_properties` 同一个道理：缺失的维度
+会被挤进已有的桶里）。
+
+**做法**
+
+- 状态词表（唯一事实源 `CapabilityStatusVocabulary()`）：`partially_supported` /
+  `unsupported` / `deferred`。词表外的取值一律渲染成「未知状态（x）：不能据此判断支持程度」，
+  绝不静默落成支持或不支持。
+- 三段范围拆开，互不顶替：
+  - `covered_scope`：本版本已实现的部分；
+  - `not_covered_scope`：本版本没做、但物理上做得到；
+  - `unrecoverable_scope`：任何实现都拿不回来（原有字段，语义收窄为纯物理边界）。
+- `status` 与两张表互为约束：文案声称已实现 ⇒ 不许 `unsupported`；`partially_supported`
+  ⇒ `covered_scope` 非空；同一句文案不许同时出现在两张表。
+- 渲染一次（`CapabilityStatusLabel` / `CapabilityStatusHeadline`），结果落进
+  `status_label` / `status_headline` 两个字段，报告层只打印——与 `encoder_note` /
+  `av_sync_note` 同一套口径（`core/reporting` 不链 `core/repair`，也不许自己拼第二份文案）。
+- 章节标题 `未实现能力边界（本次命中）` → `恢复能力边界（本次命中）`，并加一行「状态口径」：
+  状态词描述本版本对这项能力的实现程度，不代表本次运行是否生效。
+- `RepairInspector` 的诊断 summary 同步改口（原为「命中 N 条未实现能力边界」）。
+
+三条契约的实际取值：全部 `partially_supported`（各有受限实现），`covered_scope` 2–3 条、
+`not_covered_scope` 2–3 条。报告行形如：
+
+```
+moov_rebuild [部分支持] 触发证据: container.moov_missing
+  支持程度: 部分支持：本版本已实现 2 项（见「已覆盖范围」），另有 3 项未覆盖（见「未覆盖范围」）；
+            本条描述能力整体，不代表本次运行已生效
+  已覆盖范围: 无参考受限重建：ftyp + 恰好一个 mdat + 单轨，且载荷为纯 AVCC H.264 或纯 ADTS AAC…
+  未覆盖范围: 音视频交织的 mdat、多个 mdat、多轨并行
+```
+
+**守护**
+
+- `CapabilityBoundariesAreFullyDefined`：五维度 + 状态词合法 + 两处渲染文本非空。
+- `CapabilityStatusWordMatchesImplementedScope`（新）：状态词 ↔ `evidence` 一致性
+  （文案声称已实现就不许 `unsupported`）、`partially_supported` 必有已覆盖条目、
+  三段范围互不重叠、总述必须带「不代表本次运行已生效」、`evidence` 不许再出现
+  「本契约的 unsupported」这类自辩。
+- `UnknownCapabilityStatusIsNeverReadAsSupported`（新）：词表外取值、已覆盖为空的
+  「部分支持」、内容矛盾的「未支持」，三种都要渲染成「不能据此判断」。
+- `CapabilityBoundariesAreVisibleInAllReportFormats`：新增 4 个 JSON 字段与 3 个报告行；
+  标题不许再出现「未实现能力边界」，状态词必须渲染成 `[部分支持]` 而不是英文码。
+
+**明确不做**
+
+- 不做「本次是否生效」的逐次标注：那需要把执行层的实际动作回写到契约，而
+  `RepairResult` 里没有「这条路本次被用过」的事实。本轮只在文案上把口径写清，
+  不让状态词冒充运行结果。**已知未覆盖**：报告能说「这条能力部分支持」，
+  但不能说「本次用的就是它」。
+- 不动 `deferred`（当前无实例）：留在词表里表示「已知能力、本版本不排期」，
+  以免将来临时加词绕过守护。
+
+---
+
 ## 5. 后续阶段与架构前置
 
 ### 5.1 阶段 5：时间轴与音画同步（先解决接入条件）
@@ -1021,6 +1087,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | O S08 重编码的编码器口径收敛 | 完成（本轮） | | 实测证实本构建无 libx264（LGPL 变体），S08 实际用 libopenh264；三处静态文案把首选名写成了既成事实；新增结构化编码器 / profile 字段与 5 个用例；172/172 ctest（1949 gtest）；5 组判别力变异全部精确判红。见 §4.15 与下方「切片 O 验收记录」 |
 | P S08 音画起点对齐（统一原点） | 完成（本轮） | | 实测抓到旧实现把源侧 0.48 s 音画起点差静默抹成 0 且报告不提；改为两轨减同一原点，差值保留并进报告；新增 3 个用例；172/172 ctest（1952 gtest）；P1/P3 精确判红、P2 判绿（如实记账：现有语料不可判别）。见 §4.16 与下方「切片 P 验收记录」 |
 | Q 容器级 side data 真正继承 | 完成（本轮） | | 实测：旋转矩阵 / HDR 静态元数据旧实现全丢，`movenc` 其实支持（tkhd / mdcv+clli）；改为写头前拷 side data + 收尾打开产物实测；新增第三类 `unverified_properties` 与 HDR 位深前提 + 矛盾检测；新增 6 个用例；172/172 ctest（1958 gtest）；7 组判别力变异全部精确判红。见 §4.17 与下方「切片 Q 验收记录」 |
+| R 能力边界支持程度口径 | 完成（本轮） | | 三条契约一律 `unsupported` 而 evidence 写着「已实现…」，章节标题还叫「未实现能力边界」；改状态词表（`partially_supported` / `unsupported` / `deferred`）+ 拆出 `covered_scope` / `not_covered_scope` 与物理不可恢复三段，状态词与两张表互为约束；新增 3 个用例；172/172 ctest（1960 gtest）；6 组判别力变异全部精确判红。见 §4.18 与下方「切片 R 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1584,6 +1651,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
   恢复成功的。文案已说明「unsupported 指尚未覆盖的范围」，但状态词与「本次命中」
   并排仍容易被读成「这次没做到」——要改需要一整套「部分支持」的状态词表，
   牵动 `RepairCapabilityBoundary.status` 的既有守护，本轮不动。
+  **（已在切片 R 处理：状态词表 + `covered_scope` / `not_covered_scope` 三段范围，见 §4.18）**
 
 ### 切片 O 验收记录（2026-11-13）
 
@@ -1738,3 +1806,78 @@ AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·15
 - HDR 元数据只在 `codecpar` 侧拷贝；若某容器的 HDR 元数据只挂在**解码帧** side data 上，
   本版不会拷（矩阵侧有帧兜底，HDR 侧没有）。会如实报「产物实测无」。
 - 不碰动态 HDR（逐帧 SEI / RPU）与 10-bit 编码，理由同 §4.17「明确不做」。
+
+### 切片 R 验收记录（2026-11-13）
+
+**范围**：§4.18。走查「能力边界」章节时撞到的口径错误（不是能力缺口）。
+
+**旧状态（自相矛盾）**
+
+| 契约 | 状态词 | 自己的 evidence 写着 |
+|---|---|---|
+| `moov_rebuild` | unsupported | 「当前版本已实现受限版无参考重建（RepairPlainMp4Rebuilder）」 |
+| `parameter_set_recovery` | unsupported | 「当前版本已能借同源初始化段…或由 in-band SPS/PPS(VPS) 自建」 |
+| `decodable_gop_transcode` | unsupported | 「S08_TolerantTranscode 已实现并可运行」 |
+
+再加上章节标题「**未实现**能力边界（本次命中）」，读者只看这两处就会把
+「这次靠借参数集修好了」读成「这次没做到」。
+
+**根因**：`status` 混装了两件事 —— 本版本的实现程度、以及读者以为的「本次是否生效」；
+而「做到哪 / 没做哪 / 做不了哪」三段全压在 evidence 一段散文里，于是状态词只能靠散文
+自辩（原文：「本契约的 unsupported 指的是尚未覆盖的范围」）。这与切片 Q 的
+`unverified_properties` 是同一个结构性问题：缺失的维度会被挤进已有的桶里。
+
+**做法**
+
+- 状态词表唯一事实源 `CapabilityStatusVocabulary()`：`partially_supported` /
+  `unsupported` / `deferred`；词表外取值渲染成「未知状态（x）：不能据此判断支持程度」。
+- 三段范围拆开：`covered_scope`（已实现）/ `not_covered_scope`（没做但做得到，新增）/
+  `unrecoverable_scope`（任何实现都拿不回来，语义收窄为纯物理边界）。
+- 状态词与两张表**互为约束**（用例守护，不只是文档约定）：文案声称已实现 ⇒ 不许
+  `unsupported`；`partially_supported` ⇒ `covered_scope` 非空；同一句文案不许同时
+  出现在两张表；词义与内容矛盾时按更保守一侧渲染（「应按未支持解读」/「不能读成
+  本版本无实现」）。
+- 渲染一次（`CapabilityStatusLabel` / `CapabilityStatusHeadline`）→ 落进
+  `status_label` / `status_headline`，报告层只打印。理由有二：`core/reporting` 不链
+  `core/repair`（分层规定 repair 只产出 domain 结果），且第二处拼文案必然与第一处漂移
+  —— 与切片 O/P 的 `encoder_note` / `av_sync_note` 同一套口径。
+- 标题改为「恢复能力边界（本次命中）」，加一行「状态口径」：状态词描述本版本实现程度，
+  不代表本次运行是否生效；`RepairInspector` 的 summary 同步从「命中 N 条未实现能力边界」
+  改为「命中 N 条能力边界契约（…不等于本次未生效）」。
+
+**实际渲染**（TXT，`moov_rebuild` 命中）
+
+```
+恢复能力边界（本次命中）
+命中条数: 1
+状态口径: 状态词描述本版本对这项能力的实现程度，不代表本次运行是否生效；…
+- moov_rebuild [部分支持] 触发证据: container.moov_missing
+-   支持程度: 部分支持：本版本已实现 2 项（见「已覆盖范围」），另有 3 项未覆盖（见「未覆盖范围」）；本条描述能力整体，不代表本次运行已生效
+-   已覆盖范围: 无参考受限重建：ftyp + 恰好一个 mdat + 单轨，且载荷为纯 AVCC H.264 或纯 ADTS AAC（RepairPlainMp4Rebuilder）
+-   未覆盖范围: 音视频交织的 mdat、多个 mdat、多轨并行
+-   不可恢复范围: mdat 本身被截断、覆盖或加密的部分：没有样本边界信息就切不出访问单元
+```
+
+**验证**：172/172 ctest（1960 gtest）、离屏 `rc=124`、门禁全绿（clang-format 18.1.8 /
+AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·153·1960·19）/
+`git diff --check`。新增 3 个用例（`CapabilityStatusWordMatchesImplementedScope`、
+`UnknownCapabilityStatusIsNeverReadAsSupported`，并扩写 `CapabilityBoundariesAreFullyDefined`
+与 `CapabilityBoundariesAreVisibleInAllReportFormats`）。
+
+**判别力变异**（`build/mut_r.py`，每组都确认构建真的编译过）
+
+| 变异 | 破坏点 | 结果 |
+|---|---|---|
+| R1 | `parameter_set_recovery` 状态词退回 `unsupported` | 精确判红 `CapabilityStatusWordMatchesImplementedScope` |
+| R2 | 报告层甩英文状态码（不读渲染好的标签） | 精确判红 `CapabilityBoundariesAreVisibleInAllReportFormats` |
+| R3 | 章节标题退回「未实现能力边界」 | 精确判红同一条 |
+| R4 | 词表外取值渲染成「支持」 | 精确判红 `UnknownCapabilityStatusIsNeverReadAsSupported` |
+| R5 | 总述去掉「不代表本次运行已生效」 | 精确判红 2 条（状态词守护 + 报告可见性） |
+| R6 | 不渲染总述（报告落到「未提供支持程度说明」） | 精确判红 3 条 |
+
+**已知未覆盖（如实记账）**
+
+- **没有「本次是否生效」的逐次标注**：`RepairResult` 里没有「这条能力本次被用过」的事实
+  （`plan.actions` 只记不可用策略的契约引用），所以报告只能说「这条能力部分支持」，
+  不能说「本次用的就是它」。要补得把执行层的实际动作回写进契约，属另一轮工作。
+- `deferred` 当前无实例，留在词表里避免将来临时加词绕过守护。

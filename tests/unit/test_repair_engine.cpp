@@ -454,8 +454,17 @@ TEST(RepairEngine, CapabilityContractsDescribeImplementedScopeAccurately) {
     EXPECT_NE(moov.evidence.find("RepairPlainMp4Rebuilder"), std::string::npos)
         << "moov_rebuild 必须写明已有受限版无参考重建器";
     EXPECT_EQ(moov.evidence.find("不反推普通 MP4 的 moov"), std::string::npos) << moov.evidence;
-    EXPECT_NE(params.evidence.find("RepairInitSegmentBuilder"), std::string::npos)
-        << "参数集恢复必须写明已有 in-band 自建路径";
+    // 切片 R：「已实现什么」从 prose 挪进结构化的 covered_scope，这里按新位置断言，
+    // 同时要求文案里仍带着能追溯的实现名。
+    const auto mentions = [](const RepairCapabilityBoundary& boundary, const std::string& needle) {
+        const auto hit = [&needle](const std::vector<std::string>& items) {
+            return std::any_of(items.begin(), items.end(),
+                               [&needle](const std::string& item) { return item.find(needle) != std::string::npos; });
+        };
+        return hit(boundary.covered_scope) || hit(boundary.not_covered_scope) ||
+               boundary.evidence.find(needle) != std::string::npos;
+    };
+    EXPECT_TRUE(mentions(params, "RepairInitSegmentBuilder")) << "参数集恢复必须写明已有 in-band 自建路径";
 
     EXPECT_NE(gop.evidence.find("已实现并可运行"), std::string::npos) << gop.evidence;
     EXPECT_EQ(gop.evidence.find("明确标记 unavailable"), std::string::npos) << gop.evidence;

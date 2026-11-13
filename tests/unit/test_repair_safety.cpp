@@ -1181,7 +1181,7 @@ TEST(RepairSafety, CorruptFlagZeroIsNotClaimedAsCleanPicture) {
 
 // ---------------- 未实现能力的边界契约 ----------------
 
-// 覆盖守护：三条契约的四维度都必须有内容；顺序变了不会有编译错误，单独钉死。
+// 覆盖守护：三条契约的五维度都必须有内容；顺序变了不会有编译错误，单独钉死。
 TEST(RepairSafety, CapabilityBoundariesAreFullyDefined) {
     const auto& all = repair::AllCapabilityBoundaries();
     ASSERT_EQ(all.size(), 3u) << "缺 moov 重建 / 参数集恢复 / GOP 转码抢救必须各自成条";
@@ -1189,7 +1189,10 @@ TEST(RepairSafety, CapabilityBoundariesAreFullyDefined) {
     EXPECT_EQ(all[1].code, "parameter_set_recovery");
     EXPECT_EQ(all[2].code, "decodable_gop_transcode");
     for (const auto& boundary : all) {
-        EXPECT_EQ(boundary.status, "unsupported") << boundary.code;
+        EXPECT_TRUE(repair::IsKnownCapabilityStatus(boundary.status)) << boundary.code << ": " << boundary.status;
+        EXPECT_FALSE(boundary.status_headline.empty()) << boundary.code << " 缺支持程度总述";
+        EXPECT_FALSE(boundary.covered_scope.empty()) << boundary.code << " 缺已覆盖范围";
+        EXPECT_FALSE(boundary.not_covered_scope.empty()) << boundary.code << " 缺未覆盖范围";
         EXPECT_FALSE(boundary.preconditions.empty()) << boundary.code << " 缺前提";
         EXPECT_FALSE(boundary.unrecoverable_scope.empty()) << boundary.code << " 缺不可恢复范围";
         EXPECT_FALSE(boundary.timeline_impact.empty()) << boundary.code << " 缺时间轴变化";
@@ -1198,6 +1201,67 @@ TEST(RepairSafety, CapabilityBoundariesAreFullyDefined) {
         EXPECT_TRUE(boundary.trigger_findings.empty()) << "静态模板不得带触发证据";
     }
     EXPECT_STREQ(repair::BoundaryCodeForAction(RepairAction::S08_TolerantTranscode), "decodable_gop_transcode");
+}
+
+// 状态词与内容必须互不矛盾 —— 这是本切片的核心：过去三条都写 unsupported，
+// 而 evidence 里写着「已实现…」，同一份报告自己打自己。
+TEST(RepairSafety, CapabilityStatusWordMatchesImplementedScope) {
+    const auto& all = repair::AllCapabilityBoundaries();
+    ASSERT_EQ(all.size(), 3u);
+    for (const auto& boundary : all) {
+        // 三条都有受限实现（RepairPlainMp4Rebuilder / RepairInitSegmentBuilder / S08），
+        // 一律标 unsupported 会与 evidence 冲突。
+        EXPECT_EQ(boundary.status, "partially_supported") << boundary.code << " | " << boundary.evidence;
+        // 「本契约的 unsupported 指的是…」这句是范围没结构化的补丁；现在有
+        // covered_scope / not_covered_scope 两张表，文案里不该再出现状态词自辩。
+        EXPECT_EQ(boundary.evidence.find("本契约的 unsupported"), std::string::npos)
+            << boundary.code << " 范围已结构化，evidence 不应再解释状态词";
+
+        // 词义 ↔ 事实：evidence 声称已实现，状态词就不能是「无任何实现」。
+        const std::string& evidence = boundary.evidence;
+        const bool claims_implemented = evidence.find("已实现") != std::string::npos ||
+                                        evidence.find("已能") != std::string::npos ||
+                                        evidence.find("已可运行") != std::string::npos;
+        EXPECT_FALSE(claims_implemented && boundary.status == "unsupported")
+            << boundary.code << " 文案声称已实现，状态词却是 unsupported（读者只会看到状态词）";
+        // 部分支持必须有已覆盖条目，否则「已实现 0 项」自相矛盾。
+        EXPECT_FALSE(boundary.status == "partially_supported" && boundary.covered_scope.empty()) << boundary.code;
+        // 三段范围不能互相顶替：已覆盖与不可恢复不能出现同一条文案。
+        for (const auto& kept : boundary.covered_scope) {
+            for (const auto& lost : boundary.unrecoverable_scope)
+                EXPECT_NE(kept, lost) << boundary.code << " 同一条文案同时算「已覆盖」和「不可恢复」";
+            for (const auto& gap : boundary.not_covered_scope)
+                EXPECT_NE(kept, gap) << boundary.code << " 同一条文案同时算「已覆盖」和「未覆盖」";
+        }
+        // 总述必须与状态词一致，且不能把「能力整体」说成「本次已生效」。
+        EXPECT_NE(boundary.status_headline.find("部分支持"), std::string::npos) << boundary.code;
+        EXPECT_NE(boundary.status_headline.find("不代表本次运行已生效"), std::string::npos) << boundary.code;
+    }
+}
+
+// 词表外的状态词必须显式渲染成「不能据此判断」，不许静默落成支持 / 不支持。
+TEST(RepairSafety, UnknownCapabilityStatusIsNeverReadAsSupported) {
+    EXPECT_FALSE(repair::IsKnownCapabilityStatus(""));
+    EXPECT_FALSE(repair::IsKnownCapabilityStatus("supported"));
+    EXPECT_FALSE(repair::IsKnownCapabilityStatus("Unsupported"));
+    EXPECT_EQ(repair::CapabilityStatusLabel(""), "未知状态（空值）");
+    EXPECT_NE(repair::CapabilityStatusLabel("supported").find("未知状态"), std::string::npos);
+
+    RepairCapabilityBoundary rogue;
+    rogue.code = "rogue";
+    rogue.status = "supported";
+    rogue.covered_scope = {"看起来支持"};
+    const std::string headline = repair::CapabilityStatusHeadline(rogue);
+    EXPECT_NE(headline.find("不能据此判断支持程度"), std::string::npos) << headline;
+
+    // 词义与内容矛盾时按更保守的一侧读 —— 不能靠「写了部分支持」蒙过去。
+    RepairCapabilityBoundary empty_partial;
+    empty_partial.status = "partially_supported";
+    EXPECT_NE(repair::CapabilityStatusHeadline(empty_partial).find("应按未支持解读"), std::string::npos);
+    RepairCapabilityBoundary lying_unsupported;
+    lying_unsupported.status = "unsupported";
+    lying_unsupported.covered_scope = {"实际做了这件事"};
+    EXPECT_NE(repair::CapabilityStatusHeadline(lying_unsupported).find("不能读成「本版本无实现」"), std::string::npos);
 }
 
 // 反向守护：没有事实依据时不得输出空壳契约；命中时 trigger_findings 要可追溯。
@@ -1255,13 +1319,22 @@ TEST(RepairSafety, CapabilityBoundariesAreVisibleInAllReportFormats) {
         EXPECT_NE(body.find("decodable_gop_transcode"), std::string::npos) << "规划层的契约引用必须可见";
     }
     for (const char* key : {"unrecoverable_scope", "timeline_impact", "quality_risks", "trigger_findings",
-                            "container.moov_missing", "preconditions"})
+                            "container.moov_missing", "preconditions", "covered_scope", "not_covered_scope",
+                            "status_label", "status_headline", "partially_supported"})
         EXPECT_NE(bodies.json.find(key), std::string::npos) << key << " 必须进 JSON";
     for (const auto& body : {bodies.text, bodies.html}) {
-        for (const char* label : {"前提: ", "不可恢复范围: ", "时间轴变化: ", "质量风险: ", "判定依据: "})
-            EXPECT_NE(body.find(label), std::string::npos) << label << " 四个维度必须逐条展示";
+        for (const char* label : {"前提: ", "不可恢复范围: ", "时间轴变化: ", "质量风险: ", "判定依据: ",
+                                  "已覆盖范围: ", "未覆盖范围: ", "支持程度: "})
+            EXPECT_NE(body.find(label), std::string::npos) << label << " 各维度必须逐条展示";
         EXPECT_NE(body.find("边界契约: decodable_gop_transcode"), std::string::npos);
         EXPECT_NE(body.find("mdat 本身被截断"), std::string::npos) << "不可恢复范围必须写清物理边界";
+        // 标题与摘要都不能把「有受限实现」写成「未实现」。
+        EXPECT_EQ(body.find("未实现能力边界"), std::string::npos) << "三条能力都有受限实现，标题不能写「未实现」";
+        EXPECT_NE(body.find("恢复能力边界（本次命中）"), std::string::npos);
+        EXPECT_NE(body.find("[部分支持]"), std::string::npos) << "状态词必须按词表渲染成人话，不能甩英文码";
+        EXPECT_EQ(body.find("[unsupported]"), std::string::npos);
+        EXPECT_NE(body.find("状态口径"), std::string::npos) << "必须说明状态词不代表本次运行已生效";
+        EXPECT_NE(body.find("不代表本次运行已生效"), std::string::npos);
     }
 }
 

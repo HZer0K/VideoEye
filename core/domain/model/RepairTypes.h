@@ -228,17 +228,29 @@ struct DamageFinding {
     std::vector<std::string> limitations;        // 这条证据不能证明什么
 };
 
-// ---- 未实现能力的边界契约 ----
+// ---- 恢复能力的边界契约 ----
 //
 // 这类能力最容易被「提供个参考文件就能修」的笼统文案掩盖：用户看不出哪些内容
 // 物理上拿不回来、时间轴会不会变、画质会损失什么。所以每条都单独定义前提、
-// 不可恢复范围、时间轴变化与质量风险，并附判定依据。
-// ⚠️ 只在诊断命中对应证据时挂载 —— 没有事实依据时不得输出「当前不支持」的空壳。
+// 已覆盖范围、未覆盖范围、不可恢复范围、时间轴变化与质量风险，并附判定依据。
+// ⚠️ 只在诊断命中对应证据时挂载 —— 没有事实依据时不得输出空壳契约。
+//
+// ❗ `status` 描述的是**本版本对这项能力的实现程度**，不是「本次运行做到了没有」。
+//    两者过去被混为一谈：一条已经在跑的能力标着 unsupported，读者只能读成
+//    「这次没做到」。本次是否生效要看规划层的 action 状态与 trigger_findings。
 struct RepairCapabilityBoundary {
-    std::string code;                             // moov_rebuild / parameter_set_recovery / decodable_gop_transcode
-    std::string status;                           // unsupported（当前版本未实现）/ deferred
+    std::string code;   // moov_rebuild / parameter_set_recovery / decodable_gop_transcode
+    std::string status; // 词表见 repair::CapabilityStatusVocabulary()：partially_supported / unsupported / deferred
+    // 状态 + 两张范围表的**一次性渲染结果**（由能力目录写，报告层只读）。
+    // 与 encoder_note / av_sync_note 同一套口径：报告层不按 status 自己拼文案，
+    // 否则第二份文案必然与第一份漂移。
+    // status_label 是词（如「部分支持」），status_headline 是整句总述。
+    std::string status_label;
+    std::string status_headline;
+    std::vector<std::string> covered_scope;       // 本版本已实现的部分（不含「本次是否用到」）
+    std::vector<std::string> not_covered_scope;   // 本版本未实现、但并非物理不可恢复的部分
     std::vector<std::string> preconditions;       // 满足才谈得上「可恢复」
-    std::vector<std::string> unrecoverable_scope; // 即使实现也拿不回来的东西
+    std::vector<std::string> unrecoverable_scope; // 即使实现也拿不回来的东西（物理边界）
     std::string timeline_impact;                  // 时间轴变化：必然改写 / 需核验 / 未知
     std::vector<std::string> quality_risks;       // 画质、音画同步、语义风险
     std::string evidence;                         // 判定依据（实测或结构论证）
@@ -362,7 +374,7 @@ struct RepairDiagnosis {
     std::vector<RepairExpectedTrack> expected_tracks; // 源侧样本数（守恒基线）
     // 逐轨可抢救证据：只有跑过样本边界检查的轨道才会填。
     std::vector<RepairTrackSalvageInfo> track_salvage;
-    // 本次诊断命中的「当前版本未实现能力」边界契约；只在有证据时填充。
+    // 本次诊断命中的能力边界契约（支持程度见 status / status_headline）；只在有证据时填充。
     std::vector<RepairCapabilityBoundary> capability_boundaries;
 
     std::vector<std::string> blocking_reasons; // 当前能力无法继续的原因

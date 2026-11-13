@@ -1342,7 +1342,8 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
     if (!diagnosis.blocking_reasons.empty())
         summary << "存在 " << diagnosis.blocking_reasons.size() << " 条能力阻断；";
     if (!diagnosis.capability_boundaries.empty())
-        summary << "命中 " << diagnosis.capability_boundaries.size() << " 条未实现能力边界；";
+        summary << "命中 " << diagnosis.capability_boundaries.size()
+                << " 条能力边界契约（支持程度见报告「恢复能力边界」章节，不等于本次未生效）；";
     std::size_t unsalvageable_tracks = 0;
     for (const auto& track : diagnosis.track_salvage) {
         if (!track.salvageable)

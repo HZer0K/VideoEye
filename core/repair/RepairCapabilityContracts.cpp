@@ -9,15 +9,32 @@ namespace videoeye {
 namespace repair {
 namespace {
 
-model::RepairCapabilityBoundary MakeBase(const std::string& code) {
+// 状态词只允许这三个取值。新增取值必须同时扩 CapabilityStatusLabel 与守护用例，
+// 否则报告会渲染成「未知状态」（这是刻意的：宁可显得难看，也不能让一个陌生词
+// 被默认读成「支持」或「不支持」）。
+constexpr const char* kPartiallySupported = "partially_supported";
+constexpr const char* kUnsupported = "unsupported";
+constexpr const char* kDeferred = "deferred";
+
+model::RepairCapabilityBoundary MakeBase(const std::string& code, const std::string& status) {
     model::RepairCapabilityBoundary b;
     b.code = code;
-    b.status = "unsupported";
+    b.status = status;
     return b;
 }
 
 model::RepairCapabilityBoundary MakeMoovRebuild() {
-    auto b = MakeBase("moov_rebuild");
+    auto b = MakeBase("moov_rebuild", kPartiallySupported);
+    b.covered_scope = {
+        "无参考受限重建：ftyp + 恰好一个 mdat + 单轨，且载荷为纯 AVCC H.264 或纯 ADTS AAC"
+        "（RepairPlainMp4Rebuilder）",
+        "时长只在 SPS VUI 提供时基证据时才推定；证据不足时直接拒绝，不猜一个看起来合理的值",
+    };
+    b.not_covered_scope = {
+        "音视频交织的 mdat、多个 mdat、多轨并行",
+        "HEVC 及其他编码类型的样本表重建（本版本只覆盖 AVCC H.264 / ADTS AAC）",
+        "无时基证据时的时长推定（本版本选择拒绝而不是估算）",
+    };
     b.preconditions = {
         "输入必须是 ISOBMFF（MP4/MOV/M4V/3GP），且 mdat 载荷未被截断、可逐样本定界",
         "能取得每条轨的编码类型、NAL 长度前缀字节数、媒体时基（mdhd timescale）与关键帧序列——"
@@ -42,15 +59,22 @@ model::RepairCapabilityBoundary MakeMoovRebuild() {
         "没有原始完整视频作参考，无法给出恢复比例，也不能断言无失真",
     };
     b.evidence = "普通 MP4 的样本表、时基与解码配置全部位于 moov；moov 丢失后文件里只剩 mdat 裸载荷。"
-                 "当前版本已实现受限版无参考重建（RepairPlainMp4Rebuilder：ftyp + 恰好一个 mdat + "
-                 "纯 AVCC H.264 或纯 ADTS AAC 单轨，且 SPS VUI 提供时基证据）。"
-                 "本契约的 unsupported 指的是尚未覆盖的范围：音视频交织 mdat、HEVC、多 mdat、多轨、"
-                 "以及 B 帧显示顺序 / edts / ctts 的原始取值 —— 这些仍不能安全反推。";
+                 "上述已覆盖范围由 RepairPlainMp4Rebuilder 实现并在真实语料上验证；"
+                 "未覆盖范围与不可恢复范围各自独立——前者是本版本没做，后者是任何实现都拿不回来。";
     return b;
 }
 
 model::RepairCapabilityBoundary MakeParameterSetRecovery() {
-    auto b = MakeBase("parameter_set_recovery");
+    auto b = MakeBase("parameter_set_recovery", kPartiallySupported);
+    b.covered_scope = {
+        "借同源初始化段：从中取 mdhd timescale 与解码配置，并按 sidx 估算时长与逐轨 trun/tfdt 声明"
+        "时长交叉核对（R03 时基核验）",
+        "由 in-band SPS/PPS(VPS) 自建视频初始化段（RepairInitSegmentBuilder），不依赖任何参考文件",
+    };
+    b.not_covered_scope = {
+        "音频轨初始化段自建：裸 AAC 既无 ADTS 同步头、也没有同源 AudioSpecificConfig 时不重建",
+        "参数集残缺时的补全（例如只有 SPS 没有 PPS）：不做枚举收敛，直接判为不可恢复",
+    };
     b.preconditions = {
         "文件内存在完整的 in-band SPS/PPS（HEVC 还需 VPS），或能提供同源的 avcC/hvcC/esds"
         "（含 AudioSpecificConfig）",
@@ -77,14 +101,25 @@ model::RepairCapabilityBoundary MakeParameterSetRecovery() {
     b.evidence =
         "RepairFragmentForensics 逐 NAL 实测 + RepairInitSegmentReader 逐轨 trun/tfdt 时长交叉核对；"
         "TamperedTimescaleActuallyHalvesPlaybackDuration / TamperedNonFirstTrackTimescaleDoesNotPublishCleanResult "
-        "在真实媒体上复现过时基篡改。当前版本已能借同源初始化段（含 R03 时基核验）或由 in-band "
-        "SPS/PPS(VPS) 自建视频初始化段（RepairInitSegmentBuilder）；本契约的 unsupported 指参数集"
-        "完全缺失、裸 AAC 无 AudioSpecificConfig、音频轨自建等仍物理不可恢复的部分。";
+        "在真实媒体上复现过时基篡改。两条已覆盖路径（借同源初始化段、in-band 自建）都在真实语料上跑通过；"
+        "未覆盖范围是本版本没做，不可恢复范围是物理上拿不回来，两者不能合并成一句「不支持」。";
     return b;
 }
 
 model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
-    auto b = MakeBase("decodable_gop_transcode");
+    auto b = MakeBase("decodable_gop_transcode", kPartiallySupported);
+    b.covered_scope = {
+        "整轨容错重编码（S08）：从第一个可解码关键帧起、到 salvage_end_seconds 为止解码视频帧，"
+        "按 H.264 重编码，音频尽量按原码流复制",
+        "重编码前后逐项实测源侧保真度（像素格式 / 位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据 / "
+        "动态分辨率），三份报告同源呈现",
+        "抽帧 PSNR 画质评估（有参考样片时才给数值）",
+    };
+    b.not_covered_scope = {
+        "GOP 级局部重编码：只重编损坏 GOP、其余段原样拷贝（当前一律整轨重编码）",
+        "拼接边界的兼容性验证：重编段与原始段的参数集、参考帧链能否衔接",
+        "黑帧 / 静音填补等合成内容（synthetic_frames_inserted 恒为 false）",
+    };
     b.preconditions = {
         "能定位 IDR / 关键帧边界，且从该点起解码器可连续解出至少一组完整 GOP",
         "解码参数集可用（见 parameter_set_recovery 契约），解码器能正常打开该轨",
@@ -120,9 +155,7 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
                  "（`cmake/ffmpeg-version.json`：--disable-libx264 --disable-libx265），首选必然不可用、"
                  "自动回退到构建内可用的 H.264 编码器；实际编码器由运行时探测写入 "
                  "fidelity.transcode.encoder_used，报告不得把首选名当成既成事实。"
-                 "本契约的 unsupported 指尚未覆盖的"
-                 "GOP 级局部重编码：按可解码 GOP 精确界定重编码范围、验证拼接边界兼容性，"
-                 "以及原始码流字节与原始时间戳精度的恢复；这些能力仍需单独验证后才能上线。";
+                 "未覆盖范围里的 GOP 级局部重编码尚无实现，不能读成本版本已能精确定界重编码范围。";
     return b;
 }
 
@@ -142,12 +175,59 @@ const std::vector<std::string>& TriggersFor(const std::string& code) {
 
 } // namespace
 
+const std::vector<std::string>& CapabilityStatusVocabulary() {
+    static const std::vector<std::string> words = {kPartiallySupported, kUnsupported, kDeferred};
+    return words;
+}
+
+bool IsKnownCapabilityStatus(const std::string& status) {
+    const auto& words = CapabilityStatusVocabulary();
+    return std::any_of(words.begin(), words.end(), [&status](const std::string& word) { return word == status; });
+}
+
+std::string CapabilityStatusLabel(const std::string& status) {
+    if (status == kPartiallySupported)
+        return "部分支持";
+    if (status == kUnsupported)
+        return "未支持";
+    if (status == kDeferred)
+        return "暂缓";
+    return "未知状态（" + (status.empty() ? std::string("空值") : status) + "）";
+}
+
+std::string CapabilityStatusHeadline(const model::RepairCapabilityBoundary& boundary) {
+    const std::string covered = std::to_string(boundary.covered_scope.size());
+    const std::string gap = std::to_string(boundary.not_covered_scope.size());
+    if (boundary.status == kPartiallySupported) {
+        // 词义与内容矛盾时按更保守的一侧读：不能让「已实现 0 项」被当成部分支持。
+        if (boundary.covered_scope.empty())
+            return "部分支持：但「已覆盖范围」为空 —— 状态词与内容矛盾，应按未支持解读";
+        return "部分支持：本版本已实现 " + covered + " 项（见「已覆盖范围」），另有 " + gap +
+               " 项未覆盖（见「未覆盖范围」）；本条描述能力整体，不代表本次运行已生效";
+    }
+    if (boundary.status == kUnsupported) {
+        if (!boundary.covered_scope.empty())
+            return "未支持：但「已覆盖范围」非空 —— 状态词与内容矛盾，不能读成「本版本无实现」";
+        return "未支持：本版本无任何实现，此处只声明边界";
+    }
+    if (boundary.status == kDeferred)
+        return "暂缓：已知能力，本版本不排期；未覆盖范围与不可恢复范围同样成立";
+    return "未知状态（" + (boundary.status.empty() ? std::string("空值") : boundary.status) +
+           "）：不在状态词表内，不能据此判断支持程度";
+}
+
 const std::vector<model::RepairCapabilityBoundary>& AllCapabilityBoundaries() {
     static const std::vector<model::RepairCapabilityBoundary> boundaries = [] {
         std::vector<model::RepairCapabilityBoundary> all;
         all.push_back(MakeMoovRebuild());
         all.push_back(MakeParameterSetRecovery());
         all.push_back(MakeDecodableGopTranscode());
+        // 总述在两张范围表都填好之后统一渲染 —— 提前渲染会拿到空的 covered_scope，
+        // 写出一句「已实现 0 项」。
+        for (auto& boundary : all) {
+            boundary.status_label = CapabilityStatusLabel(boundary.status);
+            boundary.status_headline = CapabilityStatusHeadline(boundary);
+        }
         return all;
     }();
     return boundaries;

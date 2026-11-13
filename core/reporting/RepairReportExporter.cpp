@@ -203,6 +203,10 @@ JsonValue BuildCapabilityBoundaryArray(const std::vector<model::RepairCapability
         JsonValue node = JsonValue::MakeObject();
         node.Set("code", JText(boundary.code));
         node.Set("status", JText(boundary.status));
+        node.Set("status_label", JText(boundary.status_label));
+        node.Set("status_headline", JText(boundary.status_headline));
+        node.Set("covered_scope", BuildStringArray(boundary.covered_scope));
+        node.Set("not_covered_scope", BuildStringArray(boundary.not_covered_scope));
         node.Set("preconditions", BuildStringArray(boundary.preconditions));
         node.Set("unrecoverable_scope", BuildStringArray(boundary.unrecoverable_scope));
         node.Set("timeline_impact", JText(boundary.timeline_impact));
@@ -853,12 +857,15 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         diagnosis.items.push_back("覆盖限制: " + limitation);
     sections.push_back(std::move(diagnosis));
 
-    // 命中才输出的边界契约：前提 / 不可恢复范围 / 时间轴变化 / 质量风险逐条可见，
-    // 三种格式都从这一份 sections 视图渲染。
+    // 命中才输出的边界契约：支持程度 / 已覆盖 / 未覆盖 / 前提 / 不可恢复范围 /
+    // 时间轴变化 / 质量风险逐条可见，三种格式都从这一份 sections 视图渲染。
     if (!result.diagnosis.capability_boundaries.empty()) {
         ReportSection boundaries;
-        boundaries.title = "未实现能力边界（本次命中）";
+        // 标题不再写「未实现」：三条能力现在都有受限实现，标题这么写会先把读者带偏。
+        boundaries.title = "恢复能力边界（本次命中）";
         boundaries.rows.emplace_back("命中条数", std::to_string(result.diagnosis.capability_boundaries.size()));
+        boundaries.rows.emplace_back("状态口径", "状态词描述本版本对这项能力的实现程度，不代表本次运行是否生效；"
+                                                 "本次生效情况看规划层的策略状态与命中证据");
         for (const auto& boundary : result.diagnosis.capability_boundaries) {
             std::string triggers;
             for (const auto& code : boundary.trigger_findings) {
@@ -866,8 +873,16 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                     triggers += ", ";
                 triggers += code;
             }
-            boundaries.items.push_back(boundary.code + " [" + boundary.status +
+            boundaries.items.push_back(boundary.code + " [" +
+                                       (boundary.status_label.empty() ? boundary.status : boundary.status_label) +
                                        "] 触发证据: " + (triggers.empty() ? "（无）" : triggers));
+            boundaries.items.push_back("  支持程度: " + (boundary.status_headline.empty()
+                                                             ? std::string("（未提供支持程度说明，不能据此判断做到哪）")
+                                                             : boundary.status_headline));
+            for (const auto& item : boundary.covered_scope)
+                boundaries.items.push_back("  已覆盖范围: " + item);
+            for (const auto& item : boundary.not_covered_scope)
+                boundaries.items.push_back("  未覆盖范围: " + item);
             for (const auto& item : boundary.preconditions)
                 boundaries.items.push_back("  前提: " + item);
             for (const auto& item : boundary.unrecoverable_scope)
