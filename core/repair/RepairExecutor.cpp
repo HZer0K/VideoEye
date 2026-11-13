@@ -544,6 +544,25 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
             return outcome;
         }
         input_path = assembled_path;
+        // 切片 N：借来的初始化段里带着 mdhd timescale 与 stsd 解码配置。源分片自己的
+        // moof/trun 只提供逐样本时长与字节偏移，「第 N 个 tick 是第几秒」必须靠借来的
+        // timescale。重封装阶段只在 mode==unknown 时补 container_pts，这里先占住，
+        // 否则报告会把「借来的时基」写成「源容器时间戳」，与同一份报告的保真度结论
+        // （timeline_status=unknown + 兼容性 unverified）自相矛盾 —— 与切片 M 修掉的
+        // 参考样片辅助重建（C/H/I）是同一类错误，只是走的是 fMP4 初始化段这条路。
+        // 自建（synthesized）分支不在此列：它的 timescale 来自源侧 sidx / 分片声明，
+        // 没有借任何另一份文件的东西。
+        if (!reference_init->synthesized) {
+            const std::string reference_name =
+                std::filesystem::path(reference_init->reference_path).filename().string();
+            outcome.timeline_basis.mode = "reference_init_borrowed";
+            outcome.timeline_basis.frame_rate = "unknown";
+            outcome.timeline_basis.constant = false;
+            outcome.timeline_basis.detail = "mdhd timescale 与 stsd 解码配置借自参考初始化段 " + reference_name +
+                                            "；逐样本时长 / 字节偏移来自源侧 moof/trun，但秒数换算依赖借来的 timescale";
+            outcome.timeline_basis.limitations.push_back(
+                "参考初始化段的 mdhd timescale 未经源侧独立证据核验，产物里的秒数可能与源片不同");
+        }
     }
 
     Emit(progress, 76, "打开源文件");

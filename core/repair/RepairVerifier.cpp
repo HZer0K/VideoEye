@@ -498,6 +498,11 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
     int uncovered_tracks = 0;
     bool timeline_mismatch = false;
     double first_comparable_observed = 0.0;
+    // 「产物实测时长」与「能不能比对」是两件事：源侧没有时长基线时（sidx 时间基为 0、
+    // 无 moov、按推定帧率重建等），以前把 0 写进 observed_duration_seconds，报告于是
+    // 印出「产物实测=0.000s」——而同一份报告的逐轨实测明明写着 1.221s。0 只能表示
+    // 「真的量到 0」，不能表示「没量」。
+    double first_measured_output = 0.0;
     std::ostringstream scope;
 
     for (const auto& target : effective) {
@@ -590,6 +595,8 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
                                       : container_duration;
         {
             const bool comparable_here = expected_duration_seconds > 0.0 && record.duration_seconds > 0.0;
+            if (record.duration_seconds > 0.0 && first_measured_output <= 0.0)
+                first_measured_output = record.duration_seconds;
             if (comparable_here && first_comparable_observed <= 0.0)
                 first_comparable_observed = record.duration_seconds;
             const bool mismatch_here =
@@ -774,8 +781,10 @@ RepairVerifyOutcome RepairVerifier::Verify(const std::string& output_path, model
 
     // ---- R03：把时长证据从「可读文字」升级为「参与结论的结构化结果」----
     verification.expected_duration_seconds = expected_duration_seconds;
-    verification.observed_duration_seconds = first_comparable_observed;
-    verification.timeline_comparable = first_comparable_observed > 0.0;
+    // 实测值优先用「真的量到的产物时长」；可比对与否另算，别让 0 兼任「没量」。
+    verification.observed_duration_seconds = first_measured_output;
+    verification.timeline_comparable = expected_duration_seconds > 0.0 &&
+                                       verification.observed_duration_seconds > 0.0 && first_comparable_observed > 0.0;
     verification.duration_delta_seconds =
         verification.timeline_comparable ? std::fabs(first_comparable_observed - expected_duration_seconds) : 0.0;
     verification.timeline_mismatch = timeline_mismatch;

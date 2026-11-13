@@ -2391,7 +2391,7 @@ TEST(RepairEngine, DeclaredExclusionsUnavailableStateIsExplicitInThreeFormats) {
 // 语料缺失同样用 ASSERT 而不是 GTEST_SKIP：结论层守护静默跳过等于没守护。
 // ============================================================
 
-ConclusionLayerProbe RunReferenceAssistConclusionLayer(const char* sample, const char* reference, const char* tag) {
+ConclusionLayerProbe RunConclusionLayerWithReference(const char* sample, const char* reference, const char* tag) {
     ConclusionLayerProbe probe;
     probe.dir = MakeTempDir(std::string("m_") + tag);
     RepairRequest request =
@@ -2406,8 +2406,8 @@ ConclusionLayerProbe RunReferenceAssistConclusionLayer(const char* sample, const
 TEST(RepairEngine, RealCorpusReferenceAssistConclusionLayerIsConsistentInAllFormats) {
     RequireRealCorpus("real_h264_aac_faststart.mp4");
     RequireRealCorpus("real_h264_aac_missing_moov.mp4");
-    const ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer("real_h264_aac_missing_moov.mp4",
-                                                                         "real_h264_aac_faststart.mp4", "ref_verified");
+    const ConclusionLayerProbe probe = RunConclusionLayerWithReference("real_h264_aac_missing_moov.mp4",
+                                                                       "real_h264_aac_faststart.mp4", "ref_verified");
     ASSERT_TRUE(probe.result.output_published) << probe.result.summary << " | " << probe.result.error;
 
     // 1. 确实走的是 C/H/I，而不是无参考扫描或普通重封装。
@@ -2488,8 +2488,8 @@ TEST(RepairEngine, RealCorpusReferenceAssistConclusionLayerIsConsistentInAllForm
 TEST(RepairEngine, RealCorpusReferenceAssistUnmeasuredStatesAreExplicitInAllFormats) {
     RequireRealCorpus("real_h264_aac_faststart.mp4");
     RequireRealCorpus("real_h264_aac_missing_moov.mp4");
-    ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer("real_h264_aac_missing_moov.mp4",
-                                                                   "real_h264_aac_faststart.mp4", "ref_unmeasured");
+    ConclusionLayerProbe probe = RunConclusionLayerWithReference("real_h264_aac_missing_moov.mp4",
+                                                                 "real_h264_aac_faststart.mp4", "ref_unmeasured");
     ASSERT_TRUE(probe.result.output_published) << probe.result.summary;
 
     // 先钉住正向态，防止下面只是把两个分支写成同一句。
@@ -2524,6 +2524,9 @@ TEST(RepairEngine, MainPathsDoNotLeakReferenceBorrowedConclusions) {
     EXPECT_FALSE(HasDeclaredCode(preserve.result, "vfr_frame_durations_not_recovered"));
     EXPECT_TRUE(ConclusionTextHas(preserve, "时基依据: 容器时间戳"));
     EXPECT_TRUE(ConclusionTextLacks(preserve, "参考样片时基（借用"));
+    // 切片 N 的反向守护：这两条主路径都没有借任何初始化段，不许出现
+    // 「参考初始化段时基（借用…）」或它的证据边界行（修一处串味两处的典型）。
+    EXPECT_TRUE(ConclusionTextLacks(preserve, "参考初始化段时基（借用"));
     EXPECT_TRUE(ConclusionTextLacks(preserve, "时基证据边界"));
     EXPECT_TRUE(ConclusionTextLacks(preserve, "感知保真度: not_measured_with_reference"));
 
@@ -2534,6 +2537,8 @@ TEST(RepairEngine, MainPathsDoNotLeakReferenceBorrowedConclusions) {
     EXPECT_EQ(transcode.result.fidelity.reference_compatibility, "not_applicable");
     EXPECT_FALSE(transcode.result.reference_assist.used);
     EXPECT_TRUE(ConclusionTextLacks(transcode, "参考样片时基（借用"));
+    EXPECT_TRUE(ConclusionTextLacks(transcode, "参考初始化段时基（借用"));
+    EXPECT_TRUE(ConclusionTextLacks(transcode, "时基证据边界"));
     EXPECT_TRUE(ConclusionTextLacks(transcode, "参考段兼容性: verified"));
 }
 
@@ -2541,10 +2546,60 @@ TEST(RepairEngine, MainPathsDoNotLeakReferenceBorrowedConclusions) {
 TEST(RepairEngine, RealCorpusForeignReferenceNeverClaimsVerifiedBasis) {
     RequireRealCorpus("real_h264_aac_missing_moov.mp4");
     RequireRealCorpus("real_h264_inband_faststart.mp4");
-    const ConclusionLayerProbe probe = RunReferenceAssistConclusionLayer(
-        "real_h264_aac_missing_moov.mp4", "real_h264_inband_faststart.mp4", "ref_foreign");
+    const ConclusionLayerProbe probe = RunConclusionLayerWithReference("real_h264_aac_missing_moov.mp4",
+                                                                       "real_h264_inband_faststart.mp4", "ref_foreign");
     EXPECT_FALSE(probe.result.output_published) << probe.result.summary;
     EXPECT_FALSE(probe.result.reference_assist.used);
     EXPECT_NE(probe.result.fidelity.reference_compatibility, "verified") << probe.result.summary;
     EXPECT_TRUE(probe.json.empty()) << "未发布产物时不应写出成功态报告";
+}
+
+// ============================================================
+// 切片 N：fMP4 缺初始化段（reference_init）路径的结论层守护
+//
+// 切片 M 把「参考样片辅助重建（C/H/I）」的结论层钉住了，但 fMP4 缺初始化段
+// 这条路（借参考文件的 ftyp+moov/mvex/trex 与 mdhd）一直没有真实语料端到端用例。
+// 摸底实测（real_h264_aac_frag_orphan.mp4 + 同源 real_h264_aac_frag.mp4）
+// 一次抓到三处「无事实却给结论」：
+//   1. 「恢复区间」章节把时基依据渲染成「容器时间戳」，而同一份报告的保真度章节
+//      写着「借用了参考初始化段的时基 / unknown」—— 与 M 修掉的 C/H/I 是同一类错误；
+//   2. 「时间轴实测: 产物实测=0.000s」：源侧没有时长基线时把 0 当成实测值写出来，
+//      而同一份报告的逐轨实测写着 1.221s（0 只能表示真的量到 0，不能表示没量）；
+//   3. 「恢复比例按参考初始化段声明的逐轨样本数估算」：基线其实来自源侧
+//      moof/trun（诊断里写着 2 segments），参考初始化段里根本没有样本数。
+// ============================================================
+
+TEST(RepairEngine, RealCorpusInitSegmentBorrowedTimebaseIsExplicitInAllFormats) {
+    RequireRealCorpus("real_h264_aac_frag_orphan.mp4");
+    RequireRealCorpus("real_h264_aac_frag.mp4");
+    const ConclusionLayerProbe probe =
+        RunConclusionLayerWithReference("real_h264_aac_frag_orphan.mp4", "real_h264_aac_frag.mp4", "n_init_borrowed");
+    ASSERT_TRUE(probe.result.output_published) << probe.result.summary << " | " << probe.result.error;
+
+    // 1. 确实走的是「借参考初始化段」这条路，而不是自建或无参考。
+    EXPECT_EQ(probe.result.fidelity.reference_compatibility, "unverified");
+    EXPECT_FALSE(probe.result.fidelity.borrowed_parameters.empty()) << "借用参数必须与恢复区间同源上抛";
+
+    // 2. 时基依据必须标成「借来的」，不能被重封装阶段补成「容器时间戳」。
+    EXPECT_EQ(probe.result.timeline_basis.mode, "reference_init_borrowed") << probe.result.timeline_basis.detail;
+    EXPECT_EQ(probe.result.fidelity.timeline_status, "unknown");
+    EXPECT_TRUE(ConclusionTextHas(probe, "时基依据: 参考初始化段时基（借用，源侧无独立时基证据）")) << probe.text;
+    EXPECT_TRUE(ConclusionTextHas(
+        probe, "时基证据边界: 源侧 moov 已丢失；mdhd timescale 借自参考初始化段，逐样本时长来自源侧 moof/trun"))
+        << probe.text;
+    EXPECT_NE(probe.json.find("\"reference_init_borrowed\""), std::string::npos) << probe.json;
+    // 反向守护：这条路上「容器时间戳」是错误结论（容器根本没打开过）。
+    EXPECT_TRUE(ConclusionTextLacks(probe, "时基依据: 容器时间戳")) << probe.text;
+
+    // 3. 产物时长是实测值，不能因为「没有源侧基线」就写成 0；
+    //    「能不能比对」由 timeline_comparable 单独表达。
+    EXPECT_GT(probe.result.verification.observed_duration_seconds, 0.5)
+        << "产物时长实测值被写成了 0：" << probe.result.verification.observed_duration_seconds;
+    EXPECT_FALSE(probe.result.verification.timeline_comparable);
+    EXPECT_EQ(probe.text.find("产物实测=0.000s"), std::string::npos) << probe.text;
+
+    // 4. 恢复比例的基线来源必须是源侧 moof/trun，不是「参考初始化段声明」。
+    EXPECT_NE(probe.text.find("恢复比例按 moof/trun (2 segments) 声明的逐轨样本数估算"), std::string::npos)
+        << probe.text;
+    EXPECT_TRUE(ConclusionTextLacks(probe, "按参考初始化段声明的逐轨样本数")) << probe.text;
 }

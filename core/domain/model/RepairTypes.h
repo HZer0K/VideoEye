@@ -751,7 +751,9 @@ struct RepairDisplayOrderSummary {
 // timing_info、容器 stts、ADTS 采样率），要么是用户显式给的，要么就不存在。
 // 三种情况必须分开落字段，不能合成一个"可用/不可用"：
 //   * `mode`         —— "vui_timing" / "user_input" / "container_pts" /
-//                        "adts_sample_rate" / "unknown"
+//                        "adts_sample_rate" / "reference_borrowed"（普通 MP4 借参考
+//                        样片的 stts/mdhd）/ "reference_init_borrowed"（fMP4 借参考
+//                        初始化段的 mdhd，逐样本时长仍来自源侧 trun）/ "unknown"
 //   * `frame_rate`   —— "30000/1001" 这类精确分数；拿不到就是 "unknown"，
 //                        不从 mode 反推，也不写近似小数
 //   * `constant`     —— 每个样本的时长能否当常数用（变帧率下不成立）

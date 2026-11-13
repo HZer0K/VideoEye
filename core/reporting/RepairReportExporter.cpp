@@ -986,6 +986,8 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             mode_text = "ADTS 采样率";
         else if (basis.mode == "reference_borrowed")
             mode_text = "参考样片时基（借用，源侧无独立证据）";
+        else if (basis.mode == "reference_init_borrowed")
+            mode_text = "参考初始化段时基（借用，源侧无独立时基证据）";
         const bool has_rate = basis.frame_rate != "unknown";
         recovery.rows.emplace_back("时基依据", has_rate ? mode_text + "（" + basis.frame_rate + "）" : mode_text);
         if (basis.mode == "reference_borrowed") {
@@ -993,6 +995,14 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             // 只写一行 mode 会让读者把「有依据」误读成「源片时间轴已核验」。
             recovery.rows.emplace_back("时基证据边界", "源侧 moov 已丢失，无独立时基证据");
             recovery.items.push_back("时基结论: 借用的时基不能作为源片时间轴的证据，逐帧时长与源片可能不同");
+        } else if (basis.mode == "reference_init_borrowed") {
+            // 切片 N：fMP4 缺初始化段这条路借的是 mdhd timescale 与解码配置，
+            // 逐样本时长仍来自源侧 moof/trun —— 与 C/H/I 借 stts 不同，边界必须分开写，
+            // 否则读者会把「样本表也是借的」当成事实（或反过来以为时基已核验）。
+            recovery.rows.emplace_back(
+                "时基证据边界", "源侧 moov 已丢失；mdhd timescale 借自参考初始化段，逐样本时长来自源侧 moof/trun");
+            recovery.items.push_back("时基结论: tick → 秒的换算依赖借来的 timescale，未做源侧独立核验，"
+                                     "秒数不能作为源片时间轴的证据");
         }
         recovery.rows.emplace_back("帧时长是否恒定", basis.constant ? "是" : "否（逐帧时长无证据）");
         if (basis.vfr_declared)

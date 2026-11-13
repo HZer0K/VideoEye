@@ -179,6 +179,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | K | 真实损坏语料上的结论层守护（修 2 个真 bug） | A–J | 完成（`4856937`） |
 | L | 本次明确未恢复项的显式标注（能力目录 8 条） | K | 完成（`6cd0a8a`） |
 | M | 参考辅助重建路径（C/H/I）的结论层收敛 | K + L | 完成（`a7aac33`，见 §4.13） |
+| N | fMP4 借参考初始化段路径的结论层收敛（修 3 个真 bug） | M | 完成（见 §4.14） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -615,6 +616,64 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 反推源片时间轴」的独立核验；S08 输入侧覆盖区间仍不给；逐轨转码决策 /
 其他容器 / 多候选规划器仍属 §5.2。
 
+### 4.14 切片 N：fMP4 借参考初始化段路径的结论层收敛
+
+**为什么还要再查一次**：M 收敛的是「普通 MP4 缺 moov + 同源参考 MP4」（C/H/I，
+`container.mdat_reference_assisted`）。fMP4 缺初始化段（`reference_init`，
+路径 `container.init_segment_missing`）走的是另一条链 —— 把参考文件的
+`ftyp+moov/mvex/trex` 前置到源分片前面再重封装，R03 那条红线一直覆盖着它，
+但**从来没有真实语料端到端用例**（§4.13 的未覆盖项）。同源语料其实早就有了：
+`real_h264_aac_frag_orphan.mp4` 就是 `real_h264_aac_frag.mp4` 删掉 `ftyp` + `moov`
+派生出来的。
+
+**摸底实测一次抓到 3 处「无事实却给结论」**（全部是报告层，不是恢复能力）：
+
+1. **「恢复区间」把借来的时基写成「容器时间戳」**：`timeline_basis.mode` 在
+   `reference_init` 这条路上没人占位，重封装阶段照 `mode == "unknown"`
+   补成 `container_pts`，于是同一份报告一边写「时基依据: 容器时间戳」，
+   一边在保真度章节写「本次借用了参考初始化段的时基 / 时间轴变化 unknown」。
+   与 M 修掉的是同一类错误，只是路径不同（M 改的是 C/H/I）。
+2. **「产物实测=0.000s」**：`observed_duration_seconds` 只在「源侧有基线且可比对」
+   时才记录，没有基线时写 0，报告于是印出「产物实测=0.000s」—— 而同一份报告的
+   逐轨实测明明写着 1.221 s。0 只能表示「真的量到 0」，不能兼任「没量」。
+3. **恢复比例的基线来源说反了**：旧文案一律写「按参考初始化段声明的逐轨样本数」，
+   而参考初始化段里根本没有样本数（只有 `trex` 默认值），基线实际来自源侧
+   `moof/trun`（诊断里写着 `moof/trun (2 segments)`）。
+
+**做法**
+
+- `RepairExecutor`：借用（`!synthesized`）初始化段成功后占住
+  `timeline_basis.mode = "reference_init_borrowed"`、`frame_rate = unknown`、
+  `constant = false`，detail 与限制项写明「timescale 借自参考初始化段；
+  逐样本时长 / 字节偏移来自源侧 moof/trun」。自建（`synthesized`）分支不占位：
+  它的 timescale 来自源侧 sidx / 分片声明，没有借另一份文件的东西。
+- 刻意**不复用** `reference_borrowed`：C/H/I 借的是整张样本表（`stts`），
+  fMP4 借的是起点（`mdhd` timescale）+ 解码配置，逐样本时长仍是源侧的。
+  两者合成一个 mode 会让「逐帧时长是否也是借的」这个判断失去依据
+  （`vfr_frame_durations_not_recovered` 就是靠 `mode=reference_borrowed` 挂载的）。
+- `RepairReportExporter`：新 mode 渲染成「参考初始化段时基（借用，源侧无独立时基证据）」，
+  并额外出「时基证据边界」行，明说哪一部分借了、哪一部分是源侧的。
+- `RepairVerifier`：`observed_duration_seconds` 改为**真的量到的产物时长**，
+  `timeline_comparable` 单独计算（源侧有基线 && 产物量得到）。可比对时的差值
+  仍取「第一条可比对轨」，不改变 R03 的判定口径。
+- `RepairEngine`：恢复比例的基线来源按 `RepairExpectedTrack.provenance` 落文案，
+  不再硬写「参考初始化段声明」。
+
+**守护**
+
+- `RealCorpusInitSegmentBorrowedTimebaseIsExplicitInAllFormats`：真实语料
+  `real_h264_aac_frag_orphan.mp4` + 同源 `real_h264_aac_frag.mp4`，钉住
+  `mode=reference_init_borrowed`、三格式同一结论、反向守护「不许出现
+  `时基依据: 容器时间戳`」、产物实测时长非 0 且 `可比对=no`、
+  基线来源写 `moof/trun`。
+- `MainPathsDoNotLeakReferenceBorrowedConclusions` 加两条反向断言：
+  保码流与 S08 两条主路径不得出现「参考初始化段时基（借用…）」或其证据边界行
+  —— 修一处串味两处是这类改动的典型事故。
+
+**明确不做**：借来的 timescale **仍然是借的**，没有做「用参考初始化段反推源片
+时间轴」的独立核验（源侧 sidx 时间基为 0 时根本没有可比对的基线）；
+合成初始化段（`synthesized`）路径的时基证据分级；S08 输入侧覆盖区间仍不给。
+
 ---
 
 ## 5. 后续阶段与架构前置
@@ -722,6 +781,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | K 真实语料结论层守护 | 完成（本轮） | `4856937` | 实测查出 S08「有账本却报没有账本」与时基 / 显示顺序未测量态静默省略两个真 bug；S08 上抛逐轨覆盖且不许伪造 span；5 个用例 + 10 组判别力变异全部精确判红。见 §4.11 |
 | L 本次明确未恢复项显式标注 | 完成（本轮） | `6cd0a8a` | 8 条能力目录 + 结构化触发矩阵；9 个纯函数用例 + 3 个真实语料端到端用例；172/172 ctest（1938 gtest）；13 组判别力变异全部精确判红后按字节恢复复跑绿。见 §4.12 与下方「切片 L 验收记录」 |
 | M 参考辅助重建路径（C/H/I）结论层收敛 | 完成（本轮） | `a7aac33` | 摸底实测一次抓到 4 处自相矛盾结论（借来的时基写成 `unchanged`、兼容性 `not_applicable`、有参考却说没有参考、借用时基渲染成容器时间戳）；5 个用例（含主路径反向守护）；172/172 ctest（1943 gtest）；11 组判别力变异全部精确判红（首轮 M5/M7 判绿，补断言 + 删不可达分支后转红）。见 §4.13 与下方「切片 M 验收记录」 |
+| N fMP4 借参考初始化段路径结论层收敛 | 完成（本轮） | | 摸底实测抓到 3 处「无事实却给结论」（借用时基渲染成容器时间戳、产物实测时长写成 0.000s、恢复比例基线来源说反）；1 个真实语料端到端用例 + 2 条主路径反向断言；172/172 ctest（1944 gtest）；4 组判别力变异全部精确判红。见 §4.14 与下方「切片 N 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1249,5 +1309,39 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 - 借来的时基**仍是借的**：没有做「用参考片反推源片时间轴」的独立核验，
   报告只声明 `unknown` + 证据边界。
 - 真实语料矩阵仍只有保码流 / S08 / C-H-I 三条路径；`reference_init`（fMP4 初始化段）
-  路径暂无真实语料端到端用例。
+  路径的端到端用例**已由切片 N 补上**（见 §4.14），M 当时确实没有。
 - S08 输入侧时间轴覆盖区间仍不给；逐轨转码决策 / 其他容器 / 多候选规划器仍属 §5.2。
+
+### 切片 N 验收记录（2026-11-13）
+
+**范围**：§4.14。真实语料 `real_h264_aac_frag_orphan.mp4`（由 `real_h264_aac_frag.mp4`
+删 `ftyp` + `moov` 派生，天然同源）+ 同源参考，走 `container.init_segment_missing`
+→ 借参考初始化段 → 重封装。
+
+- 摸底实测（临时探针，落地前删除）打出 3 处「无事实却给结论」：时基依据渲染成
+  「容器时间戳」（保真度章节却写着借用 / unknown）、`时间轴实测: 产物实测=0.000s`
+  （同一份报告逐轨实测 1.221 s）、恢复比例基线写成「参考初始化段声明的逐轨样本数」
+  （参考初始化段里没有样本数，基线来自源侧 `moof/trun (2 segments)`）。三处全部修掉。
+- 新增 `timeline_basis.mode = "reference_init_borrowed"`，刻意与 C/H/I 的
+  `reference_borrowed` 分开：前者只借 timescale + 解码配置（逐样本时长仍来自 trun），
+  后者借整张 stts。合成成一个 mode 会让 `vfr_frame_durations_not_recovered`
+  这条排除项的挂载依据失真。
+- 新增 1 个用例：`RealCorpusInitSegmentBorrowedTimebaseIsExplicitInAllFormats`；
+  `MainPathsDoNotLeakReferenceBorrowedConclusions` 加 4 条反向断言。
+- 验证：172/172 ctest（1944 gtest）、离屏 `rc=124`、clang-format **18.1.8**、
+  AUTOMOC（9 / 152）/ 分层 / 命名空间 / 链接可见性 / README 快照（153·153·1944·19）/
+  `git diff --check` 全绿。
+- 判别力 4 组全部精确判红后按字节恢复 + `os.utime` 复跑 54/54 全绿：
+  M1 不占住时基（回落 `container_pts`）、M2 报告层渲染成「容器时间戳」、
+  M3 产物实测时长退回「只在可比对时记」、M4 基线来源文案退回「参考初始化段声明」。
+
+**未覆盖（如实记账）**
+
+- 借来的 timescale **仍然是借的**：没有做「用参考初始化段反推源片时间轴」的
+  独立核验（源侧 sidx 时间基为 0 时根本没有可比对的基线）。
+- 合成初始化段（`synthesized`）路径的时基证据分级没改：它的 timescale 来自源侧
+  sidx / 分片声明，仍走 `container_pts`，未单列证据边界。
+- 能力目录里 `parameter_set_recovery` 仍标 `unsupported`，而这条路正是靠借参数集
+  恢复成功的。文案已说明「unsupported 指尚未覆盖的范围」，但状态词与「本次命中」
+  并排仍容易被读成「这次没做到」——要改需要一整套「部分支持」的状态词表，
+  牵动 `RepairCapabilityBoundary.status` 的既有守护，本轮不动。

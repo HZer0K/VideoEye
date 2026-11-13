@@ -602,8 +602,19 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         }
         if (recovery_ratio.has_value()) {
             fidelity.original_content_recovery_ratio = std::min(1.0, std::max(0.0, *recovery_ratio));
-            if (sample_based)
-                fidelity.limitations.push_back("恢复比例按参考初始化段声明的逐轨样本数估算，不是逐字节比对");
+            if (sample_based) {
+                // 基线来自哪份证据要说清楚：fMP4 缺初始化段这条路是源侧 moof/trun 的
+                // 逐轨声明，旧文案一律写「参考初始化段声明的逐轨样本数」——参考初始化段
+                // 里根本没有样本数（只有 trex 默认值），那是把基线来源说反了。
+                std::string baseline = "源侧声明";
+                for (const auto& expected : result.diagnosis.expected_tracks) {
+                    if (expected.sample_count > 0 && !expected.provenance.empty()) {
+                        baseline = expected.provenance;
+                        break;
+                    }
+                }
+                fidelity.limitations.push_back("恢复比例按 " + baseline + " 声明的逐轨样本数估算，不是逐字节比对");
+            }
         } else {
             fidelity.limitations.push_back("缺少源侧时长或样本基线，未给出恢复比例");
         }
