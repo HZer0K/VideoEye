@@ -1179,6 +1179,23 @@ TEST(RepairSafety, CorruptFlagZeroIsNotClaimedAsCleanPicture) {
     }
 }
 
+// ---------------- 自建初始化段的时基证据分级（切片 S）----------------
+
+// 「核对过且通过」与「压根没核对」必须能分开，否则一句「核对一致」会把
+// 没跑过的检查说成结论。
+TEST(RepairSafety, TimescaleCrosscheckGradeNeverClaimsAnUnrunCheck) {
+    const std::string unchecked = repair::TimescaleCrosscheckText(false, 0.0, 0.0);
+    EXPECT_NE(unchecked.find("未做事后核对"), std::string::npos) << unchecked;
+    EXPECT_EQ(unchecked.find("偏差"), std::string::npos) << "没核对就不许出现偏差数字：" << unchecked;
+
+    const std::string checked = repair::TimescaleCrosscheckText(true, 0.0, 0.25);
+    EXPECT_NE(checked.find("偏差 ≤ 0.000 s"), std::string::npos) << "零偏差也是实测值，要写出来：" << checked;
+    EXPECT_NE(checked.find("容差 0.250 s"), std::string::npos) << checked;
+    EXPECT_EQ(checked.find("未做事后核对"), std::string::npos) << checked;
+    // 偏差必须与容差并排出现：只写「核对一致」，读者没法判断这个「一致」有多严。
+    EXPECT_NE(checked.find("moof/trun"), std::string::npos) << checked;
+}
+
 // ---------------- 未实现能力的边界契约 ----------------
 
 // 覆盖守护：三条契约的五维度都必须有内容；顺序变了不会有编译错误，单独钉死。

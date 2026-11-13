@@ -72,6 +72,12 @@ struct RepairInitSegment {
     uint32_t reference_timescale = 0;
     std::vector<RepairReferenceTrack> reference_tracks; // 逐轨时基 / 编码实测清单
     std::string timescale_check;                        // 逐轨时基核对结论（供报告输出）
+    // 切片 S：自建路径的时基证据分级。timescale 取自源侧 sidx 声明，源片原始 mdhd
+    // 已丢失 —— 唯一能做的核对是拿 moof/trun 的逐样本时长累加反算总时长。
+    // `timescale_crosschecked` 只说「核对跑过且通过」，不表示时基已被独立核验。
+    bool timescale_crosschecked = false;
+    double timescale_crosscheck_error_seconds = 0.0;
+    double timescale_crosscheck_tolerance_seconds = 0.0;
 };
 
 class RepairInitSegmentReader {

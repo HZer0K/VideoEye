@@ -869,6 +869,10 @@ RepairInspectOutcome RepairInspector::Inspect(const model::RepairRequest& reques
                         init.reference_timescale = synthesized.movie_timescale;
                         init.reference_tracks = synthesized.tracks;
                         init.timescale_check = synthesized.timescale_basis;
+                        init.timescale_crosschecked = synthesized.timescale_crosschecked;
+                        init.timescale_crosscheck_error_seconds = synthesized.timescale_crosscheck_error_seconds;
+                        init.timescale_crosscheck_tolerance_seconds =
+                            synthesized.timescale_crosscheck_tolerance_seconds;
                         AddCheck(diagnosis, "reference.init_segment", model::DamageLayer::Container,
                                  model::RepairCheckStatus::Inconclusive,
                                  "未提供参考样片；已自建初始化段 " + std::to_string(init.init_size) + " 字节（" +

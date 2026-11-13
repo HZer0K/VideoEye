@@ -611,13 +611,23 @@ RepairSynthesizedInit RepairInitSegmentBuilder::Build(const std::string& source_
         const double track_seconds = static_cast<double>(track.duration_ticks) / track.timescale;
         if (forensics.estimated_duration_seconds > 0.0) {
             const double tolerance = std::max(0.25, forensics.estimated_duration_seconds * 0.10);
-            if (std::fabs(track_seconds - forensics.estimated_duration_seconds) > tolerance) {
+            const double deviation = std::fabs(track_seconds - forensics.estimated_duration_seconds);
+            if (deviation > tolerance) {
                 out.ok = false;
                 out.error = "轨道 " + std::to_string(track.track_id) + " 的声明时长 " + FormatSeconds(track_seconds) +
                             " 与 sidx 估算 " + FormatSeconds(forensics.estimated_duration_seconds) +
                             " 不一致；不能借用该 timescale";
                 return out;
             }
+            // 核对确实跑过才置位：源侧没给出可累加的样本时长时这里是 false，
+            // 报告必须区分「核对过且通过」与「压根没核对」。
+            out.timescale_crosschecked = true;
+            out.timescale_crosscheck_error_seconds = std::max(out.timescale_crosscheck_error_seconds, deviation);
+            // 多轨时取最严的那条容差，报出去的边界才是保守的。
+            out.timescale_crosscheck_tolerance_seconds =
+                out.timescale_crosscheck_tolerance_seconds > 0.0
+                    ? std::min(out.timescale_crosscheck_tolerance_seconds, tolerance)
+                    : tolerance;
         }
 
         std::string error;
@@ -717,7 +727,9 @@ RepairSynthesizedInit RepairInitSegmentBuilder::Build(const std::string& source_
     out.bytes = writer.TakeBytes();
     out.movie_timescale = movie_timescale;
     out.estimated_duration_seconds = duration_seconds;
-    out.timescale_basis = "sidx timescale=" + std::to_string(movie_timescale);
+    out.timescale_basis = "sidx timescale=" + std::to_string(movie_timescale) +
+                          TimescaleCrosscheckText(out.timescale_crosschecked, out.timescale_crosscheck_error_seconds,
+                                                  out.timescale_crosscheck_tolerance_seconds);
     for (const auto& track : tracks) {
         RepairReferenceTrack item;
         item.track_id = track.track_id;
@@ -731,7 +743,12 @@ RepairSynthesizedInit RepairInitSegmentBuilder::Build(const std::string& source_
             out.codec_summary += ", 轨道 " + std::to_string(track.track_id) + " video(" + track.codec + ")";
     }
     out.limitations.push_back("初始化段由 in-band 参数集自建，未经同源参考段交叉验证");
-    out.limitations.push_back("timescale 来自 sidx；若源 sidx 本身被改写，产物播放速度会随之改变");
+    out.limitations.push_back("timescale 来自 sidx 声明；若源 sidx 本身被改写，产物播放速度会随之改变");
+    out.limitations.push_back(out.timescale_crosschecked
+                                  ? "时基核对的是「trun 时长累加 ≈ sidx 声明时长」，两组声明同源于打包器；"
+                                    "整体被同比例改写的时基无法由此发现，容差内的偏差也排除不了，"
+                                    "更不能替代与原始 mdhd 的核对（已丢失）"
+                                  : "timescale 未与源侧样本时长做过任何核对，播放速度完全依赖这条声明");
     out.limitations.push_back("仅重建视频轨；音频轨需要 ADTS/AudioSpecificConfig 才能自建，当前版本会直接拒绝");
     out.limitations.push_back("未重建 edts/ctts 等编辑信息，B 帧显示顺序由解码器与 ctts 缺省值决定");
     return out;

@@ -1028,6 +1028,8 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             mode_text = "参考样片时基（借用，源侧无独立证据）";
         else if (basis.mode == "reference_init_borrowed")
             mode_text = "参考初始化段时基（借用，源侧无独立时基证据）";
+        else if (basis.mode == "synthesized_init_timescale")
+            mode_text = "自建初始化段时基（源侧 sidx 声明，无原始 mdhd 可核对）";
         const bool has_rate = basis.frame_rate != "unknown";
         recovery.rows.emplace_back("时基依据", has_rate ? mode_text + "（" + basis.frame_rate + "）" : mode_text);
         if (basis.mode == "reference_borrowed") {
@@ -1043,6 +1045,14 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
                 "时基证据边界", "源侧 moov 已丢失；mdhd timescale 借自参考初始化段，逐样本时长来自源侧 moof/trun");
             recovery.items.push_back("时基结论: tick → 秒的换算依赖借来的 timescale，未做源侧独立核验，"
                                      "秒数不能作为源片时间轴的证据");
+        } else if (basis.mode == "synthesized_init_timescale") {
+            // 切片 S：自建初始化段既不是「源容器时间戳」（源片没有 moov），也不是「借来的」
+            // （那份 moov 是我们自己写的）。timescale 只能取源侧 sidx 声明，证据边界必须单列。
+            recovery.rows.emplace_back(
+                "时基证据边界",
+                "源侧 moov 已丢失；mdhd timescale 由自建初始化段按源侧 sidx 声明选定，不是源容器直接给出");
+            recovery.items.push_back("时基结论: 逐样本 tick 原样来自源侧 moof/trun，但 tick → 秒的换算依赖"
+                                     "自建时基，未与源片原始 mdhd 核对（已丢失），秒数不能作为源片时间轴的独立证据");
         }
         recovery.rows.emplace_back("帧时长是否恒定", basis.constant ? "是" : "否（逐帧时长无证据）");
         if (basis.vfr_declared)

@@ -18,9 +18,20 @@
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairFragmentForensics.h"
 #include "core/repair/RepairInitSegment.h"
+#include "core/repair/RepairUtils.h"
 
 namespace videoeye {
 namespace repair {
+
+// 时基证据分级的一次性渲染（唯一入口）：诊断、报告、JSON 都读同一份文案。
+// `crosschecked` 只表示「拿源侧 moof/trun 的逐样本时长累加核对过、且落在容差内」，
+// 不表示时基已被独立核验 —— 原始 mdhd 已丢失，不存在可比的基线。
+inline std::string TimescaleCrosscheckText(bool crosschecked, double error_seconds, double tolerance_seconds) {
+    if (!crosschecked)
+        return "（源侧没有可累加的样本时长，未做事后核对）";
+    return "（与源侧 moof/trun 逐样本时长累加核对：偏差 ≤ " + FormatSeconds(error_seconds) + " s，容差 " +
+           FormatSeconds(tolerance_seconds) + " s）";
+}
 
 struct RepairSynthesizedInit {
     bool ok = false;
@@ -32,6 +43,13 @@ struct RepairSynthesizedInit {
     uint32_t movie_timescale = 0;
     double estimated_duration_seconds = 0.0;
     std::string timescale_basis; // 证据来源，必须可解释
+    // 时基证据分级（切片 S）：timescale 取自源侧 sidx **声明**，源片原始 mdhd 已丢失，
+    // 不存在可直接比对的基线。唯一能做的核对是拿源侧 moof/trun 的逐样本时长累加
+    // 反算一遍总时长，看它是否落在容差内 —— 这是「两组源侧声明互相印证」，
+    // 不是「与原始 mdhd 核对」。没跑过核对 ≠ 核对通过，所以单独记一个布尔。
+    bool timescale_crosschecked = false;
+    double timescale_crosscheck_error_seconds = 0.0;     // 逐轨偏差的最大值（实测）
+    double timescale_crosscheck_tolerance_seconds = 0.0; // 逐轨容差的最小值（最严那条）
     std::vector<std::string> limitations;
 };
 

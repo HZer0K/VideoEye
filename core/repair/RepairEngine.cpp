@@ -407,10 +407,14 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     // 绕过它把推断写成 unchanged，还与同一份报告的能力契约
     // 「timeline_status 只能是 modified / unknown」自相矛盾。
     const bool reference_assist_used = execution.reference_assist.used;
+    // 切片 S：自建初始化段这条路同样是「时基是我们选定的」——mdhd timescale 取自
+    // 源侧 sidx 声明，源片原始 mdhd 已丢失。产物时长与 sidx 估算「一致」是自证：
+    // 两侧都用同一个 sidx timescale 换算，比对结果恒成立，不能当独立证据。
+    // 所以这里与 reference_assist_used 同档：不许写 unchanged。
     const bool timeline_unknown =
         !timeline_mismatch &&
         ((borrowed_reference && (reference_unverified || !verified.verification.timeline_comparable)) ||
-         reference_assist_used);
+         reference_assist_used || synthesized_init);
 
     // ---- 5. 发布（R06：提交前的最后一个取消/预算检查点）----
     Emit(progress, 97, stage::Publishing(), "发布产物");
@@ -497,12 +501,19 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
                                       "」生成产物，片段内部时间关系保持不变";
     } else if (timeline_unknown) {
         fidelity.timeline_status = "unknown";
-        fidelity.timeline_note =
-            reference_assist_used
-                ? "产物时间轴的 mdhd timescale / stts 借自同源参考样片；源侧 moov 已丢失，没有可核验的独立时基基线，"
-                  "不能断言时间轴与源片一致"
-                : "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
-                  "源侧缺少可核验的独立证据，不能断言时间轴未改变";
+        if (synthesized_init) {
+            fidelity.timeline_note =
+                "初始化段由 in-band 参数集自建，mdhd timescale 采用源侧 sidx 声明；逐样本 tick 原样来自源侧 moof/trun，"
+                "但 tick→秒的换算依赖这条声明，源片原始 mdhd 已丢失，不能断言时间轴与源片一致";
+        } else {
+            fidelity.timeline_note =
+                reference_assist_used
+                    ? "产物时间轴的 mdhd timescale / stts 借自同源参考样片；源侧 moov "
+                      "已丢失，没有可核验的独立时基基线，"
+                      "不能断言时间轴与源片一致"
+                    : "时间戳仅按输出容器时间基缩放，未主动补齐 / 合成；但本次借用了参考初始化段的时基，"
+                      "源侧缺少可核验的独立证据，不能断言时间轴未改变";
+        }
     } else {
         fidelity.timeline_status = "unchanged";
         fidelity.timeline_note = "时间戳仅按输出容器时间基缩放，未补齐 / 未合成";
@@ -730,8 +741,15 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         fidelity.reference_compatibility = init.compatibility;
         fidelity.borrowed_parameters = init.borrowed_parameters;
         if (init.synthesized) {
-            fidelity.timeline_note +=
-                "；本次由源分片 in-band 参数集自建初始化段（无参考样片），时基证据：" + init.timescale_check;
+            // 「自建」这件事已经写进 timeline_note 的第一句，这里只补实测的时基证据，
+            // 不重复同一句话（同一份报告里两句同义文案会让读者以为是两件事）。
+            fidelity.timeline_note += "；时基证据：" + init.timescale_check;
+            // 切片 S：这条路上的「源侧估算 = 产物实测」是自证 —— 两侧都用同一个
+            // sidx timescale 换算，一致只能说明换算没算错，不能说明时基与原始 mdhd 一致。
+            if (verified.verification.timeline_comparable)
+                fidelity.limitations.push_back(
+                    "时间轴实测的一致性是自证：源侧估算与产物实测都由同一个 sidx timescale 换算，"
+                    "相等不能证明时基与源片原始 mdhd 一致");
         } else {
             fidelity.timeline_note += "；本次借用了参考初始化段的 ftyp+moov/mvex/trex 与 mdhd 时基";
         }

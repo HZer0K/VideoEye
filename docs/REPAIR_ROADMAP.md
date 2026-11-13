@@ -184,6 +184,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | P | S08 音画起点对齐（统一原点，保留源侧 Δ） | O | 完成（见 §4.16） |
 | Q | 容器级 side data 真正继承（旋转矩阵 / HDR 静态元数据） | P | 完成（见 §4.17） |
 | R | 能力边界的「支持程度」口径收敛（状态词表 + 三段范围） | Q | 完成（见 §4.18） |
+| S | 合成初始化段的时基证据分级（sidx 声明 ≠ 已核验） | R | 完成（见 §4.19） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -676,7 +677,9 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 
 **明确不做**：借来的 timescale **仍然是借的**，没有做「用参考初始化段反推源片
 时间轴」的独立核验（源侧 sidx 时间基为 0 时根本没有可比对的基线）；
-合成初始化段（`synthesized`）路径的时基证据分级；S08 输入侧覆盖区间仍不给。
+S08 输入侧覆盖区间仍不给。
+（切片 N 当时把「合成初始化段（`synthesized`）路径的时基证据分级」也划在「不做」里，
+已在 §4.19 补上。）
 
 ---
 
@@ -973,6 +976,91 @@ moov_rebuild [部分支持] 触发证据: container.moov_missing
 
 ---
 
+### 4.19 切片 S：合成初始化段的时基证据分级
+
+**起点**：§4.14（切片 N）留下的「明确不做」——「合成初始化段（`synthesized`）路径的
+时基证据分级没改：它的 timescale 来自源侧 sidx / 分片声明，仍走 `container_pts`」。
+摸下去发现这不只是「没分级」，而是**同一份报告里自相矛盾**：
+
+| 报告位置 | 覆盖这条路径时写的是 | 事实 |
+|---|---|---|
+| 时基依据 | 「容器时间戳」 | 源片**没有 moov**，那个容器是自建出来的 |
+| 时间轴变化 | `unchanged` + 「时间戳仅按输出容器时间基缩放，未补齐 / 未合成」 | 秒数依赖一条**我们自己选定**的 timescale |
+| 时基证据（备注） | 「sidx timescale=12800」 | 这才是真实依据 |
+
+**根因**：`RepairExecutor` 只在**借用**（`!synthesized`）分支里占住 `timeline_basis.mode`，
+自建分支不占位，于是重封装阶段按 `mode == "unknown"` 补成 `container_pts`。
+与 M / N 是同一类错误，只是路径又不同：M 改 C/H/I，N 改 fMP4 借参考段，本轮补最后一条。
+
+**三处口径问题**
+
+1. **「容器时间戳」不是源侧事实**：自建初始化段时，mdhd timescale 是我们按源侧 sidx
+   声明写进去的。源片本来就没有 moov，报告把「我们选定的时基」说成源容器给的。
+2. **`unchanged` 过度声称**：逐样本 tick 确实原样来自源侧 moof/trun，但 tick→秒的换算
+   依赖上面那条声明；源片原始 mdhd 已丢失，没有可比的基线。
+3. **时长比对是自证**：报告里「时间轴实测: 源侧估算=1.600s / 产物实测=1.600s / 可比对=yes」
+   在**这条路径上**两侧都用同一个 sidx timescale 换算，相等只能说明换算没算错。
+
+**时基证据分级**（本轮的新东西）
+
+自建路径唯一能做的核对是：拿源侧 moof/trun 的逐样本时长累加反算总时长，与 sidx
+声明的时长比。这是**两组源侧声明互相印证**，不是与原始 mdhd 核对。
+
+- 记「核对到底跑过没有」：`timescale_crosschecked` 只在真的比对过且落在容差内才为 true。
+  没跑过 ≠ 跑过并通过 —— 源侧没给出可累加的样本时长时，报告必须写「未做事后核对」。
+- 记实测值：`timescale_crosscheck_error_seconds`（逐轨偏差的最大值）、
+  `timescale_crosscheck_tolerance_seconds`（逐轨容差的最小值，多轨取最严）。
+- 渲染一次（`TimescaleCrosscheckText()`，唯一入口）：诊断、报告、JSON 读同一份文案。
+  实际产物：`sidx timescale=12800（与源侧 moof/trun 逐样本时长累加核对：偏差 ≤ 0.000 s，容差 0.250 s）`
+- 这条核对**发现不了整体被同比例改写的时基**：sidx 的 timescale 与它自己声明的时长
+  同时被改写时，两侧一起缩放，比值不变。文案与文档都要说清这一点。
+
+**做法**
+
+- `RepairExecutor`：自建分支占住 `mode = "synthesized_init_timescale"`，
+  与 `reference_init_borrowed`（借别人的）并列；detail 里带上分级后的核对文案；
+  限制项按「核对过 / 没核对」分两支。
+- `RepairEngine`：`timeline_unknown` 纳入 `synthesized_init`（与 `reference_assist_used`
+  同档），`timeline_status` 从 `unchanged` 改为 `unknown`，note 写明「tick 原样来自
+  moof/trun，但 tick→秒依赖自建时基」；`timeline_comparable` 时另加一条限制，
+  说明这次一致是自证。
+- `RepairReportExporter`：新 mode 渲染成「自建初始化段时基（源侧 sidx 声明，无原始
+  mdhd 可核对）」，并额外出「时基证据边界」行 + 一条「时基结论」——
+  与前两条借用路径同一套三段式（mode / 边界 / 结论）。
+
+实际渲染（TXT）：
+
+```
+时基依据: 自建初始化段时基（源侧 sidx 声明，无原始 mdhd 可核对）
+时基证据边界: 源侧 moov 已丢失；mdhd timescale 由自建初始化段按源侧 sidx 声明选定，不是源容器直接给出
+- 时基结论: 逐样本 tick 原样来自源侧 moof/trun，但 tick → 秒的换算依赖自建时基，
+  未与源片原始 mdhd 核对（已丢失），秒数不能作为源片时间轴的独立证据
+- 时基细节: …时基核对: sidx timescale=12800（…偏差 ≤ 0.000 s，容差 0.250 s）
+- 时基限制: 时基核对的是「trun 时长累加 ≈ sidx 声明时长」，两组声明同源于打包器；
+  整体被同比例改写的时基无法由此发现，容差内的偏差也排除不了…
+时间轴变化: unknown — 初始化段由 in-band 参数集自建，mdhd timescale 采用源侧 sidx 声明；…
+```
+
+**守护**
+
+- `FragmentedSegmentsSynthesizeInitFromInBandParameterSets`（扩写）：钉 `mode`、
+  `timeline_status=unknown`、三格式同一结论；反向守护「不许出现 `时基依据: 容器时间戳`」；
+  这段语料确实给出了 trun 时长，所以还必须**不许**出现「未做事后核对」；
+  证据边界行要整行匹配（只钉行首「源侧 moov 已丢失」时，把后半句改成「由源侧容器
+  直接给出」也能蒙过去 —— 变异 S4 首轮就是这么判绿的）。
+- `TimescaleCrosscheckGradeNeverClaimsAnUnrunCheck`（新，纯函数）：没核对时不许出现
+  偏差数字；核对过时偏差与容差必须并排出现（只写「核对一致」，读者没法判断有多严）。
+
+**明确不做**
+
+- 不做「用源侧 NAL / 帧内容反推播放速度」：那需要逐帧解码计时，代价与语义都超出
+  本轮（且源片被删的那部分本来就没有计时信息）。
+- 不给 S08 输入侧覆盖区间（同 §4.14）。
+- 不把这条路径的 `timeline_status` 抬回 `unchanged`，除非将来真的拿到与原始 mdhd
+  等价的独立基线（例如切片自带 tfdt 且与 sidx 交叉一致）。
+
+---
+
 ## 5. 后续阶段与架构前置
 
 ### 5.1 阶段 5：时间轴与音画同步（先解决接入条件）
@@ -1088,6 +1176,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | P S08 音画起点对齐（统一原点） | 完成（本轮） | | 实测抓到旧实现把源侧 0.48 s 音画起点差静默抹成 0 且报告不提；改为两轨减同一原点，差值保留并进报告；新增 3 个用例；172/172 ctest（1952 gtest）；P1/P3 精确判红、P2 判绿（如实记账：现有语料不可判别）。见 §4.16 与下方「切片 P 验收记录」 |
 | Q 容器级 side data 真正继承 | 完成（本轮） | | 实测：旋转矩阵 / HDR 静态元数据旧实现全丢，`movenc` 其实支持（tkhd / mdcv+clli）；改为写头前拷 side data + 收尾打开产物实测；新增第三类 `unverified_properties` 与 HDR 位深前提 + 矛盾检测；新增 6 个用例；172/172 ctest（1958 gtest）；7 组判别力变异全部精确判红。见 §4.17 与下方「切片 Q 验收记录」 |
 | R 能力边界支持程度口径 | 完成（本轮） | | 三条契约一律 `unsupported` 而 evidence 写着「已实现…」，章节标题还叫「未实现能力边界」；改状态词表（`partially_supported` / `unsupported` / `deferred`）+ 拆出 `covered_scope` / `not_covered_scope` 与物理不可恢复三段，状态词与两张表互为约束；新增 3 个用例；172/172 ctest（1960 gtest）；6 组判别力变异全部精确判红。见 §4.18 与下方「切片 R 验收记录」 |
+| S 合成初始化段时基分级 | 完成（本轮） | | 自建路径不占 `timeline_basis.mode`，回落成「容器时间戳」（源片根本没有 moov），且 `timeline_status=unchanged`；改为 `synthesized_init_timescale` + `unknown`；时基核对可测、可断言「没核对 ≠ 核对通过」；点明时长比对在这条路上是自证；新增 1 个纯函数用例 + 扩写端到端用例；172/172 ctest（1961 gtest）；7 组判别力变异全部精确判红（S4 首轮判绿 → 断言不够严）。见 §4.19 与下方「切片 S 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1881,3 +1970,58 @@ AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·15
   （`plan.actions` 只记不可用策略的契约引用），所以报告只能说「这条能力部分支持」，
   不能说「本次用的就是它」。要补得把执行层的实际动作回写进契约，属另一轮工作。
 - `deferred` 当前无实例，留在词表里避免将来临时加词绕过守护。
+
+### 切片 S 验收记录（2026-11-13）
+
+**范围**：§4.19。§4.14 留下的「合成初始化段（`synthesized`）路径的时基证据分级没改」。
+
+**摸底**（真实语料 `fmp4_synth`，视频轨 + global_sidx + in-band SPS/PPS）
+
+| 报告位置 | 修复前 | 修复后 |
+|---|---|---|
+| 时基依据 | 容器时间戳 | 自建初始化段时基（源侧 sidx 声明，无原始 mdhd 可核对） |
+| 时基证据边界 | （没有这一行） | 源侧 moov 已丢失；mdhd timescale 由自建初始化段按源侧 sidx 声明选定，不是源容器直接给出 |
+| 时间轴变化 | unchanged | unknown（tick 原样来自 moof/trun，但 tick→秒依赖自建时基） |
+| 时基核对 | 「sidx timescale=12800」一句话 | 偏差 ≤ 0.000 s / 容差 0.250 s，并注明「同比例整体改写发现不了」 |
+
+**三处「无事实却给结论」**
+
+1. 源片没有 moov，「容器时间戳」里的那个容器是我们自己写的 —— 把选定的时基说成源侧事实。
+2. `unchanged` 声称时间轴与源片一致，而秒数依赖一条声明；原始 mdhd 已丢失，没有可比基线。
+3. 「源侧估算 = 产物实测 / 可比对=yes」在这条路是**自证** —— 两侧同一个 sidx timescale 换算。
+
+**做法**：`timescale_crosschecked` + 最坏偏差 + 最严容差三段实测；`TimescaleCrosscheckText()`
+唯一渲染入口；`mode = synthesized_init_timescale`；`timeline_unknown` 纳入 `synthesized_init`；
+报告出「时基证据边界」行 + 「时基结论」；`timeline_comparable` 时另加一条「这是自证」的限制。
+
+**验证**：172/172 ctest（1961 gtest）、离屏 `rc=124`、门禁全绿（clang-format 18.1.8 /
+AUTOMOC 9·152 / 分层 / 命名空间 / 链接可见性 / README 快照 153·153·1961·19）/
+`git diff --check`。新增 1 个纯函数用例 + 扩写 `FragmentedSegmentsSynthesizeInitFromInBandParameterSets`
+（原断言 `timeline_status == "unchanged"` 编码的正是旧口径，已随行为一起改掉）。
+
+**判别力变异**（`build/mut_s.py`，每组都确认 `Building CXX` > 0）
+
+| 变异 | 破坏点 | 结果 |
+|---|---|---|
+| S1 | 自建路径回落到 `container_pts` | 精确判红（mode + 反向守护「不许出现容器时间戳」） |
+| S2 | `timeline_unknown` 不纳入 `synthesized_init` | 精确判红（`unchanged`） |
+| S3 | 报告渲染成「容器时间戳」 | 精确判红 |
+| S4 | 证据边界行改成「源侧容器直接给出」 | **首轮判绿** → 断言只钉了行首，补成整行匹配后判红 |
+| S5 | 核对没跑也记成「核对通过」 | 精确判红（报告出现「未做事后核对」） |
+| S6 | 去掉「时长比对是自证」的限制项 | 精确判红 |
+| S7 | 分级渲染把「没核对」当成「核对通过」 | 精确判红（纯函数用例） |
+
+❗ **S4 的教训**：断言 `text.find("时基证据边界: 源侧 moov 已丢失")` 只钉住行首，
+把后半句改成相反的结论照样通过。**钉文案就要钉整行**，尤其是「A 与 B 不同 / 不是 A」
+这类靠后半句表达判定的句子。
+
+**未覆盖（如实记账）**
+
+- **整体被同比例改写的时基仍发现不了**：核对的是「trun 时长累加 ≈ sidx 声明时长」，
+  两者都从打包器来；若 sidx 的 timescale 与它声明的时长被一起改写，比值不变、核对恒过。
+  要发现这种得有一条与 sidx 无关的基线（例如分片内 tfdt 序列），本轮没做。
+- **「核对失败 → 拒绝自建」这条分支没有专门语料**：只有一个「没有 sidx」的语料
+  （`FragmentedSegmentsWithoutSidxStillNeedReference`）。造「trun 与 sidx 时基不一致」
+  的样本得手工改一处 trun，本轮未造 —— 该分支的判据是 `deviation > tolerance`，
+  已有代码但无端到端守护。
+- 自建路径仍不重建音频轨，也不重建 edts/ctts，这两条限制沿用 §4.14。

@@ -562,6 +562,30 @@ RepairExecutionOutcome RepairExecutor::Execute(const model::RepairRequest& reque
                                             "；逐样本时长 / 字节偏移来自源侧 moof/trun，但秒数换算依赖借来的 timescale";
             outcome.timeline_basis.limitations.push_back(
                 "参考初始化段的 mdhd timescale 未经源侧独立证据核验，产物里的秒数可能与源片不同");
+        } else {
+            // 切片 S：自建（synthesized）分支与借用是两种证据强度，不能都落进
+            // 兜底的 container_pts —— 源片根本没有 moov，那个「容器」是我们自己写的，
+            // 报告写「时基依据: 容器时间戳」等于把我们选定的时基说成源侧事实。
+            // timescale 取自源侧 sidx 声明；唯一能做的核对是用 trun 时长累加反算，
+            // 那也是「两组声明互相印证」，不是与原始 mdhd 核对。
+            outcome.timeline_basis.mode = "synthesized_init_timescale";
+            outcome.timeline_basis.frame_rate = "unknown";
+            outcome.timeline_basis.constant = false;
+            outcome.timeline_basis.detail =
+                "源侧 moov 已丢失；初始化段由 in-band 参数集自建，mdhd timescale 采用源侧 sidx 声明；"
+                "逐样本时长 / 字节偏移来自源侧 moof/trun。时基核对: " +
+                reference_init->timescale_check;
+            if (reference_init->timescale_crosschecked) {
+                outcome.timeline_basis.limitations.push_back(
+                    "sidx 声明的 timescale 只用源侧 moof/trun 时长累加做过容差核对（偏差 ≤ " +
+                    FormatSeconds(reference_init->timescale_crosscheck_error_seconds) + " s，容差 " +
+                    FormatSeconds(reference_init->timescale_crosscheck_tolerance_seconds) +
+                    " s）；容差内的偏差无法排除，源片原始 mdhd 已丢失，无从独立核对");
+            } else {
+                outcome.timeline_basis.limitations.push_back(
+                    "sidx 声明的 timescale 未与源侧样本时长做过任何核对；源片原始 mdhd 已丢失，"
+                    "播放速度完全依赖这条声明");
+            }
         }
     }
 

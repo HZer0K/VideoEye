@@ -822,7 +822,10 @@ struct RepairDisplayOrderSummary {
 //   * `mode`         —— "vui_timing" / "user_input" / "container_pts" /
 //                        "adts_sample_rate" / "reference_borrowed"（普通 MP4 借参考
 //                        样片的 stts/mdhd）/ "reference_init_borrowed"（fMP4 借参考
-//                        初始化段的 mdhd，逐样本时长仍来自源侧 trun）/ "unknown"
+//                        初始化段的 mdhd，逐样本时长仍来自源侧 trun）/
+//                        "synthesized_init_timescale"（fMP4 由 in-band 参数集自建初始化段，
+//                        mdhd timescale 是**我们按源侧 sidx 声明写进去的**，源片没有 moov
+//                        可核对）/ "unknown"
 //   * `frame_rate`   —— "30000/1001" 这类精确分数；拿不到就是 "unknown"，
 //                        不从 mode 反推，也不写近似小数
 //   * `constant`     —— 每个样本的时长能否当常数用（变帧率下不成立）

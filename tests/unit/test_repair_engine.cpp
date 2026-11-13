@@ -787,7 +787,36 @@ TEST(RepairEngine, FragmentedSegmentsSynthesizeInitFromInBandParameterSets) {
         << ToString(result.status) << " summary=" << result.summary;
     EXPECT_TRUE(HasResidualFinding(result, "init_segment.synthesized")) << "自建来源必须作为残留问题上报";
     EXPECT_EQ(result.fidelity.reference_compatibility, "synthesized");
-    EXPECT_EQ(result.fidelity.timeline_status, "unchanged");
+
+    // 切片 S：时基是我们自己写进 mdhd 的（取自源侧 sidx 声明），不是源容器给的；
+    // 逐样本 tick 来自 moof/trun，但 tick→秒的换算依赖这条声明，源片原始 mdhd 已丢失。
+    // 因此既不能写「容器时间戳」，也不能声称时间轴 unchanged。
+    EXPECT_EQ(result.timeline_basis.mode, "synthesized_init_timescale") << result.timeline_basis.detail;
+    EXPECT_EQ(result.fidelity.timeline_status, "unknown") << result.fidelity.timeline_note;
+    EXPECT_NE(result.timeline_basis.detail.find("sidx"), std::string::npos) << result.timeline_basis.detail;
+    ASSERT_FALSE(result.timeline_basis.limitations.empty()) << "时基限制不能空";
+
+    // 三格式同源：结论层必须写出证据边界，且不许把自建时基说成源侧事实。
+    const auto written = reporting::RepairReportExporter::WriteAll(result, dir + "/report.json", dir + "/report.txt",
+                                                                   dir + "/report.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    const std::string json = ReadText(dir + "/report.json");
+    const std::string text = ReadText(dir + "/report.txt");
+    const std::string html = ReadText(dir + "/report.html");
+    EXPECT_NE(json.find("\"synthesized_init_timescale\""), std::string::npos) << json;
+    EXPECT_NE(text.find("时基依据: 自建初始化段时基（源侧 sidx 声明，无原始 mdhd 可核对）"), std::string::npos) << text;
+    EXPECT_NE(html.find("自建初始化段时基（源侧 sidx 声明，无原始 mdhd 可核对）"), std::string::npos) << html;
+    EXPECT_NE(text.find("时基证据边界: 源侧 moov 已丢失；mdhd timescale 由自建初始化段按源侧 sidx 声明选定，"
+                        "不是源容器直接给出"),
+              std::string::npos)
+        << text;
+    // 这段语料的 trun 给出了逐样本时长，核对必须真的跑过 —— 报告不许写「未做事后核对」。
+    EXPECT_NE(text.find("moof/trun 逐样本时长累加核对"), std::string::npos) << text;
+    EXPECT_EQ(text.find("未做事后核对"), std::string::npos) << text;
+    EXPECT_NE(text.find("自证"), std::string::npos) << "时长比对在这条路上是自证，必须说出来";
+    EXPECT_EQ(text.find("时基依据: 容器时间戳"), std::string::npos)
+        << "源片没有 moov，那个容器是自建的，不能写成源侧容器时间戳";
+    EXPECT_NE(text.find("未与源片原始 mdhd 核对"), std::string::npos) << text;
 
     const auto probe = videoeye_test::ProbeMediaFile(result.output_path);
     EXPECT_TRUE(probe.opened) << probe.error;
