@@ -180,6 +180,7 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 | L | 本次明确未恢复项的显式标注（能力目录 8 条） | K | 完成（`6cd0a8a`） |
 | M | 参考辅助重建路径（C/H/I）的结论层收敛 | K + L | 完成（`a7aac33`，见 §4.13） |
 | N | fMP4 借参考初始化段路径的结论层收敛（修 3 个真 bug） | M | 完成（见 §4.14） |
+| O | S08 重编码的编码器口径收敛（libx264 → 实测编码器） | N | 完成（见 §4.15） |
 | 阶段 5 | 时间轴与音画同步恢复 | B + 架构前置（§5.1） | 部分（只剩 `elst`） |
 | 阶段 6 | 容忍式转码、其他容器、多候选规划器 | B + D | 进行中（J 已落地，见 §4.10 / §5.2） |
 
@@ -676,6 +677,67 @@ InitSegmentBuilder、OutputWriter / 发布**。阻塞式 FFmpeg IO 要在打开�
 
 ---
 
+### 4.15 切片 O：S08 重编码的编码器口径收敛
+
+**起点**：走查 §5.2 剩余能力时撞到一件比「加能力」更要紧的事 —— 本项目锁定的
+FFmpeg 是 **LGPL 变体**（`cmake/ffmpeg-version.json`：
+`--disable-libx264 --disable-libx265`，这是为了能随包分发 av\*.dll 的刻意取舍），
+`avcodec_find_encoder_by_name("libx264")` 恒返回 null，S08 走兜底后实际启用的是
+**libopenh264**（运行日志每帧都在打 `layerId(0) doesn't support profile(578)`）。
+
+但代码与文档一直在说 libx264：
+
+| 位置 | 旧文案 | 实际 |
+|---|---|---|
+| `RepairCapabilityContracts.cpp` `decodable_gop_transcode.evidence` | 「以 libx264 重编码」 | libopenh264 |
+| `RepairDeclaredExclusions.cpp` `gop_local_reencode_not_attempted.evidence` | 「视频 libx264 重编码」 | 同上 |
+| 同一份报告的 `fidelity.limitations` | 「编码器=libopenh264」 | 同上 |
+
+于是「未实现能力边界」段说 libx264、「保真度与已知限制」段说 libopenh264——
+与 M / N 修掉的是同一类错误：**静态文案把选型期望写成了既成事实**。
+另外 `profile(578) → UNSPECIFIC` 这次静默降级从未被记录。
+
+**做法**
+
+- 新增结构化字段（唯一事实源）：`RepairTranscodeFidelity.encoder_preferred /
+  encoder_used / encoder_fallback / source_profile / output_profile`，以及
+  由修复层一次渲染好的 `encoder_note` / `profile_note`。
+  ⚠️ 渲染**只做一次**：报告行、限制项、JSON 全读同一份文案。两处各拼一份必然漂移，
+  这次要修的正是这种漂移。
+- 编码器事实在 `avcodec_open2` 之后就地固化（`encoder->profile` 只有 open 后才有值，
+  encoder 上下文随后会被 free），并**与 `inspected` 解耦**：没探测到首帧的路径上
+  编码器仍然打开过，事实不能跟着 `inspected=false` 一起丢。
+- 产物侧 profile 拿不到编码器回报时留空，由 `TranscodeProfileNote` 明说
+  「编码器未回报，未能比对」—— 不推断「大概还是 High」。
+- 三处文案改为中性：契约改成「重编码首选 libx264，但 LGPL 构建必然回退，实际编码器
+  由运行时探测写入 `fidelity.transcode.encoder_used`」；排除项改成「视频轨统一按
+  H.264 重编码，实际编码器以报告『重编码编码器』一行为准」。
+- 报告新增「重编码编码器」「重编码 profile」两行（TXT/HTML 同源），JSON 落
+  `encoder_used` / `encoder_fallback` / `encoder_note` 等机读字段 —— 让下游判断
+  「这份产物是谁编的」不必正则匹配自由文本。
+
+**守护**
+
+- `RepairTranscodeFidelity.EncoderLabelNeverInventsAnEncoder`：表驱动覆盖
+  「未走到编码器 / 首选可用 / 回退 / preferred 缺失」四态，反向守护「回退时不得
+  把首选名当成实际编码器」。
+- `RepairTranscodeFidelity.ProfileNoteRequiresMeasuredBothEnds`：源侧未声明不写、
+  产物未回报写「未能比对」、相同写「一致」、不同写「已改变」。
+- `RepairTranscodeFidelity.S08ReportsMeasuredEncoderInsteadOfPreferredName`：
+  端到端钉住「字段 == 报告行 == JSON」，并断言报告里任何位置都不出现
+  「libx264 重编码」。
+- `RepairTranscodeFidelity.NonTranscodePathHasNoEncoderFact`：保码流路径不得凭空
+  出现编码器行（没转码就没有编码器事实）。
+- `RepairDeclaredExclusions.StaticTextNeverStatesEncoderAsFact`：能力目录 +
+  排除项的全部文案不得出现「<编码器名> 重编码」这种把实测事实写死进静态模板的句子。
+
+**明确不做**：不做「按构建自动选择最优编码器」的策略层（换 GPL 变体涉及许可证口径，
+不是代码问题）；10-bit 编码在 libopenh264 上物理不可行，要等价于换 FFmpeg 变体；
+`profile` 降级的**实际取值**仍未取到（libopenh264 不回填 `avctx->profile`），
+报告如实写「未能比对」而不是猜一个。
+
+---
+
 ## 5. 后续阶段与架构前置
 
 ### 5.1 阶段 5：时间轴与音画同步（先解决接入条件）
@@ -703,7 +765,9 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 
 ### 5.2 阶段 6：容忍式转码与其他容器
 
-- **S08 现状**：写死「视频 libx264 重编码 + 逐条音频轨复制」，无「按轨判断是否需转码」。
+- **S08 现状**：写死「视频轨统一按 H.264 重编码 + 逐条音频轨按原码流复制」，无「按轨判断
+  是否需转码」。实际编码器由运行时探测（LGPL 构建不含 libx264，会回退到 libopenh264，
+  见 §4.15），报告按实测名写出，不再写死首选名。
   先做轨道级选择，再研究 GOP 范围局部重编码；接入前**必须验证编码参数与拼接边界兼容性**
   （profile / level / 像素格式 / time_base / `max_b_frames`）。
 - ~~**待补**：动态分辨率（当前固定首帧宽高）、10-bit、`color_primaries/trc/space/range`、
@@ -782,6 +846,7 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
 | L 本次明确未恢复项显式标注 | 完成（本轮） | `6cd0a8a` | 8 条能力目录 + 结构化触发矩阵；9 个纯函数用例 + 3 个真实语料端到端用例；172/172 ctest（1938 gtest）；13 组判别力变异全部精确判红后按字节恢复复跑绿。见 §4.12 与下方「切片 L 验收记录」 |
 | M 参考辅助重建路径（C/H/I）结论层收敛 | 完成（本轮） | `a7aac33` | 摸底实测一次抓到 4 处自相矛盾结论（借来的时基写成 `unchanged`、兼容性 `not_applicable`、有参考却说没有参考、借用时基渲染成容器时间戳）；5 个用例（含主路径反向守护）；172/172 ctest（1943 gtest）；11 组判别力变异全部精确判红（首轮 M5/M7 判绿，补断言 + 删不可达分支后转红）。见 §4.13 与下方「切片 M 验收记录」 |
 | N fMP4 借参考初始化段路径结论层收敛 | 完成（本轮） | | 摸底实测抓到 3 处「无事实却给结论」（借用时基渲染成容器时间戳、产物实测时长写成 0.000s、恢复比例基线来源说反）；1 个真实语料端到端用例 + 2 条主路径反向断言；172/172 ctest（1944 gtest）；4 组判别力变异全部精确判红。见 §4.14 与下方「切片 N 验收记录」 |
+| O S08 重编码的编码器口径收敛 | 完成（本轮） | | 实测证实本构建无 libx264（LGPL 变体），S08 实际用 libopenh264；三处静态文案把首选名写成了既成事实；新增结构化编码器 / profile 字段与 5 个用例；172/172 ctest（1949 gtest）；5 组判别力变异全部精确判红。见 §4.15 与下方「切片 O 验收记录」 |
 | 阶段 6 转码 / 其他容器 / 多候选 | 进行中（J 已落地） | | 见 §5.2 |
 
 ### 切片 C 验收记录（2026-11-11）
@@ -1345,3 +1410,39 @@ tfdt 或用户显式输入）。信息不足时提供**显式推定模式**，�
   恢复成功的。文案已说明「unsupported 指尚未覆盖的范围」，但状态词与「本次命中」
   并排仍容易被读成「这次没做到」——要改需要一整套「部分支持」的状态词表，
   牵动 `RepairCapabilityBoundary.status` 的既有守护，本轮不动。
+
+### 切片 O 验收记录（2026-11-13）
+
+**范围**：§4.15。走查 §5.2 剩余能力时撞到的**口径错误**（不是能力缺口）：
+`cmake/ffmpeg-version.json` 锁定的是 BtbN `win64-lgpl-shared` 变体
+（`--disable-libx264 --disable-libx265`），`avcodec_find_encoder_by_name("libx264")`
+恒为 null，S08 兜底后实际用 **libopenh264**（运行日志逐帧打印
+`layerId(0) doesn't support profile(578), change to UNSPECIFIC profile`）。
+而契约 / 排除项 / 路线图三处写的是 libx264，同一份报告的 `fidelity.limitations`
+却写「编码器=libopenh264」。
+
+- 摸底探针（临时 TEST，落地前删除）实测输出：
+  `used=[libopenh264] pref=[libx264] fb=1 src_prof=[Constrained Baseline] out_prof=[]`
+  —— 产物侧 `avctx->profile` 未回填，因此 profile 比对只能如实写「未能比对」。
+- 新增字段 `encoder_preferred / encoder_used / encoder_fallback /
+  source_profile / output_profile` + 一次渲染好的 `encoder_note / profile_note`；
+  报告行、限制项、JSON 全读同一份文案。
+- 编码器事实与 `inspected` 解耦：没探测到首帧的路径上编码器也打开过，事实不能丢。
+- 新增 5 个用例（4 个保真度 + 1 个静态文案守护）；172/172 ctest（1949 gtest）、
+  离屏 `rc=124`、门禁全绿（clang-format 18.1.8 / AUTOMOC 9·152 / 分层 / 命名空间 /
+  链接可见性 / README 快照 153·153·1949·19）/ `git diff --check`。
+- 判别力 5 组全部精确判红后按字节恢复复跑全绿：
+  M1 回退时用首选名渲染、M2 产物 profile 缺实测却写「一致」、M3 契约文案退回
+  「libx264 重编码」、M4 报告层另抄首选名、M5 回退事实不进限制项。
+  ❗ M4 首轮判绿：TXT 的限制项里也有一条以「重编码编码器: 」开头的文本，
+  裸 `find` 被它蒙过去；改成钉 `"\n重编码编码器: <note>\n"`（行级）后转红。
+  ❗ M5 首轮变异写成了「删掉整个 if 块」，编译期就报 C2888/C1075 —— 变异必须是
+  可编译的语义破坏，否则测的是构建失败不是判别力。
+
+**未覆盖（如实记账）**
+
+- 产物侧 profile 仍取不到（libopenh264 不回填 `avctx->profile`），报告写
+  「未能比对」；要拿到真实产物 profile 得解析产物 SPS，本轮不做。
+- 不涉及「换 GPL 变体 / 引入 libx265」：那是许可证口径决策，10-bit 也卡在这里。
+- 编码器回退**不影响**已有的 PSNR 结论口径，但 PSNR 值现在来自 openh264 而非 x264，
+  同一码率下的数值不能与历史 x264 产物直接横比。

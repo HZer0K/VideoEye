@@ -11,8 +11,17 @@
 //     才允许进 preserved 列表（只改了清单没改产物 = 假覆盖）；
 //   * 旋转 / HDR / 色度抽样逐项可判别；
 //   * 结果真的进 RepairResult 与 JSON/TXT/HTML 三份报告，非转码路径写「未探测」。
+//
+// 切片 O 追加：**编码器名是实测事实，不是选型期望**。本项目锁定的 FFmpeg 是
+// LGPL 变体（--disable-libx264 / --disable-libx265），「libx264 重编码」这句话
+// 在本构建里恒为假；旧实现把它写进了能力契约与排除项，同一份报告的
+// fidelity.limitations 却印着「编码器=libopenh264」。这一组用例钉住：
+//   * 标签只能由 encoder_used / encoder_fallback 渲染，不许回退到首选名；
+//   * profile 比对只在两端都实测到时成立，缺一侧就明说「未能比对」；
+//   * 非转码路径不得出现编码器行（没转码就没有编码器事实）。
 // ============================================================
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -527,6 +536,140 @@ TEST(RepairTranscodeFidelity, PreserveBitstreamReportsFidelityAsNotInspected) {
     // 另一行「源侧属性结论」蒙混过去（变异 M9 第一轮就是这样判绿的）。
     EXPECT_NE(text.find("转码保真探测: 未探测"), std::string::npos) << text;
     EXPECT_NE(html.find("转码保真探测</th><td>未探测"), std::string::npos) << html;
+}
+
+// ---- 切片 O：编码器 / profile 事实的渲染 ----
+
+RepairTranscodeFidelity EncoderFacts(const std::string& used, const std::string& preferred, bool fallback) {
+    RepairTranscodeFidelity fidelity;
+    fidelity.encoder_used = used;
+    fidelity.encoder_preferred = preferred;
+    fidelity.encoder_fallback = fallback;
+    return fidelity;
+}
+
+TEST(RepairTranscodeFidelity, EncoderLabelNeverInventsAnEncoder) {
+    // 没走到编码器（未转码 / 打开失败）：空串，不许补一个默认名。
+    EXPECT_TRUE(repair::TranscodeEncoderLabel(RepairTranscodeFidelity()).empty());
+    EXPECT_TRUE(repair::TranscodeEncoderLabel(EncoderFacts("", "libx264", true)).empty());
+
+    // 首选可用：就是首选本身，不能画蛇添足写「已回退」。
+    const std::string direct = repair::TranscodeEncoderLabel(EncoderFacts("libx264", "libx264", false));
+    EXPECT_EQ(direct, "libx264");
+    EXPECT_EQ(direct.find("回退"), std::string::npos);
+
+    // 回退：必须写出实际编码器 + 首选是谁 + 为什么不是首选。
+    const std::string fallback = repair::TranscodeEncoderLabel(EncoderFacts("libopenh264", "libx264", true));
+    EXPECT_NE(fallback.find("libopenh264"), std::string::npos) << fallback;
+    EXPECT_NE(fallback.find("libx264"), std::string::npos) << fallback;
+    EXPECT_NE(fallback.find("不可用"), std::string::npos) << fallback;
+    // 反向守护：回退时绝不能把首选名当成实际使用的编码器。
+    EXPECT_EQ(fallback.find("libx264 重编码"), std::string::npos) << "首选名只能以「首选 ... 不可用」的形式出现";
+
+    // preferred 缺失也不能渲染成「首选  不可用」这种空档。
+    const std::string unknown_preferred = repair::TranscodeEncoderLabel(EncoderFacts("libopenh264", "", true));
+    EXPECT_NE(unknown_preferred.find("未知"), std::string::npos) << unknown_preferred;
+}
+
+TEST(RepairTranscodeFidelity, ProfileNoteRequiresMeasuredBothEnds) {
+    // 源侧没声明 profile：整条不输出，不做「大概也是 High」的推断。
+    RepairTranscodeFidelity fidelity;
+    fidelity.output_profile = "High";
+    EXPECT_TRUE(repair::TranscodeProfileNote(fidelity).empty());
+
+    // 产物侧拿不到编码器回报：明说「未能比对」，不能默认写成一致。
+    fidelity.source_profile = "High";
+    fidelity.output_profile.clear();
+    const std::string missing = repair::TranscodeProfileNote(fidelity);
+    EXPECT_NE(missing.find("未能比对"), std::string::npos) << missing;
+    EXPECT_EQ(missing.find("一致"), std::string::npos) << missing;
+
+    // 两端都有且相同 / 不同，要能区分开。
+    fidelity.output_profile = "High";
+    EXPECT_NE(repair::TranscodeProfileNote(fidelity).find("一致"), std::string::npos);
+    fidelity.output_profile = "Constrained Baseline";
+    const std::string changed = repair::TranscodeProfileNote(fidelity);
+    EXPECT_NE(changed.find("已改变"), std::string::npos) << changed;
+    EXPECT_NE(changed.find("Constrained Baseline"), std::string::npos) << changed;
+}
+
+TEST(RepairTranscodeFidelity, S08ReportsMeasuredEncoderInsteadOfPreferredName) {
+    const std::string dir = MakeTempDir("s08_encoder");
+    const auto media = videoeye_test::CreateTestMedia(dir, "s08_encoder_src");
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    ASSERT_TRUE(result.fidelity.video_reencoded);
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    // 走完重编码就必须有实测编码器名 —— 这是唯一可以写进报告的事实源。
+    ASSERT_FALSE(fidelity.encoder_used.empty()) << "重编码完成却没有编码器名";
+    EXPECT_EQ(fidelity.encoder_preferred, "libx264");
+    EXPECT_NE(fidelity.encoder_note.find(fidelity.encoder_used), std::string::npos) << fidelity.encoder_note;
+
+    // 有回退就必须说清原因；没回退就不许留「不可用」这种话。
+    const bool lgpl_note_present =
+        std::any_of(result.fidelity.limitations.begin(), result.fidelity.limitations.end(),
+                    [](const std::string& item) { return item.find("LGPL") != std::string::npos; });
+    if (fidelity.encoder_fallback) {
+        EXPECT_NE(fidelity.encoder_note.find("不可用"), std::string::npos) << fidelity.encoder_note;
+        EXPECT_TRUE(lgpl_note_present) << "回退是许可证取舍，必须写进限制项";
+    } else {
+        EXPECT_FALSE(lgpl_note_present) << "首选可用时不得声称发生了回退";
+    }
+
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+
+    JsonValue root;
+    std::string error;
+    ASSERT_TRUE(JsonParse(ReadText(dir + "/r.json"), root, &error)) << error;
+    const JsonValue* report_fidelity = root.Find("fidelity");
+    ASSERT_NE(report_fidelity, nullptr);
+    const JsonValue* transcode = report_fidelity->Find("transcode");
+    ASSERT_NE(transcode, nullptr);
+    EXPECT_EQ(transcode->Find("encoder_used")->StringValueOr(), fidelity.encoder_used);
+    EXPECT_EQ(transcode->Find("encoder_preferred")->StringValueOr(), "libx264");
+    EXPECT_EQ(transcode->Find("encoder_fallback")->BoolValueOr(!fidelity.encoder_fallback), fidelity.encoder_fallback);
+
+    const std::string text = ReadText(dir + "/r.txt");
+    const std::string html = ReadText(dir + "/r.html");
+    // 必须钉在「行」上：限制项里也有一条以「重编码编码器: 」开头的文本
+    // （"- 限制 / 未知项: 重编码编码器: ..."），只做裸 find 会被它蒙过去
+    // （判别力变异 M4 第一轮就是这样判绿的）。TXT 的行是 "<标题>: <值>\n"。
+    const std::string expected_row = "\n重编码编码器: " + fidelity.encoder_note + "\n";
+    EXPECT_NE(text.find(expected_row), std::string::npos) << text;
+    EXPECT_NE(html.find(fidelity.encoder_note), std::string::npos) << "HTML 必须同源渲染编码器行";
+    // 反向守护：报告里任何地方都不得再把首选名当成既成事实。
+    EXPECT_EQ(text.find("libx264 重编码"), std::string::npos) << text;
+    EXPECT_EQ(html.find("libx264 重编码"), std::string::npos) << html;
+    // 内部一致性：报告行里的编码器名必须就是结果里那个，不是另抄一份。
+    EXPECT_NE(text.find(fidelity.encoder_used), std::string::npos) << text;
+}
+
+TEST(RepairTranscodeFidelity, NonTranscodePathHasNoEncoderFact) {
+    const std::string dir = MakeTempDir("no_encoder_fact");
+    const auto media = videoeye_test::CreateTestMedia(dir, "plain_no_fact_src");
+    ASSERT_TRUE(media.ok) << media.error;
+    const RepairResult result = repair::RepairEngine::Run(MakeRequest(media.path, dir + "/out"), nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+    ASSERT_FALSE(result.fidelity.video_reencoded);
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    EXPECT_TRUE(fidelity.encoder_used.empty()) << "没转码就没有编码器事实";
+    EXPECT_TRUE(fidelity.encoder_note.empty());
+    EXPECT_TRUE(fidelity.profile_note.empty());
+
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
+        EXPECT_EQ(body.find("重编码编码器"), std::string::npos) << "保码流路径不得凭空出现编码器行";
+    }
 }
 
 } // namespace

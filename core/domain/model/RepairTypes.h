@@ -457,6 +457,28 @@ struct RepairTranscodeFidelity {
     // 只有「探测过 + 丢失项为空」才允许为 true。重编码的代际画质损失由
     // video_reencoded / perceptual_fidelity 单独表达，不混进这个结论。
     bool all_properties_preserved = false;
+
+    // ---- 编码器事实（实测，切片 O）----
+    //
+    // 本项目锁定的 FFmpeg 是 LGPL 变体（`cmake/ffmpeg-version.json`：
+    // `--disable-libx264 --disable-libx265`），所以「用 libx264 重编码」只是
+    // 回退链的第一项，不是既成事实：实测 `avcodec_find_encoder_by_name("libx264")`
+    // 返回 null，S08 走兜底后实际启用的是 libopenh264。
+    //
+    // 旧实现把 libx264 写进了能力契约与排除项文案，同一份报告的
+    // fidelity.limitations 里却印着「编码器=libopenh264」—— 自相矛盾。
+    // 下面这几个字段是唯一事实源，报告文案必须由它们渲染，不许再硬编码。
+    std::string encoder_preferred; // 回退链首选（"libx264"）
+    std::string encoder_used;      // 实际 avcodec name（空 = 未取到编码器）
+    bool encoder_fallback = false; // 首选不可用，走了兜底
+    // profile 只在两端都实测到时才有比对意义。产物侧取编码器 open 之后的
+    // avctx->profile；拿不到就留空，不做「大概还是 High」这类推断。
+    std::string source_profile;
+    std::string output_profile;
+    // 上面五个字段的渲染结果由修复层一次写好。报告层不许自己拼「已回退」这类
+    // 文案 —— 一旦两处各拼一份，又会出现「契约说 A、限制项说 B」的老问题。
+    std::string encoder_note;
+    std::string profile_note;
 };
 
 // ---- 保真度 ----

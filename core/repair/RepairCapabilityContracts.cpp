@@ -109,11 +109,17 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
         "无参考样片时 perceptual_fidelity 只能是 unknown_without_reference，不能声称画质无损",
         "源侧位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据可能在统一 8-bit yuv420p 重编码里丢失；"
         "切片 J 起逐项实测并写入 fidelity.transcode，未实测时不得声称属性均已保留",
+        "实际编码器可能与首选的 libx264 不同（LGPL 构建不含 libx264）；画质与码率特性要按"
+        "fidelity.transcode.encoder_used 记录的实际编码器评估，不能套用首选编码器的表现",
     };
     b.evidence = "S08_TolerantTranscode 已实现并可运行：RecoverContent 模式下解码可读视频帧、"
-                 "以 libx264 重编码、音频尽量按原码流复制，并做抽帧 PSNR 画质评估"
+                 "按 H.264 重编码、音频尽量按原码流复制，并做抽帧 PSNR 画质评估"
                  "（RepairTolerantTranscode / RepairExecutor）。阶段 6 切片 J 起，重编码前逐项实测源侧"
                  "像素格式 / 位深 / 色彩标记 / 旋转 / HDR / 动态分辨率，并同源写进三种报告格式。"
+                 "重编码首选 libx264，但本项目锁定的 FFmpeg 是 LGPL 变体"
+                 "（`cmake/ffmpeg-version.json`：--disable-libx264 --disable-libx265），首选必然不可用、"
+                 "自动回退到构建内可用的 H.264 编码器；实际编码器由运行时探测写入 "
+                 "fidelity.transcode.encoder_used，报告不得把首选名当成既成事实。"
                  "本契约的 unsupported 指尚未覆盖的"
                  "GOP 级局部重编码：按可解码 GOP 精确界定重编码范围、验证拼接边界兼容性，"
                  "以及原始码流字节与原始时间戳精度的恢复；这些能力仍需单独验证后才能上线。";

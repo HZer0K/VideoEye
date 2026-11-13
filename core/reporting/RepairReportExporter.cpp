@@ -342,6 +342,15 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
     object.Set("has_hdr_metadata", JsonValue(transcode.has_hdr_metadata));
     object.Set("resolution_changed_frames", J64(transcode.resolution_changed_frames));
     object.Set("all_properties_preserved", JsonValue(transcode.all_properties_preserved));
+    // 切片 O：编码器事实是机读字段，不是文案。LLM / 脚本判断「这份产物到底是谁编的」
+    // 不该去正则匹配 limitations 里的自由文本。
+    object.Set("encoder_preferred", JText(transcode.encoder_preferred));
+    object.Set("encoder_used", JText(transcode.encoder_used));
+    object.Set("encoder_fallback", JsonValue(transcode.encoder_fallback));
+    object.Set("source_profile", JText(transcode.source_profile));
+    object.Set("output_profile", JText(transcode.output_profile));
+    object.Set("encoder_note", JText(transcode.encoder_note));
+    object.Set("profile_note", JText(transcode.profile_note));
     object.Set("preserved_properties", BuildStringArray(transcode.preserved_properties));
     object.Set("lost_properties", BuildStringArray(transcode.lost_properties));
     return object;
@@ -1222,6 +1231,12 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
     // 也必须明确写「未探测」，不能靠空表让读者以为没有损失。
     const model::RepairTranscodeFidelity& transcode = result.fidelity.transcode;
     fidelity.rows.emplace_back("转码保真探测", transcode.inspected ? "已实测（首帧 + 输入流）" : "未探测");
+    // 切片 O：编码器行必须独立于「是否探测到首帧」—— 编码器打开过就是事实，
+    // 而且这一行正是用来纠正旧版把 libx264 当既成事实的地方。
+    if (!transcode.encoder_note.empty())
+        fidelity.rows.emplace_back("重编码编码器", transcode.encoder_note);
+    if (!transcode.profile_note.empty())
+        fidelity.rows.emplace_back("重编码 profile", transcode.profile_note);
     if (!transcode.inspected) {
         fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");
     } else {

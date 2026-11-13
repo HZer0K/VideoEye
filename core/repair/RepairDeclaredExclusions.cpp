@@ -129,8 +129,9 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
         items.push_back(MakeBase("gop_local_reencode_not_attempted", "GOP 级局部重编码不做", "S08 容忍式转码",
                                  "整条视频轨统一重编码，未按可解码 GOP 精确界定重编码范围，"
                                  "也未验证 profile / level / 像素格式 / time_base 的拼接边界兼容性。",
-                                 "阶段 6 现状：S08 写死「视频 libx264 重编码 + 逐条音频轨复制」，"
-                                 "逐轨转码决策与 GOP 局部重编码仍未实现。"));
+                                 "阶段 6 现状：S08 写死「视频轨统一按 H.264 重编码 + 逐条音频轨按原码流复制」，"
+                                 "逐轨转码决策与 GOP 局部重编码仍未实现；实际使用的编码器以报告"
+                                 "「重编码编码器」一行为准（本构建首选 libx264 不可用，会回退）。"));
         return items;
     }();
     return catalog;

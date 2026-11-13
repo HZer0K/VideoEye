@@ -167,6 +167,32 @@ inline std::string TranscodeColorTagList(const model::RepairTranscodeFidelity& f
     return out;
 }
 
+// 编码器事实的唯一渲染入口（切片 O）。报告、限制项、验收断言都从这里取，
+// 避免能力契约 / 排除项 / 报告三处各写一份「libx264」然后互相矛盾。
+//
+// 空 encoder_used 表示这次根本没走到编码器（未转码 / 打开失败），返回空串，
+// 调用方不得自己补一个默认名。
+inline std::string TranscodeEncoderLabel(const model::RepairTranscodeFidelity& fidelity) {
+    if (fidelity.encoder_used.empty())
+        return std::string();
+    if (!fidelity.encoder_fallback)
+        return fidelity.encoder_used;
+    const std::string preferred = fidelity.encoder_preferred.empty() ? std::string("未知") : fidelity.encoder_preferred;
+    return fidelity.encoder_used + "（首选 " + preferred + " 在本构建不可用，已回退）";
+}
+
+// profile 比对只在两端都有实测值时成立：源侧没声明（AV_PROFILE_UNKNOWN）
+// 就不写；产物侧拿不到编码器回报就明说「未实测」，不推断「大概仍一致」。
+inline std::string TranscodeProfileNote(const model::RepairTranscodeFidelity& fidelity) {
+    if (fidelity.source_profile.empty())
+        return std::string();
+    if (fidelity.output_profile.empty())
+        return "源侧 profile=" + fidelity.source_profile + "，产物 profile 编码器未回报，未能比对";
+    if (fidelity.output_profile == fidelity.source_profile)
+        return "源侧与产物 profile 一致（" + fidelity.source_profile + "）";
+    return "源侧 profile=" + fidelity.source_profile + "，产物 profile=" + fidelity.output_profile + "（已改变）";
+}
+
 inline model::RepairTranscodeFidelity InspectTranscodeFidelity(const AVStream* stream, const AVFrame* first_frame,
                                                                AVPixelFormat output_format,
                                                                const RepairTranscodeInheritance& applied) {

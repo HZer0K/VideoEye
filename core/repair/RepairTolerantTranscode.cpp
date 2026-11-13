@@ -517,8 +517,12 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return outcome;
     }
 
-    const AVCodec* encoder_codec = avcodec_find_encoder_by_name("libx264");
-    if (encoder_codec == nullptr)
+    // 切片 O：首选编码器不可用必须留下事实，不能静默换一个继续跑。
+    // 本项目锁定的 FFmpeg 是 LGPL 变体（--disable-libx264），这里必然走兜底。
+    constexpr const char* kPreferredEncoder = "libx264";
+    const AVCodec* encoder_codec = avcodec_find_encoder_by_name(kPreferredEncoder);
+    const bool encoder_fallback = encoder_codec == nullptr;
+    if (encoder_fallback)
         encoder_codec = avcodec_find_encoder(AV_CODEC_ID_H264);
     if (encoder_codec == nullptr) {
         avformat_free_context(out);
@@ -657,6 +661,18 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return outcome;
     }
     outcome.transcode_note += "编码器=" + std::string(encoder_codec->name);
+    // 切片 O：编码器与 profile 的事实就地固化 —— encoder 后面会被 free，
+    // encoder->profile 也只有在 open 之后才由编码器回填。
+    // 产物侧拿不到回报就留空，报告如实写「未实测」，不从源侧或 codec id 推断。
+    const std::string used_encoder_name = encoder_codec->name;
+    const std::string output_profile_name =
+        encoder->profile != AV_PROFILE_UNKNOWN
+            ? TranscodeColorName(avcodec_profile_name(encoder->codec_id, encoder->profile))
+            : std::string();
+    const std::string source_profile_name =
+        video_in->codecpar->profile != AV_PROFILE_UNKNOWN
+            ? TranscodeColorName(avcodec_profile_name(video_in->codecpar->codec_id, video_in->codecpar->profile))
+            : std::string();
 
     AVStream* video_out = avformat_new_stream(out, nullptr);
     if (video_out == nullptr || avcodec_parameters_from_context(video_out->codecpar, encoder) < 0) {
@@ -778,6 +794,16 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 前面任何一步失败都保持 inspected=false —— 空表不许冒充「属性均已保留」。
     inherited.chroma_location_copied = ApplyTranscodeFrameProperties(converted, video_in);
     outcome.transcode_fidelity = InspectTranscodeFidelity(video_in, first_frame, encoder_format, inherited);
+    // 切片 O：编码器事实与被探测属性分开落 —— 前者在「没探测到首帧」的路径上
+    // 同样成立（编码器已经打开过），不能因为 inspected=false 就一起丢掉。
+    outcome.transcode_fidelity.encoder_preferred = kPreferredEncoder;
+    outcome.transcode_fidelity.encoder_used = used_encoder_name;
+    outcome.transcode_fidelity.encoder_fallback = encoder_fallback;
+    outcome.transcode_fidelity.source_profile = source_profile_name;
+    outcome.transcode_fidelity.output_profile = output_profile_name;
+    // 渲染只做一次，报告层与限制项都读这里。
+    outcome.transcode_fidelity.encoder_note = TranscodeEncoderLabel(outcome.transcode_fidelity);
+    outcome.transcode_fidelity.profile_note = TranscodeProfileNote(outcome.transcode_fidelity);
 
     uint64_t encoded_frames = 0;
     // 样本账本：S08 产物是「视频重编码 + 音频码流复制」的混合。源字节偏移不可得，

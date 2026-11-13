@@ -522,6 +522,18 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
             for (const auto& kept : fidelity.transcode.preserved_properties)
                 fidelity.limitations.push_back("转码属性继承：" + kept);
         }
+        // 切片 O：编码器事实单独一条。它是「选型取舍」，不是源侧属性损失，
+        // 因此不塞进 lost_properties —— 那张表只放实测到的画质属性差异。
+        if (!fidelity.transcode.encoder_note.empty()) {
+            fidelity.limitations.push_back("重编码编码器: " + fidelity.transcode.encoder_note);
+            if (fidelity.transcode.encoder_fallback) {
+                fidelity.limitations.push_back(
+                    "本项目 FFmpeg 为 LGPL 变体（--disable-libx264 / --disable-libx265），首选编码器不可用；"
+                    "产物的画质与码率特性由实际编码器决定，不能按首选编码器的表现解读");
+            }
+        }
+        if (!fidelity.transcode.profile_note.empty())
+            fidelity.limitations.push_back("重编码 profile: " + fidelity.transcode.profile_note);
         if (execution.psnr_samples > 0) {
             std::ostringstream psnr_note;
             psnr_note.setf(std::ios::fixed);

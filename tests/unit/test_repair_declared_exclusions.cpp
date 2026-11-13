@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "core/domain/model/RepairTypes.h"
+#include "core/repair/RepairCapabilityContracts.h"
 #include "core/repair/RepairDeclaredExclusions.h"
 #include "core/reporting/RepairReportExporter.h"
 #include "infrastructure/serialization/Json.h"
@@ -155,6 +156,39 @@ TEST(RepairDeclaredExclusions, CatalogCoversEveryDimension) {
         EXPECT_EQ(item.status, "not_attempted") << item.code;
         EXPECT_TRUE(item.trigger_facts.empty()) << item.code << " 静态模板不许自带触发事实";
         EXPECT_TRUE(seen.insert(item.code).second) << "code 重复: " << item.code;
+    }
+}
+
+// 切片 O：静态契约文案只描述「策略」，不得把某个具体编码器写成既成事实。
+//
+// 本项目锁定的 FFmpeg 是 LGPL 变体（--disable-libx264/--disable-libx265），
+// 「视频 libx264 重编码」这句话在本构建里恒为假，而同一份报告的限制项里
+// 印的是「编码器=libopenh264」—— 读者会得到两个互相矛盾的答案。
+// 静态文本允许说「首选 libx264」「本构建不含 libx264」，但不允许说
+// 「<编码器名> 重编码」（那是实测事实，只能由 fidelity.transcode 渲染）。
+TEST(RepairDeclaredExclusions, StaticTextNeverStatesEncoderAsFact) {
+    const std::vector<std::string> encoder_names = {"libx264", "libx265", "libopenh264"};
+    const auto scan = [&encoder_names](const std::string& field, const std::string& text) {
+        for (const auto& name : encoder_names) {
+            const std::string phrase = name + " 重编码";
+            EXPECT_EQ(text.find(phrase), std::string::npos)
+                << field << " 把编码器当成了既成事实: " << phrase << " | " << text;
+        }
+    };
+
+    for (const auto& item : repair::AllDeclaredExclusions()) {
+        scan(item.code + ".title", item.title);
+        scan(item.code + ".applies_to", item.applies_to);
+        scan(item.code + ".consequence", item.consequence);
+        scan(item.code + ".evidence", item.evidence);
+    }
+    for (const auto& boundary : repair::AllCapabilityBoundaries()) {
+        scan(boundary.code + ".timeline_impact", boundary.timeline_impact);
+        scan(boundary.code + ".evidence", boundary.evidence);
+        for (const auto& scope : boundary.unrecoverable_scope)
+            scan(boundary.code + ".unrecoverable_scope", scope);
+        for (const auto& risk : boundary.quality_risks)
+            scan(boundary.code + ".quality_risks", risk);
     }
 }
 
