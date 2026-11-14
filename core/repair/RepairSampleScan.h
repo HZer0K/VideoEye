@@ -157,7 +157,13 @@ public:
         uint64_t max_detail_bytes = 64ull * 1024ull * 1024ull;
     };
 
-    explicit RepairSampleLedger(Limits limits = {});
+    // GCC 不允许在「外层类还没定义完」时，把带默认成员初值的嵌套类当作
+    // 构造函数默认实参（= {} / Limits{} 都会报 "default member initializer
+    // required before the end of its enclosing class"），MSVC 却接受 ——
+    // 所以只有 Linux 侧炸。拆成两个构造函数：默认值仍只由 Limits 自己的
+    // 初值维护，不复制一份常量。
+    RepairSampleLedger() = default;
+    explicit RepairSampleLedger(Limits limits);
 
     void Add(const model::RecoveredSample& sample);
 

@@ -7,6 +7,21 @@
 
 #include "core/repair/RepairTranscodeTracks.h"
 
+// avcodec_get_supported_config() 与 enum AVCodecConfig 是 libavcodec 61.12.100
+// (FFmpeg 7.1) 才加入的；AVCodec::sample_fmts / supported_samplerates /
+// ch_layouts 则从 FFmpeg 8 起废弃、9 起移除。Windows 预编译包是 libavcodec 62
+// （只能用新 API），Linux 发行版自带的却可能是 6.x / 7.0（只有旧字段）。
+// 两条查询路径必须按版本互斥编译，否则就是「这边编得过、那边编不过」。
+// 阈值与 core/exporter/MediaExporter.cpp 一致：61.19.100 = FFmpeg 7.1。
+// 允许外部 -D 覆盖，只用于验证两条分支都能编译（默认不覆盖）。
+#if !defined(VIDEOEYE_HAVE_AVCODEC_CONFIG_API)
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 19, 100)
+#define VIDEOEYE_HAVE_AVCODEC_CONFIG_API 1
+#else
+#define VIDEOEYE_HAVE_AVCODEC_CONFIG_API 0
+#endif
+#endif
+
 namespace videoeye {
 namespace repair {
 namespace {
@@ -30,6 +45,75 @@ bool RealEncoderAvailable(const char* name) {
 const char* SampleFormatName(int format) {
     const char* name = av_get_sample_fmt_name(static_cast<AVSampleFormat>(format));
     return name != nullptr ? name : "unknown";
+}
+
+// 编码器「声明支持什么」的统一视图：指针 + 条数。新版由统一 API 直接给条数，
+// 老版由各自的哨兵终止项自己数。业务代码只认这个视图，不关心 FFmpeg 版本。
+struct EncoderConfigView {
+    const void* data = nullptr;
+    int count = 0;
+
+    bool Available() const {
+        return data != nullptr && count > 0;
+    }
+};
+
+enum class EncoderConfigKind { SampleFormat, SampleRate, ChannelLayout };
+
+EncoderConfigView QueryEncoderConfig(const AVCodec* encoder, EncoderConfigKind kind) {
+#if VIDEOEYE_HAVE_AVCODEC_CONFIG_API
+    AVCodecConfig config = AV_CODEC_CONFIG_SAMPLE_FORMAT;
+    switch (kind) {
+    case EncoderConfigKind::SampleFormat:
+        config = AV_CODEC_CONFIG_SAMPLE_FORMAT;
+        break;
+    case EncoderConfigKind::SampleRate:
+        config = AV_CODEC_CONFIG_SAMPLE_RATE;
+        break;
+    case EncoderConfigKind::ChannelLayout:
+        config = AV_CODEC_CONFIG_CHANNEL_LAYOUT;
+        break;
+    }
+    const void* configs = nullptr;
+    int count = 0;
+    if (avcodec_get_supported_config(nullptr, encoder, config, 0, &configs, &count) < 0)
+        return {};
+    return {configs, count};
+#else
+    // 旧字段一律是「NULL = 不声明支持列表」+ 哨兵终止项。NULL 必须保持
+    // 「未知」语义，不能拿一组默认参数冒充编码器声明过的能力。
+    switch (kind) {
+    case EncoderConfigKind::SampleFormat: {
+        const AVSampleFormat* list = encoder->sample_fmts;
+        if (list == nullptr)
+            return {};
+        int count = 0;
+        while (list[count] != AV_SAMPLE_FMT_NONE)
+            ++count;
+        return {list, count};
+    }
+    case EncoderConfigKind::SampleRate: {
+        const int* list = encoder->supported_samplerates;
+        if (list == nullptr)
+            return {};
+        int count = 0;
+        while (list[count] != 0)
+            ++count;
+        return {list, count};
+    }
+    case EncoderConfigKind::ChannelLayout: {
+        // ch_layouts 自 FFmpeg 5.1 起就有，终止项是「全零的 AVChannelLayout」。
+        const AVChannelLayout* list = encoder->ch_layouts;
+        if (list == nullptr)
+            return {};
+        int count = 0;
+        while (list[count].nb_channels > 0)
+            ++count;
+        return {list, count};
+    }
+    }
+    return {};
+#endif
 }
 
 } // namespace
@@ -63,35 +147,28 @@ bool ChooseAudioEncodeSettings(const AVCodec* encoder, const AVCodecParameters* 
         return false;
     }
 
-    const void* configs = nullptr;
-    int count = 0;
     AudioEncodeSettings settings;
 
     // ---- 采样格式：编码器声明表的**第一项**就是它的首选（FFmpeg 约定按偏好排序）。
     // 我们不去挑「看起来更好」的格式 —— 那要自己判断有损 / 无损，等于猜。
-    configs = nullptr;
-    count = 0;
-    if (avcodec_get_supported_config(nullptr, encoder, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &configs, &count) < 0 ||
-        configs == nullptr || count <= 0) {
+    const EncoderConfigView formats = QueryEncoderConfig(encoder, EncoderConfigKind::SampleFormat);
+    if (!formats.Available()) {
         if (error != nullptr)
             *error = std::string("编码器 ") + encoder->name + " 没有声明可用的采样格式";
         return false;
     }
-    settings.sample_format = static_cast<const AVSampleFormat*>(configs)[0];
+    settings.sample_format = static_cast<const AVSampleFormat*>(formats.data)[0];
 
     // ---- 采样率：源采样率在支持列表里就原样保留（不重采样 = 不动音高 / 不动时长）。
     const int source_rate = source->sample_rate > 0 ? source->sample_rate : 48000;
-    configs = nullptr;
-    count = 0;
-    const bool rates_known =
-        avcodec_get_supported_config(nullptr, encoder, AV_CODEC_CONFIG_SAMPLE_RATE, 0, &configs, &count) >= 0 &&
-        configs != nullptr && count > 0;
-    if (!rates_known) {
+    const EncoderConfigView rates_view = QueryEncoderConfig(encoder, EncoderConfigKind::SampleRate);
+    if (!rates_view.Available()) {
         // 不声明支持列表 = 接受任意采样率（flac / pcm 这类）。
         settings.sample_rate = source_rate;
     } else {
-        const int* rates = static_cast<const int*>(configs);
-        const bool exact = std::find(rates, rates + count, source_rate) != rates + count;
+        const int* rates = static_cast<const int*>(rates_view.data);
+        const int rate_count = rates_view.count;
+        const bool exact = std::find(rates, rates + rate_count, source_rate) != rates + rate_count;
         if (exact) {
             settings.sample_rate = source_rate;
         } else {
@@ -99,7 +176,7 @@ bool ChooseAudioEncodeSettings(const AVCodec* encoder, const AVCodecParameters* 
             // 这类用算术差判断会选错的情形）。
             int best = rates[0];
             double best_distance = std::abs(std::log2(static_cast<double>(best) / source_rate));
-            for (int i = 1; i < count; ++i) {
+            for (int i = 1; i < rate_count; ++i) {
                 const double distance = std::abs(std::log2(static_cast<double>(rates[i]) / source_rate));
                 if (distance < best_distance) {
                     best = rates[i];
@@ -114,20 +191,17 @@ bool ChooseAudioEncodeSettings(const AVCodec* encoder, const AVCodecParameters* 
     }
 
     // ---- 声道：优先原样保留声道数；编码器不支持时才退到立体声 / 单声道。
-    configs = nullptr;
-    count = 0;
-    const bool layouts_known =
-        avcodec_get_supported_config(nullptr, encoder, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0, &configs, &count) >= 0 &&
-        configs != nullptr && count > 0;
+    const EncoderConfigView layouts_view = QueryEncoderConfig(encoder, EncoderConfigKind::ChannelLayout);
+    const int layout_count = layouts_view.count;
     const int source_channels = source->ch_layout.nb_channels > 0 ? source->ch_layout.nb_channels : 2;
-    if (!layouts_known) {
+    if (!layouts_view.Available()) {
         settings.channels = source_channels;
         if (source->ch_layout.order == AV_CHANNEL_ORDER_NATIVE && source->ch_layout.u.mask != 0)
             settings.channel_mask = source->ch_layout.u.mask;
     } else {
-        const AVChannelLayout* layouts = static_cast<const AVChannelLayout*>(configs);
+        const AVChannelLayout* layouts = static_cast<const AVChannelLayout*>(layouts_view.data);
         const AVChannelLayout* chosen = nullptr;
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < layout_count; ++i) {
             if (layouts[i].nb_channels == source_channels) {
                 chosen = &layouts[i];
                 break;
@@ -137,7 +211,7 @@ bool ChooseAudioEncodeSettings(const AVCodec* encoder, const AVCodecParameters* 
             // 声道数对不上：先保立体声（绝大多数播放场景），再保单声道，最后取第一个。
             const AVChannelLayout* stereo = nullptr;
             const AVChannelLayout* mono = nullptr;
-            for (int i = 0; i < count; ++i) {
+            for (int i = 0; i < layout_count; ++i) {
                 if (layouts[i].nb_channels == 2 && stereo == nullptr)
                     stereo = &layouts[i];
                 if (layouts[i].nb_channels == 1 && mono == nullptr)
