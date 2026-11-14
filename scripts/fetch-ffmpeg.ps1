@@ -21,7 +21,7 @@
 #   BtbN/FFmpeg-Builds 唯一同时满足"带 include/ + lib/*.lib 可用于 MSVC 链接"、
 #   "带 bin/*.dll 可随包分发"、"LGPLv3 不带 libx264/libx265"的变体。
 #   gyan.dev 的 full_build-shared 是 GPLv3（含 GPL-only 组件），会让 Windows 分发物
-#   整体落到 GPL 之下 —— 那是本项目明确要避开的（见 docs/FFMPEG_COMMAND_WORKBENCH.md
+#   整体落到 GPL 之下 —— 那是本项目明确要避开的（见本地 FFmpeg 命令工作台文档
 #   第 8 节）。
 #
 # ⚠️ 许可证（决定脚本默认怎么处理 ffmpeg.exe、以及为什么必须留下 LICENSE.txt）:

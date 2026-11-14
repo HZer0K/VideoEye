@@ -104,7 +104,7 @@ void VisualDefectPage::SetupUi() {
                                static_cast<int>(model::VisualSamplingPreset::OfflineFull));
         // 跟随传入的 options.preset。旧代码写死 setCurrentIndex(1)，把调用方显式
         // 传进来的档位悄悄留在「标准」——界面显示与实际送进分析器的档位分家
-        // （docs/ARCHITECTURE.md §5.4）。用 findData 按 userData 定位而不是硬编码
+        // （本地架构文档 §5.4）。用 findData 按 userData 定位而不是硬编码
         // 索引，将来枚举与下拉项顺序调整也不会错位；未知档位退回默认项「标准」。
         const int preset_index = preset_combo_->findData(static_cast<int>(options_.preset));
         preset_combo_->setCurrentIndex(preset_index >= 0 ? preset_index : 1);

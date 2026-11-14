@@ -328,7 +328,7 @@ int main() { const enum AVCodecID id = AV_CODEC_ID_VVC; return id == AV_CODEC_ID
       并 --prefix 到 /opt/ffmpeg, 再配合 -DFFMPEG_ROOT=/opt/ffmpeg）
     · 明确知道自己在做什么时临时跳过: -DVIDEOEYE_FFMPEG_SKIP_API_CHECK=ON
 
-  支持矩阵见 CONTRIBUTING.md 的「FFmpeg 支持矩阵」一节。")
+  支持矩阵见本地构建说明的「FFmpeg 支持矩阵」一节。")
     endif()
 
     set(_series "")

@@ -1,6 +1,6 @@
 // BitrateGopAnalyzer 单元测试
 //
-// 覆盖 docs/BITRATE_GOP_ANALYSIS.md 中的 4.6 验收标准:
+// 覆盖本地码率 GOP 文档中的 4.6 验收标准:
 //   1) 固定 GOP 样本 -> 输出稳定的 GOP 长度
 //   2) 超长 GOP 样本 -> 必须产生 warning
 //   3) VBR 样本     -> 能显示峰值码率与平均码率差异

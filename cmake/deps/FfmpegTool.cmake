@@ -30,7 +30,7 @@
 #
 #   另注：Linux/macOS 上 ffmpeg 由包管理器装在系统路径，把它复制进安装树
 #   还会和系统的 .so 版本打架，本来也不该拷。
-#   详见 docs/FFMPEG_COMMAND_WORKBENCH.md「许可证：为什么默认不随包分发 ffmpeg」。
+#   详见本地 FFmpeg 命令工作台文档「许可证：为什么默认不随包分发 ffmpeg」。
 # ============================================================
 
 if(DEFINED __VIDEOEYE_FFMPEG_TOOL_INCLUDED)
@@ -145,7 +145,7 @@ if(VIDEOEYE_BUNDLE_FFMPEG_TOOL)
         "  程序放进安装包，整个分发物需按 GPLv3 履约：随附许可证文本 + 提供对应源码。\n"
         "  若这份 ffmpeg 是 LGPL 构建，随附 LGPLv3（及其引用的 GPLv3）文本与源码获取方式即可。\n"
         "  无论哪种，doc/THIRD_PARTY_NOTICES.md 都要如实写清版本、来源与许可证。\n"
-        "  详见 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节。")
+        "  详见本地 FFmpeg 命令工作台文档第 8 节。")
     if(WIN32 AND NOT _bundle_safe)
         message(WARNING
             "[ffmpeg-tool] ${_tool} 不在预编译包 bin/ 里，它可能依赖自身目录下的私有 DLL。\n"
@@ -219,7 +219,7 @@ if(NOT _tool)
         "  想让本机的这一页直接可用: Windows 装 winget install --id Gyan.FFmpeg -e，\n"
         "  Debian/Ubuntu: sudo apt install -y ffmpeg，macOS: brew install ffmpeg。")
 elseif(NOT _tool_bundle)
-    # 口径必须与 docs/FFMPEG_COMMAND_WORKBENCH.md 第 8 节一致:
+    # 口径必须与本地 FFmpeg 命令工作台文档第 8 节一致:
     # 不随包 ffmpeg.exe 只是**不额外分发一个（多半是 GPL 的）程序**，不等于分发物
     # 只有 MIT —— 链接进来并随包的 av*.dll 本身有自己的条款，由 FFmpeg 包决定。
     message(STATUS

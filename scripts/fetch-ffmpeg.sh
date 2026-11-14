@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-# 与 cmake/deps/FfmpegApiProbe.cmake、CONTRIBUTING.md「FFmpeg 支持矩阵」保持一致
+# 与 cmake/deps/FfmpegApiProbe.cmake、本地构建说明「FFmpeg 支持矩阵」保持一致
 REQUIRED_VERSION="7.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

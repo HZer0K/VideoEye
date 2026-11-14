@@ -3,7 +3,7 @@
 
 背景
 ----
-docs/ARCHITECTURE.md 里的分层方向是 domain -> media/ffmpeg_io -> analysis -> ...，
+本地架构文档里的分层方向是 domain -> media/ffmpeg_io -> analysis -> ...，
 analysis 被允许看懂 FFmpeg 与 domain，但**没有任何理由认识 Qt** —— Qt 是 UI 侧的
 东西，字符串与二进制缓冲在 analysis 里一律用 std::string / std::vector。
 

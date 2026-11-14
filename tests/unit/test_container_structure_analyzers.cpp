@@ -2,7 +2,7 @@
 //
 // Asf / Avi / Flv / Ogg / Ts / MpegPs / Mxf 七个 StructureAnalyzer 的接口完全一致：
 //     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result);
-// 但此前一个单测都没有（见 docs/ARCHITECTURE_REVIEW_2026-10-04 第 10 项）。
+// 但此前一个单测都没有（见本地 2026-10-04 架构评审第 10 项）。
 // 这里用 TEST_P 把"七个分析器 × 三种输入"压成一个矩阵，覆盖的是最容易出错、
 // 又最不依赖真实媒体文件的三类边界：
 //   1. 文件不存在   —— 必须返回 false 并给出统一的"无法打开文件"

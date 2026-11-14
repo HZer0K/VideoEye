@@ -54,7 +54,8 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 > ⚠️ **FFmpeg 版本要求：≥ 7.1（libavcodec ≥ 61.19）。** Windows 锁定包是 8.1.3，天然满足；
 > Linux/macOS 用系统包时必须自己确认 —— Ubuntu 24.04 的 6.1、Debian 12 的 5.1 **都不够**。
 > 要求由 `cmake/deps/FfmpegApiProbe.cmake` 在 configure 阶段用符号探测强制执行，不满足会
-> 直接失败并给出修复方式。完整矩阵（含编译选项差异）见 CONTRIBUTING.md 的「FFmpeg 支持矩阵」。
+> 直接失败并给出修复方式。完整矩阵（含编译选项差异）在本地构建说明的
+> 「FFmpeg 支持矩阵」里，该文档不随仓库分发。
 
 > **许可证**: VideoEye 自身源码为 [MIT](LICENSE)。分发物里还包含第三方二进制，按各自许可证履约：Windows 随附的是 **LGPLv3** 的 FFmpeg（不含 `libx264`/`libx265`，导出会降级到 `libopenh264`/`mpeg4`），Linux/macOS 用系统 FFmpeg（多数发行版构建带 GPL 组件）。每次 `cmake --install` 都会生成 `doc/THIRD_PARTY_NOTICES.md` 与 `doc/licenses/`（许可证全文 + 对应源码获取方式），**请不要在没有这两者的情况下发布二进制包**。`ffmpeg` 命令行程序默认不随包分发。
 
@@ -237,7 +238,7 @@ macOS 代码路径是通的（音频走 AudioQueue、`linux-*` preset 在 macOS 
 | 分片探测 | **抽查** | 每个清单最多 8 个分片，TS 深度解析整包最多 3 个；面板摘要显示"分片抽查 N/M" |
 | 分片可用性 | **不推算** | `availabilityStartTime` 只校验"有没有声明"，不回答"此刻哪些分片可以取" |
 | VVC 码流解析 | **实验性部分支持** | SPS/VPS 关键字段可解析，PPS 与真实样本覆盖不完整；结果标"参考"，不参与容器一致性判定 |
-| H.264 / HEVC / AV1 | **按能力矩阵** | 只有已验证的 Profile / 色度 / 位深组合才判"可靠"，其余标"参考"。详见 `docs/BITSTREAM_ANALYSIS.md` |
+| H.264 / HEVC / AV1 | **按能力矩阵** | 只有已验证的 Profile / 色度 / 位深组合才判"可靠"，其余标"参考"。详见本地码流解析文档（不随仓库分发） |
 | MPEG-TS 扫描量 | **默认前 50 万包（≈94 MB）** | 可用 `TsStructureOptions::max_scan_packets` 调到全文件；`metadata["扫描是否完整"]` 明示有没有扫完，结论不会假装覆盖整个文件 |
 | 带内参数集 | **有上限的探测** | 最多 8 MiB / 4000 个视频包。编码器只在流开头写一次参数集、而录播从中间开始的文件，可能找不到 → 记日志并保持"未分析"，不会瞎猜 |
 | SEI / 动态 HDR 元数据 | **不自研解析** | HDR10+ / Dolby Vision / ST 2086 走 FFmpeg 的 side data（解码首帧兜底），不从 SEI 里解 |
@@ -326,13 +327,12 @@ HLS / DASH 清单、字幕 + SCTE-35。它们只在 **Linux + clang**
 
 ## 文档
 
-完整索引见 [`docs/README.md`](docs/README.md)。
+本仓库只分发这一份 `README.md`。架构分层、各分析维度设计说明、构建与参与方式、
+修复能力路线图等完整技术文档**只在维护者本地保留**，不随仓库分发，因此这里不列索引、
+也不给链接（干净检出里不存在这些文件，写了就是死链）。
 
-- **改代码前先看** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— 9 层分层、依赖方向与
-  强制手段、Qt/domain 边界，以及「加一个分析维度要动哪些文件」的实证清单。
-- **各分析维度**的设计说明（码流 / MP4 样本表 / 码率 GOP / 色彩 HDR / 音频 QC /
-  画面缺陷 / 字幕时码 / HLS-DASH）在 `docs/` 下按主题各有一篇。
-- **横切能力**：`docs/DIAGNOSTICS_QC.md`（规则引擎）、`docs/REPORTING_BATCH_QC.md`（批量与导出）。
+源码本身是最可靠的说明：分层与依赖边界由 `scripts/check_layering.py` 等门禁脚本机器
+强制，接口定义看对应模块的头文件。
 
 ## 开源协议
 
@@ -351,8 +351,8 @@ VideoEye **自身源码**采用 [MIT](LICENSE) 协议。
 对应源码获取方式）与 `doc/licenses/`（上述许可证全文 + Qt copyright）。**发布二进制包
 时必须一并带上这两个产物**，否则不满足 LGPL 的随附义务。
 
-`ffmpeg` 命令行程序默认不随包分发，由页面引导用户自行安装。详见
-[`docs/FFMPEG_COMMAND_WORKBENCH.md` 第 8 节](docs/FFMPEG_COMMAND_WORKBENCH.md#8-许可证windows-锁定包已切到-lgplv3)。
+`ffmpeg` 命令行程序默认不随包分发，由页面引导用户自行安装；许可证口径详见本地
+FFmpeg 命令工作台文档第 8 节（该文档不随仓库分发）。
 
 ## 致谢
 

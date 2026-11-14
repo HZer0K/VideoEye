@@ -5,7 +5,7 @@
 // 这一层只放"结果与契约"，不做任何 IO：修复引擎（core/repair）产出这里定义的类型，
 // 报告层（core/reporting）与界面（ui/repair_panel）只消费它们。
 //
-// 设计原则（与 docs/VIDEO_REPAIR_MODULE_DESIGN.md 对齐）：
+// 设计原则（与本地修复模块设计文档对齐）：
 //   * 证据与结论分离：DamageFinding 只描述"在哪里、测到了什么"，
 //     业务结论（可修 / 不可修）由 RepairDiagnosis / RepairPlan / RepairResult 承载；
 //   * 定位必须可解释：优先给精确字节区间，拿不到时降级为有界 / 估算并写明来源，

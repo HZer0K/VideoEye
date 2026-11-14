@@ -1,6 +1,6 @@
 """检查分层依赖方向有没有被违反。
 
-规则来自 docs/ARCHITECTURE.md：
+规则来自本地架构文档：
   domain        不能 include core/analysis、core/media、core/player、core/qc、
                 core/reporting、FFmpeg
   infrastructure 不能 include core/*（只能靠 stdlib）
@@ -62,7 +62,7 @@ def walk(d):
                 yield os.path.join(cur, name)
 
 
-# 白名单: 迁移期明确允许的例外（都写进了 docs/ARCHITECTURE.md 的"已知历史包袱"）
+# 白名单: 迁移期明确允许的例外（都写进了本地架构文档的"已知历史包袱"）
 #
 # 现在是空的 —— 两条历史例外已经各自解决：
 #   * QtAnalysisController.h（别名层，反向 include core/qt）已删除；

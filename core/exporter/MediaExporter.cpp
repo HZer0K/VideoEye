@@ -402,7 +402,7 @@ void resolve_encoder_names(const ExportOptions& opt, QString& video_enc, QString
 //
 // 为什么需要这条链: libx264 是 **GPL-only** 组件, LGPL 构建的 FFmpeg 里没有它。
 // VideoEye 自身是 MIT, 允许用 LGPL 构建的 FFmpeg 来构建它（见
-// docs/FFMPEG_COMMAND_WORKBENCH.md「许可证」一节）—— 那时不能因为缺 libx264
+// 本地 FFmpeg 命令工作台文档「许可证」一节）—— 那时不能因为缺 libx264
 // 就让整个导出功能废掉, 于是退到 libopenh264（Cisco 的 OpenH264, BSD 授权,
 // 同样是 H.264），再退到 mpeg4（MPEG-4 Part 2, LGPL）。
 // 用 GPL 构建时首选仍是 libx264, 行为完全不变。

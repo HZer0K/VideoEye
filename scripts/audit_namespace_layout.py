@@ -1,6 +1,6 @@
 """检查「命名空间有没有跟着目录走」。
 
-规则来自 docs/ARCHITECTURE.md §5：目录（以及 CMake target）已经分层了，命名空间
+规则来自本地架构文档 §5：目录（以及 CMake target）已经分层了，命名空间
 也必须跟着走。2026-10-05 清掉的两条历史包袱：
 
   * ``videoeye::analyzer`` —— 对应 core/analysis/ 的那一层，拍平后就是 ``videoeye``；
