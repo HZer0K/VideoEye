@@ -81,6 +81,9 @@ struct RepairExecutionOutcome {
     // 切片 U：视频轨时间轴空洞的探测与合成黑帧填补。inspected=false 表示本次
     // 没跑解码链（未探测），不等于「没有空洞」。
     model::RepairSyntheticFill synthetic_fill;
+    // 切片 W：音频轨时间轴空洞的探测与静音填补，**逐轨一条**（含码流复制轨的
+    // 只探测不填补）。空列表表示这次没有保留任何音频轨，不能读成「没有空洞」。
+    std::vector<model::RepairSyntheticAudioFill> synthetic_audio_tracks;
 
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;

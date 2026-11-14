@@ -279,6 +279,14 @@ void RepairPanel::BuildUi() {
                        "重编码成实测能收的编码，避免整条音轨被剔除。\n"
                        "重编码是有损的：报告会写清原编码 → 目标编码、实际编码器，以及采样率 / 声道是否被迫改变。\n"
                        "关闭时该轨按「容器拒绝」剔除并写明原因。只在「救内容」模式生效。"));
+    silence_fill_check_ = new QCheckBox(QStringLiteral("空档补静音"), config_group);
+    silence_fill_check_->setChecked(false);
+    silence_fill_check_->setObjectName(QStringLiteral("AudioSilenceFillToggle"));
+    silence_fill_check_->setToolTip(
+        QStringLiteral("源音频轨中间丢了一段时，用合成静音把那段时长补回去，让产物时间轴与源一致。\n"
+                       "静音是合成内容：逐处记账、不计入样本账本与恢复比例，报告会标明产物含合成内容。\n"
+                       "只有走重编码的音轨能补（码流复制轨没有编码器，造不出这段采样，只报探测结论）；\n"
+                       "只在「救内容」模式生效；单处空洞超过 5 秒不填补。"));
     keep_partial_check_ = new QCheckBox(QStringLiteral("取消时保留已写前缀"), config_group);
     keep_partial_check_->setChecked(false);
     keep_partial_check_->setToolTip(QStringLiteral("取消或超出预算时，把已经写入的产物前缀另存为 *.partial.<ext>。\n"
@@ -289,6 +297,7 @@ void RepairPanel::BuildUi() {
     capability_row->addWidget(single_track_check_);
     capability_row->addWidget(black_fill_check_);
     capability_row->addWidget(audio_reencode_check_);
+    capability_row->addWidget(silence_fill_check_);
     capability_row->addWidget(keep_partial_check_);
     capability_row->addStretch(1);
     grid->addLayout(capability_row, row, 1, 1, 2);
@@ -306,6 +315,8 @@ void RepairPanel::BuildUi() {
         black_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
         if (audio_reencode_check_ != nullptr)
             audio_reencode_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
+        if (silence_fill_check_ != nullptr)
+            silence_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
     });
 
     root->addWidget(config_group);
@@ -564,6 +575,10 @@ model::RepairRequest RepairPanel::BuildRequest(const QString& source) const {
     // 音频重编码同样只在 S08 转码链里存在（保码流路径不重新编码）。
     request.reencode_audio_to_fit_container =
         request.mode == model::RepairMode::RecoverContent && audio_reencode_check_->isChecked();
+    // 静音填补必须同时具备两个条件：救内容模式（有重编码链）+ 该轨确实被重编码。
+    // 后一条由执行层按轨判定，这里只表达用户意图。
+    request.fill_audio_gaps_with_silence =
+        request.mode == model::RepairMode::RecoverContent && silence_fill_check_->isChecked();
     request.keep_partial_on_cancel = keep_partial_check_->isChecked();
     request.write_report = true;
     return request;
@@ -778,6 +793,8 @@ void RepairPanel::SetRunning(bool running) {
         black_fill_check_->setEnabled(idle && salvaging);
         if (audio_reencode_check_ != nullptr)
             audio_reencode_check_->setEnabled(idle && salvaging);
+        if (silence_fill_check_ != nullptr)
+            silence_fill_check_->setEnabled(idle && salvaging);
     }
     keep_partial_check_->setEnabled(idle);
     batch_table_->setEnabled(idle);

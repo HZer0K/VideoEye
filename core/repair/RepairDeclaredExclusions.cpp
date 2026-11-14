@@ -59,9 +59,15 @@ std::vector<std::string> TriggerFactsFor(const std::string& code, const model::R
         if (result.fidelity.video_reencoded)
             facts.push_back("fidelity.video_reencoded=true");
     } else if (code == "synthetic_content_not_inserted") {
-        if (result.fidelity.video_reencoded && !result.fidelity.synthetic_frames_inserted) {
+        // 切片 W：音频补过静音就不再适用这条声明 —— 否则同一份报告里会同时出现
+        // 「补入了 0.28 s 合成静音」和「本次没有插入合成静音」。
+        const bool any_audio_silence =
+            std::any_of(result.fidelity.synthetic_audio.begin(), result.fidelity.synthetic_audio.end(),
+                        [](const model::RepairSyntheticAudioFill& fill) { return fill.samples_inserted > 0; });
+        if (result.fidelity.video_reencoded && !result.fidelity.synthetic_frames_inserted && !any_audio_silence) {
             facts.push_back("fidelity.video_reencoded=true");
             facts.push_back("fidelity.synthetic_frames_inserted=false");
+            facts.push_back("fidelity.synthetic_audio[].samples_inserted=0");
         }
     } else if (code == "transcode_properties_not_inherited") {
         // 切片 J 的反向守护：没探测过就不能拿「有损失」当事实，更不能拿空表
@@ -127,14 +133,14 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
                                  "不可与 lost_ranges 的损失区间相减，也不得把 gap_count=0 读成无损。",
                                  "切片 K 刻意不补输入侧时间戳：解码器异步、源包与输出帧不是一一对应，"
                                  "硬关联只会造出假的覆盖区间。"));
-        items.push_back(MakeBase("synthetic_content_not_inserted", "本次没有插入合成黑帧 / 静音 / 重复帧",
-                                 "S08 容忍式转码",
-                                 "产物里没有补出来的画面或声音：要么本次未启用「空档补黑帧」，要么源时间轴"
-                                 "没有可解释的整帧空洞。静音填补与重复帧填补仍属空能力 —— 音轨能复制、"
-                                 "能在容器拒绝时整轨重编码、也能剔除，但没有「在时间轴空洞里补静音」这一步。",
-                                 "切片 U 已实现**显式启用**的视频黑帧填补（逐处空洞记账、填补时长不计入恢复率"
-                                 "分子）；黑帧以外的合成内容仍未实现，synthetic_frames_inserted=false 只表示"
-                                 "这次没插，不代表能力缺失清单里「没有这一项」。"));
+        items.push_back(
+            MakeBase("synthetic_content_not_inserted", "本次没有插入合成黑帧 / 静音 / 重复帧", "S08 容忍式转码",
+                     "产物里没有补出来的画面或声音：要么本次未启用「空档补黑帧 / 补静音」，"
+                     "要么源时间轴没有可解释的整帧 / 整块空洞，要么该音频轨是码流复制（造不出采样）。"
+                     "重复帧填补仍属空能力。",
+                     "切片 U 实现视频黑帧填补、切片 W 实现音频静音填补，两者都必须**显式启用**，"
+                     "且逐处空洞记账、填补时长不计入恢复率分子；重复帧填补未实现，"
+                     "synthetic_frames_inserted=false 只表示这次没插，不代表能力缺失清单里「没有这一项」。"));
         items.push_back(MakeBase("transcode_properties_not_inherited", "实测到的转码属性损失不补回",
                                  "S08 且做过源侧保真探测",
                                  "位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据等实测损失本版本不补回；"

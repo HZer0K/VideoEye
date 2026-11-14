@@ -430,6 +430,38 @@ JsonValue BuildSyntheticFill(const model::RepairSyntheticFill& synthetic) {
     return object;
 }
 
+JsonValue BuildSyntheticAudioFill(const model::RepairSyntheticAudioFill& fill) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("input_stream_index", JsonValue(fill.input_stream_index));
+    object.Set("codec", JText(fill.codec));
+    object.Set("coding_mode", JText(fill.coding_mode));
+    object.Set("inspected", JsonValue(fill.inspected));
+    object.Set("requested", JsonValue(fill.requested));
+    object.Set("basis", JText(fill.basis));
+    object.Set("gaps_detected", J64(fill.gaps_detected));
+    object.Set("gaps_refused", J64(fill.gaps_refused));
+    object.Set("samples_inserted", J64(fill.samples_inserted));
+    object.Set("seconds_inserted", JsonValue(fill.seconds_inserted));
+    object.Set("packets_without_duration", J64(static_cast<std::int64_t>(fill.packets_without_duration)));
+    object.Set("summary", JText(fill.summary));
+    object.Set("note", JText(fill.note));
+    JsonValue gaps = JsonValue::MakeArray();
+    for (const auto& gap : fill.gaps) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("after_audio_frames", J64(static_cast<std::int64_t>(gap.after_audio_frames)));
+        node.Set("source_position_seconds", JsonValue(gap.source_position_seconds));
+        node.Set("gap_seconds", JsonValue(gap.gap_seconds));
+        node.Set("missing_samples", J64(gap.missing_samples));
+        node.Set("inserted_samples", J64(gap.inserted_samples));
+        node.Set("action", JText(gap.action));
+        node.Set("reason_code", JText(gap.reason_code));
+        node.Set("text", JText(gap.text));
+        gaps.PushBack(node);
+    }
+    object.Set("gaps", gaps);
+    return object;
+}
+
 JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("video", JText(model::ToString(fidelity.video)));
@@ -439,6 +471,10 @@ JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     object.Set("synthetic_frames_inserted", JsonValue(fidelity.synthetic_frames_inserted));
     object.Set("synthetic_frame_count", J64(fidelity.synthetic_frame_count));
     object.Set("synthetic", BuildSyntheticFill(fidelity.synthetic));
+    JsonValue synthetic_audio = JsonValue::MakeArray();
+    for (const auto& fill : fidelity.synthetic_audio)
+        synthetic_audio.PushBack(BuildSyntheticAudioFill(fill));
+    object.Set("synthetic_audio", synthetic_audio);
     object.Set("timeline_modified", JsonValue(fidelity.timeline_modified));
     object.Set("timeline_status", JText(fidelity.timeline_status));
     object.Set("timeline_note", JText(fidelity.timeline_note));
@@ -1371,6 +1407,16 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
             fidelity.items.push_back("合成填补: " + gap.text);
         if (!synthetic.note.empty())
             fidelity.items.push_back("合成填补依据: " + synthetic.note);
+    }
+    // 切片 W：音频合成填补逐轨一行（量纲与视频不同，不能合成一行报）。
+    // 只在「这条轨真的被保留下来」时才有条目；没条目不等于源里没有音频空洞。
+    for (const auto& fill : result.fidelity.synthetic_audio) {
+        if (!fill.summary.empty())
+            fidelity.rows.emplace_back("音频合成填补", fill.summary);
+        for (const auto& gap : fill.gaps)
+            fidelity.items.push_back("音频合成填补: " + gap.text);
+        if (!fill.note.empty())
+            fidelity.items.push_back("音频合成填补依据: " + fill.note);
     }
     if (!transcode.inspected) {
         fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");

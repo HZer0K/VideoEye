@@ -12,6 +12,7 @@
 #include "core/repair/RepairInspector.h"
 #include "core/repair/RepairOutputWriter.h"
 #include "core/repair/RepairPlanner.h"
+#include "core/repair/RepairSilenceFill.h"
 #include "core/repair/RepairUtils.h"
 #include "core/repair/RepairVerifier.h"
 #include "infrastructure/concurrency/Cancellation.h"
@@ -472,6 +473,27 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         fidelity.synthetic.summary = repair::BlackFillSummary(fidelity.synthetic);
     if (fidelity.synthetic.note.empty())
         fidelity.synthetic.note = repair::BlackFillBasisNote(fidelity.synthetic);
+    // 切片 W：音频合成填补**逐轨**落账（量纲与视频不同，不许并进上面那份）。
+    // 汇总行与依据也在这里一次写好：报告层只打印，不自己拼「未探测」这类结论。
+    fidelity.synthetic_audio = execution.synthetic_audio_tracks;
+    for (auto& audio_fill : fidelity.synthetic_audio) {
+        if (audio_fill.summary.empty())
+            audio_fill.summary = repair::SilenceFillSummary(audio_fill);
+        if (audio_fill.note.empty())
+            audio_fill.note = repair::SilenceFillBasisNote(audio_fill);
+    }
+    const auto audio_silence_seconds = [&fidelity]() {
+        double total = 0.0;
+        for (const auto& fill : fidelity.synthetic_audio)
+            total += std::max(0.0, fill.seconds_inserted);
+        return total;
+    };
+    const auto audio_gaps_detected = [&fidelity]() {
+        int64_t total = 0;
+        for (const auto& fill : fidelity.synthetic_audio)
+            total += fill.gaps_detected;
+        return total;
+    };
     // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
     // 于是借用未核验参考时基导致播放时长改变时，报告仍声称「时间轴改写: no」。
     const bool timeline_adjusted = execution.timeline_repair.gap_removed ||
@@ -691,6 +713,27 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         fidelity.limitations.push_back("源视频轨探测到 " + std::to_string(execution.synthetic_fill.gaps_detected) +
                                        " 处时间轴空洞，本次未插入合成帧（原因见「合成填补」逐条说明）；"
                                        "这部分时长在产物里表现为画面跳变");
+    }
+
+    // 切片 W：音频侧的同一件事。这里**不**从恢复比例分子里扣（与视频不同），
+    // 因为音频空洞是轨内缺失、不改变产物的起止区间：扣了会让「补静音」比
+    // 「不补」拿到更低的恢复比例，而两种情况下缺失的内容是同一段。
+    // 代价是按区间时长估算的比例看不见这段缺失 —— 必须在这里说清，不能让
+    // 读者从「比例不变」推出「音频没丢东西」。
+    const double audio_synthetic_seconds = audio_silence_seconds();
+    if (audio_synthetic_seconds > 0.0) {
+        double samples = 0.0;
+        for (const auto& fill : fidelity.synthetic_audio)
+            samples += static_cast<double>(fill.samples_inserted);
+        fidelity.limitations.push_back("产物含 " + std::to_string(static_cast<int64_t>(samples)) + " 采样合成静音（" +
+                                       FormatSeconds(audio_synthetic_seconds) +
+                                       " s）：它们补回的是源音频轨时间轴上的空洞，"
+                                       "不是从源解出来的声音；含合成采样的编码包未计入样本账本，"
+                                       "但按区间时长估算的恢复比例无法反映这段缺失（逐轨结论见「音频合成填补」）");
+    } else if (audio_gaps_detected() > 0) {
+        fidelity.limitations.push_back("源音频轨探测到 " + std::to_string(audio_gaps_detected()) +
+                                       " 处时间轴空洞，本次未补静音（原因见「音频合成填补」逐条说明）；"
+                                       "这部分时间在产物里没有采样覆盖，播放器如何处理取决于实现");
     }
 
     if (container_limits)

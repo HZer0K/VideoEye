@@ -262,6 +262,33 @@ TEST(RepairDeclaredExclusions, TriggerMatrixMatchesExactlyOnStructuredFacts) {
              r.fidelity.synthetic_frames_inserted = true;
          },
          {"input_timeline_span_not_reconstructed", "gop_local_reencode_not_attempted"}},
+        // 切片 W：音频补过静音也不再适用「本次没有插入合成内容」—— 否则同一份报告
+        // 会同时写「补入 12288 采样合成静音」和「本次没有插入合成静音」。
+        {"audio_silence_inserted",
+         [](RepairResult& r) {
+             r.fidelity.video_reencoded = true;
+             RepairSyntheticAudioFill fill;
+             fill.inspected = true;
+             fill.coding_mode = "transcode";
+             fill.input_stream_index = 1;
+             fill.samples_inserted = 12288;
+             fill.seconds_inserted = 0.279;
+             r.fidelity.synthetic_audio.push_back(fill);
+         },
+         {"input_timeline_span_not_reconstructed", "gop_local_reencode_not_attempted"}},
+        // 反向：探到音频空洞但一个采样都没补（用户没开 / 复制轨），这条声明仍然成立。
+        {"audio_gap_detected_not_filled",
+         [](RepairResult& r) {
+             r.fidelity.video_reencoded = true;
+             RepairSyntheticAudioFill fill;
+             fill.inspected = true;
+             fill.coding_mode = "copy";
+             fill.input_stream_index = 1;
+             fill.gaps_detected = 1;
+             r.fidelity.synthetic_audio.push_back(fill);
+         },
+         {"input_timeline_span_not_reconstructed", "synthetic_content_not_inserted",
+          "gop_local_reencode_not_attempted"}},
         {"transcode_inspected_no_loss", [](RepairResult& r) { r.fidelity.transcode.inspected = true; }, {}},
         {"transcode_inspected_with_loss",
          [](RepairResult& r) {
@@ -335,6 +362,7 @@ TEST(RepairDeclaredExclusions, TriggerFactsAreStructuredFieldValues) {
         "display_order.",
         "fidelity.video_",
         "fidelity.synthetic_frames_inserted=",
+        "fidelity.synthetic_audio[].",
         "fidelity.transcode.",
         "diagnosis.fragmented=",
     };

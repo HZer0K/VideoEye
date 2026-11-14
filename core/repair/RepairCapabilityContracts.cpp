@@ -118,8 +118,9 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     b.not_covered_scope = {
         "GOP 级局部重编码：只重编损坏 GOP、其余段原样拷贝（当前一律整轨重编码）",
         "拼接边界的兼容性验证：重编段与原始段的参数集、参考帧链能否衔接",
-        "静音填补 / 重复帧填补：音轨能复制 / 重编码 / 剔除，但没有「在时间轴空洞里补静音」这一步；"
-        "重编码只解决「编码不被容器接受」，不解决「这段声音本来就没有」",
+        "静音填补 / 重复帧填补：音轨能复制 / 重编码 / 剔除；静音填补要在时间轴空洞里"
+        "生成源里不存在的采样（切片 W 已实现，但只对**重编码**轨有效，码流复制轨没有编码器）；"
+        "重复帧填补仍未实现",
         "视频黑帧填补要显式启用（RepairRequest::fill_video_gaps_with_black_frames），且只覆盖"
         "「相邻解码帧之间整帧缺失」这一种形态，不覆盖轨道起点之前 / 整段轨道缺失",
     };
@@ -138,8 +139,9 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     b.timeline_impact = "必然改写：丢弃不可解码段会留下时间轴缺口；S08 按源声明帧率推定为恒定帧率，"
                         "起点、时长与音画同步都要重算。content_completeness 只能是 partial，"
                         "timeline_status=modified，salvage_end_seconds 之后的内容明确丢失。"
-                        "默认不插入任何合成内容（synthetic_frames_inserted=false）；显式启用「空档补黑帧」时"
-                        "只补视频轨的整帧空洞，逐处记账，填补时长不计入恢复率分子，报告同时标出产物含合成内容。";
+                        "默认不插入任何合成内容（synthetic_frames_inserted=false）；显式启用「空档补黑帧」/"
+                        "「空档补静音」时只补视频轨的整帧空洞与重编码音频轨的整块采样空洞（码流复制轨只探测、"
+                        "不补），逐处记账，填补时长不计入恢复率分子，报告同时标出产物含合成内容。";
     b.quality_risks = {
         "重编码代际损失（二次压缩），低码率下块效应与细节丢失明显",
         "丢帧导致卡顿、合成帧导致画面冻结或抖动；GOP 边界判断错误会让段首花屏",

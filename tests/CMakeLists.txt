@@ -2897,6 +2897,27 @@ target_link_libraries(test_repair_audio_transcode PRIVATE
 add_test(NAME RepairAudioTranscodeTests COMMAND test_repair_audio_transcode)
 
 # =================================================
+# 测试：音频轨时间轴空洞的探测与合成静音填补（阶段 6 / 切片 W）
+#
+# 旧行为：源音频中间缺一段时把位置直接跳过去，产物里留一段没有采样覆盖的空洞，
+# 报告一字不提。补静音必须显式启用、逐处记账、不进样本账本与恢复率分子；
+# 码流复制轨「做不到」和「用户关掉了」必须能区分。
+# =================================================
+videoeye_add_test(test_repair_silence_fill
+    unit/test_repair_silence_fill.cpp
+)
+target_link_libraries(test_repair_silence_fill PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil)
+add_test(NAME RepairSilenceFillTests COMMAND test_repair_silence_fill)
+
+# =================================================
 # 测试：修复结论层「本次明确未恢复项」（阶段 5 / 切片 L）
 #
 # 静态目录覆盖守护 + 结构化触发矩阵（含未探测 / 已补齐 / 预检早退等反向守护）

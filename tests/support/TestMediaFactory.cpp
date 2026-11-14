@@ -319,9 +319,17 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         total_audio_samples = ((want + audio_frame_size - 1) / audio_frame_size) * audio_frame_size;
     }
     int64_t audio_done = 0;
+    // 切片 W：音频空洞的采样区间 [begin, end)。丢帧而不是后推 PTS —— 源容器里
+    // 「音频丢包」就是这个样子：样本序列中间少一段，总时长不变。
+    int64_t audio_skip_begin = -1;
+    int64_t audio_skip_end = -1;
 
     auto push_audio_until = [&](int64_t want_samples) {
         while (aenc && audio_done < want_samples && audio_done < total_audio_samples) {
+            if (audio_skip_end > audio_skip_begin && audio_done >= audio_skip_begin && audio_done < audio_skip_end) {
+                audio_done += audio_frame_size;
+                continue;
+            }
             AVFrame* frame = AllocAudioFrame(aenc, audio_frame_size);
             if (!frame)
                 return false;
@@ -361,6 +369,11 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         // 音频补到"不落后于当前画面时间", 让 muxer 拿到基本有序的输入
         const double video_time = static_cast<double>(i) * spec.fps_den / spec.fps;
         const int64_t want = static_cast<int64_t>(video_time * spec.sample_rate);
+        // 切片 W：空洞起点取「该帧开始推音频时」的位置，长度按编码帧数给。
+        if (aenc && spec.audio_gap_after_frame == i && spec.audio_gap_frames > 0 && audio_skip_begin < 0) {
+            audio_skip_begin = audio_done;
+            audio_skip_end = audio_done + static_cast<int64_t>(spec.audio_gap_frames) * audio_frame_size;
+        }
         if (!push_audio_until(want)) {
             finish(false, "无法分配音频帧");
             return media;

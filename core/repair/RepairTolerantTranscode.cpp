@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -15,6 +16,7 @@
 #include "core/repair/RepairAudioTranscode.h"
 #include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairSampleScan.h"
+#include "core/repair/RepairSilenceFill.h"
 #include "core/repair/RepairTranscodeFidelity.h"
 #include "core/repair/RepairTranscodeTracks.h"
 #include "core/repair/RepairUtils.h"
@@ -156,10 +158,11 @@ private:
 //
 // 只在目标容器拒绝原编码时启用，目的很单一：把这条音轨**留下来**，而不是丢掉。
 //
-// 三条硬约束（都对应一个报告字段）：
+// 四条硬约束（都对应一个报告字段）：
 //   * 时间轴：每帧位置由源 PTS 换算到编码器采样时基后**各自定位**，不按序号累加。
-//     源侧真有空洞时位置照旧（不留假内容），只把空洞次数记进 timeline_gaps 由报告
-//     写清 —— 补静音是另一个能力，这里绝不偷偷拉长音频。
+//     源侧真有空洞时位置照旧 —— 要么按用户显式启用补静音（切片 W，逐处记账、
+//     单独计数），要么把位置直接跳过去并记进 timeline_gaps。两条路都不会悄悄
+//     拉长音频：跳过是保留空洞，补静音是**合成内容**，两者都进报告。
 //   * 末帧：编码器要求整块（aac 1024 采样），不足的部分用静音补齐，补齐的采样数
 //     单独计数上报 —— 「补齐以便编码」和「填补内容」是两件事，不能混。
 //   * 任何失败都返回 false 并写明原因；是否降级由调用方决定。
@@ -193,6 +196,15 @@ public:
             *error = "缺少音频编码器或源参数";
             return false;
         }
+        // 切片 W：判据的容差与换算都用**编码器**参数（重采样之后才是产物时基）。
+        silence_policy_.sample_rate = encoder_->sample_rate;
+        silence_policy_.block_samples = encoder_->frame_size > 0 ? encoder_->frame_size : 0;
+        // 编码块长度不可得（flac 等不定长编码器）时，报告里的判据依据必须写明
+        // 用的是 20 ms 兜底容差，不能让读者以为是按真实块长算的。
+        silence_basis = "判据：相邻音频帧 PTS 间隔 vs " +
+                        (encoder_->frame_size > 0 ? "编码块 " + std::to_string(encoder_->frame_size) + " 采样"
+                                                  : std::string("20 ms 兜底容差（该编码器未声明帧长）")) +
+                        "（采样率 " + std::to_string(encoder_->sample_rate) + " Hz）；容差半个编码块";
         source_time_base_ = encoder_->time_base; // 调用方随后用 SetSourceTimeBase 换成源流时基
         const AVCodec* decoder_codec = avcodec_find_decoder(source->codec_id);
         if (decoder_codec == nullptr) {
@@ -224,6 +236,13 @@ public:
 
     void SetSourceTimeBase(AVRational time_base) {
         source_time_base_ = time_base;
+    }
+
+    // 切片 W：是否在源时间轴空洞里补静音。必须在 Init 之前设置（Init 里要按
+    // 编码器参数算容差）；Init 之后设置会拿不到编码块长度。
+    void ConfigureSilenceFill(bool enabled, bool merge_contiguous) {
+        silence_policy_.fill_enabled = enabled;
+        silence_policy_.merge_contiguous = merge_contiguous;
     }
 
     AVRational EncoderTimeBase() const {
@@ -285,8 +304,24 @@ public:
     uint64_t decoded_frames = 0;
     uint64_t encoded_packets = 0;
     uint64_t dropped_packets = 0;
+    // 位置被跳过（没补静音）的空洞次数。补过静音的空洞不计在这里 —— 那是
+    // 另一个动作，混成一个计数器会让报告说不清「到底补了几处」。
     uint64_t timeline_gaps = 0;
     int64_t tail_padding_samples = 0;
+    // 切片 W：补进源时间轴空洞的静音采样数（**不含**上面的末帧块对齐补齐）。
+    int64_t silence_samples_inserted = 0;
+    // 切片 W：逐处音频空洞的判定账。填充率与「为什么没填」都在这里，报告只打印。
+    std::vector<model::RepairSyntheticAudioGap> silence_gaps;
+    std::string silence_basis;
+    // 含合成采样、因此整块不计入样本账本的编码包数。
+    int64_t synthetic_packets_excluded = 0;
+    // 切片 W：当前这个编码包里含合成静音采样吗？FIFO 里静音在前、真实采样在后
+    // （PushSilence 在写真实帧之前调用），所以整块静音一定是纯合成的，混合只可能
+    // 出现在边界那一块 —— 两者都按「含合成内容」处理，账本整块排除。
+    // -1 表示「本次补过静音，但块与包的对应关系已错位」，同样按含合成内容算。
+    bool CurrentPacketHasSyntheticSamples() const {
+        return current_packet_synthetic_ != 0;
+    }
     /// 首个输出包的源侧起点（秒，已按统一原点平移），报告用它核对音画偏差。
     std::optional<double> first_output_seconds;
 
@@ -356,11 +391,30 @@ private:
             if (!positioned_) {
                 next_pts_ = want;
                 positioned_ = true;
-            } else if (want > next_pts_ + (encoder_->frame_size > 0 ? encoder_->frame_size : 1)) {
-                // 源侧时间戳跳了一段：如实把位置放过去，不靠累加把缺口摊平
-                // （摊平 = 悄悄改变音频时长，正是「无事实给结论」的反面）。
-                ++timeline_gaps;
-                next_pts_ = want;
+            } else if (want > next_pts_) {
+                // 源侧时间戳跳了一段。两种处理都必须留痕（切片 W）：
+                //   补静音 = 用合成内容占住这段位置，产物时间轴与源一致；
+                //   跳过   = 位置直接放过去，产物里留一段没有采样覆盖的空洞。
+                // 旧实现只有后者，且一句都不报。
+                const SilenceFillPlan plan =
+                    PlanSilenceFill(next_pts_, want, silence_policy_, silence_samples_inserted);
+                if (plan.verdict == SilenceFillVerdict::NoGap) {
+                    // 容差内的取整抖动：不改位置、不记账（补它等于往产物里灌噪声）。
+                } else {
+                    model::RepairSyntheticAudioGap gap = plan.gap;
+                    gap.after_audio_frames = decoded_frames;
+                    gap.text = SilenceFillGapText(gap);
+                    silence_gaps.push_back(gap);
+                    if (plan.verdict == SilenceFillVerdict::Fill) {
+                        if (!PushSilence(plan.gap.missing_samples, sink, error))
+                            return false;
+                        silence_samples_inserted += plan.gap.missing_samples;
+                        // next_pts_ 不跳：静音已经占住原位，后续采样的位置自然与源一致。
+                    } else {
+                        ++timeline_gaps;
+                        next_pts_ = want;
+                    }
+                }
             }
         }
         const int capacity = swr_get_out_samples(swr_, decoded_->nb_samples);
@@ -398,6 +452,31 @@ private:
             return false;
         }
         return true;
+    }
+
+    // 切片 W：把 samples 个静音采样写进编码队列。分块写（每块一个编码块长度），
+    // 免得为 5 s 的空洞一次性分配几 MB 缓冲；块内内容由 av_samples_set_silence
+    // 一次性填 0，不参与任何「与源对应」的记账。
+    bool PushSilence(int64_t samples, const Sink& sink, std::string* error) {
+        const int chunk = encoder_->frame_size > 0 ? encoder_->frame_size : 4096;
+        while (samples > 0) {
+            const int take = static_cast<int>(std::min<int64_t>(samples, chunk));
+            av_frame_unref(filtered_);
+            if (!PrepareFiltered(take, error))
+                return false;
+            if (av_samples_set_silence(filtered_->data, 0, take, encoder_->ch_layout.nb_channels,
+                                       static_cast<AVSampleFormat>(encoder_->sample_fmt)) < 0) {
+                *error = "无法生成静音填充帧";
+                return false;
+            }
+            if (!WriteToFifo(filtered_, error))
+                return false;
+            silence_in_fifo_ += take;
+            samples -= take;
+        }
+        // 队列里够整块的就编出去：空洞可能有 5 s，全压在 FIFO 里等下一个源帧
+        // 才排空，内存和对齐都没必要这么拖。
+        return DrainFifo(sink, false, error);
     }
 
     // 把队列里够整块的采样编码出去。pad_last=true 时把不足一块的尾巴用静音补满。
@@ -450,6 +529,11 @@ private:
             *error = "读取音频缓冲队列末段失败";
             return false;
         }
+        // 这一块里有多少是合成静音：末块从前缀读 real/silence 混合，也可能整块都是
+        // 之前补进来的静音（空洞刚好在结尾）。两种都按「含合成内容」记。
+        const int64_t synthetic = std::min<int64_t>(silence_in_fifo_, left);
+        silence_in_fifo_ -= synthetic;
+        block_synthetic_samples_.push_back(static_cast<int>(synthetic));
         tail_padding_samples += frame_size - left;
         next_pts_ += frame_size;
         return SendFrame(encoded_frame_, sink, error);
@@ -477,6 +561,9 @@ private:
             *error = "读取音频缓冲队列失败";
             return false;
         }
+        const int64_t synthetic = std::min<int64_t>(silence_in_fifo_, nb_samples);
+        silence_in_fifo_ -= synthetic;
+        block_synthetic_samples_.push_back(static_cast<int>(synthetic));
         next_pts_ += nb_samples;
         return SendFrame(encoded_frame_, sink, error);
     }
@@ -507,6 +594,18 @@ private:
                 return false;
             }
             ++encoded_packets;
+            // 切片 W：包与块的对应关系按发送顺序取；编码器多吐 / 少吐包时会与队列
+            // 错位，此后的归因都不可信 —— 保守起见后面的包一律按「含合成内容」算，
+            // 宁可少记恢复样本，也不把合成静音算成恢复出来的内容。
+            current_packet_synthetic_ = 0;
+            if (!block_synthetic_samples_.empty()) {
+                current_packet_synthetic_ = block_synthetic_samples_.front();
+                block_synthetic_samples_.pop_front();
+            } else if (silence_samples_inserted > 0) {
+                current_packet_synthetic_ = -1;
+            }
+            if (current_packet_synthetic_ != 0)
+                ++synthetic_packets_excluded;
             if (!sink(packet_)) {
                 av_packet_unref(packet_);
                 return false;
@@ -527,6 +626,14 @@ private:
     double origin_seconds_ = 0.0;
     int64_t next_pts_ = 0;
     bool positioned_ = false;
+    // 切片 W：FIFO 里还压着多少合成静音采样；每个编码块各含多少合成采样
+    // （按发送顺序排队，与编码器输出的包一一对应）。
+    int64_t silence_in_fifo_ = 0;
+    std::deque<int> block_synthetic_samples_;
+    int64_t current_packet_synthetic_ = 0;
+    // 切片 W：空洞判据的参数。sample_rate / block_samples 由 Init 按编码器填，
+    // fill_enabled / merge_contiguous 由 ConfigureSilenceFill 填。
+    SilenceFillPolicy silence_policy_;
 };
 
 // 切片 V：解码链能不能起来，必须在**决策之前**问清楚。
@@ -1485,6 +1592,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         if (audio_encoder == nullptr)
             continue;
         auto chain = std::make_unique<AudioTranscodeChain>();
+        // 切片 W：转码链手里有编码器，是唯一能造出「源里不存在的声音」的路径。
+        // 是否真的造由用户开关决定（默认关），判定仍在链内按源 PTS 逐帧做。
+        chain->ConfigureSilenceFill(request.fill_audio_gaps_with_silence,
+                                    request.gap_policy == model::RepairGapPolicy::MergeContiguous);
         std::string chain_error;
         if (!chain->Init(audio_encoder, in->streams[i]->codecpar, origin_seconds, static_cast<int>(i), &chain_error)) {
             // 编码器上下文的所有权在 Init 的第一行就转移给链了（失败时由链的析构
@@ -1801,6 +1912,31 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return drain_encoder();
     };
 
+    // ---- 切片 W：码流复制轨的空洞探测（只探测，不填补）----
+    //
+    // 复制路径不解码，所以手里没有采样；但包 PTS 与包时长是可测的：相邻包之间
+    // 缺了多久算得出来。补不了（没有这条编码的编码器，造不出采样），但「源里
+    // 缺了 0.28 s」必须能报出来 —— 不报的话「没补静音」会被读成「没有空洞」。
+    std::map<int, model::RepairSyntheticAudioFill> copied_audio_fills;
+    std::map<int, double> copied_audio_end_seconds;
+    std::map<int, int64_t> copied_audio_packets;
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        if (audio_map[i] < 0)
+            continue;
+        if (i < track_action.size() && track_action[i] != "copy")
+            continue;
+        model::RepairSyntheticAudioFill fill;
+        fill.inspected = true;
+        fill.requested = request.fill_audio_gaps_with_silence;
+        fill.coding_mode = "copy";
+        fill.input_stream_index = static_cast<int>(i);
+        const AVCodecParameters* parameters = in->streams[i]->codecpar;
+        fill.codec = parameters != nullptr ? avcodec_get_name(parameters->codec_id) : std::string();
+        fill.basis = "判据：相邻音频包 PTS + 包时长（码流复制路径不解码），采样率 " +
+                     std::to_string(parameters != nullptr ? parameters->sample_rate : 0) + " Hz";
+        copied_audio_fills[static_cast<int>(i)] = std::move(fill);
+    }
+
     // 视频 / 音频共用一个受预算的写包入口：bytes_written 口径与重封装路径一致
     // （输出包载荷累计字节，不含封装头尾，故实际文件可能略超上限）。
     auto write_audio_packet = [&](AVPacket* pkt) -> bool {
@@ -1814,6 +1950,61 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             return true;
         AVStream* src = in->streams[in_index];
         AVStream* dst = out->streams[out_index];
+        // 切片 W：空洞探测必须在改 PTS 之前做 —— 之后 pts 已按统一原点平移、
+        // 包时长也被 rescale 到输出时基，秒数容易算错。
+        if (pkt->pts != AV_NOPTS_VALUE) {
+            const auto detection = copied_audio_fills.find(in_index);
+            if (detection != copied_audio_fills.end()) {
+                model::RepairSyntheticAudioFill& fill = detection->second;
+                const double tb = av_q2d(src->time_base);
+                const double start = static_cast<double>(pkt->pts) * tb;
+                const int rate = src->codecpar != nullptr ? src->codecpar->sample_rate : 0;
+                const int block = src->codecpar != nullptr ? src->codecpar->frame_size : 0;
+                // 编码一包最多承载多少秒。只有编解码器声明了帧长（aac 1024 等）时才知道；
+                // 不定长 / 可变帧长的编码器（flac、opus）不能拿它当判据。
+                const double nominal = (rate > 0 && block > 0) ? static_cast<double>(block) / rate : 0.0;
+                double duration = pkt->duration > 0 ? static_cast<double>(pkt->duration) * tb : 0.0;
+                if (duration <= 0.0)
+                    duration = nominal;
+                const int64_t ordinal = copied_audio_packets[in_index]++;
+                SilenceFillPolicy policy;
+                policy.sample_rate = rate;
+                policy.block_samples = block > 0 ? block : 0;
+                policy.fill_enabled = request.fill_audio_gaps_with_silence;
+                policy.merge_contiguous = request.gap_policy == model::RepairGapPolicy::MergeContiguous;
+                // 复制轨没有编码器：判据照跑，动作只能是「未填补 + 说明原因」。
+                policy.reencode_available = false;
+                const auto record_gap = [&](int64_t missing_samples, double position_seconds) {
+                    if (missing_samples <= 0)
+                        return;
+                    const SilenceFillPlan plan = PlanSilenceFill(0, missing_samples, policy, 0);
+                    if (plan.verdict == SilenceFillVerdict::NoGap)
+                        return;
+                    model::RepairSyntheticAudioGap gap = plan.gap;
+                    gap.source_position_seconds = position_seconds;
+                    gap.after_audio_frames = static_cast<uint64_t>(ordinal);
+                    gap.text = SilenceFillGapText(gap);
+                    fill.gaps.push_back(gap);
+                };
+                // 形态一：容器把空洞并进了前一个样本的时长 —— 这一包声称的时长远超
+                // 编码一包能承载的时长（实测：一个 AAC 包声称 0.302 s ≈ 13 个编码块，
+                // 实际只携带 1 块）。只按 PTS 找洞会完全看不见这种形态。
+                const bool inflated = nominal > 0.0 && duration > nominal * 1.5;
+                if (inflated)
+                    record_gap(std::llround((duration - nominal) * rate), start + nominal);
+                // 形态二：样本表按真实时长记，空洞留在时间轴上（PTS 直接跳过去）。
+                const auto last = copied_audio_end_seconds.find(in_index);
+                if (!inflated && nominal > 0.0 && last != copied_audio_end_seconds.end())
+                    record_gap(std::llround((start - last->second) * rate), last->second);
+                if (duration > 0.0) {
+                    copied_audio_end_seconds[in_index] = start + duration;
+                } else {
+                    // 缺时长的包会让后面每个包都被误判成「洞」：丢掉基线，别猜。
+                    ++fill.packets_without_duration;
+                    copied_audio_end_seconds.erase(in_index);
+                }
+            }
+        }
         // 切片 P：所有音频轨减同一个原点（按各自时基换算），不再逐轨归零。
         if (audio_origin_ticks[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
             audio_origin_ticks[static_cast<std::size_t>(in_index)] =
@@ -1899,17 +2090,23 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 return false;
             }
             {
-                model::RecoveredSample sample;
-                sample.size = static_cast<uint64_t>(std::max(written, 0));
-                sample.track_id = 0;
-                sample.stream_index = chain->output_stream_index;
-                sample.config_id = "s08_reencoded_audio";
-                sample.decode_ordinal = sample_ledger.CountForTrack(chain->output_stream_index);
-                sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
-                sample.inference_basis = "S08 音频重编码（原编码不被目标容器接受，编码器=" + chain->encoder_name +
-                                         "），PTS 按统一原点平移重建";
-                sample.confidence = model::SampleConfidence::Inferred;
-                sample_ledger.Add(sample);
+                // 切片 W：含合成静音的编码包整块不进账本。账本的口径是「与源对应的
+                // 已恢复样本」，静音不是从源解出来的。宁可少记（混合块里的真实采样
+                // 也一起排除，每处空洞最多少记一个编码块），也不让补进来的时长抬高
+                // 恢复率 —— 这条与视频黑帧的处理同一个理由。
+                if (!chain->CurrentPacketHasSyntheticSamples()) {
+                    model::RecoveredSample sample;
+                    sample.size = static_cast<uint64_t>(std::max(written, 0));
+                    sample.track_id = 0;
+                    sample.stream_index = chain->output_stream_index;
+                    sample.config_id = "s08_reencoded_audio";
+                    sample.decode_ordinal = sample_ledger.CountForTrack(chain->output_stream_index);
+                    sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+                    sample.inference_basis = "S08 音频重编码（原编码不被目标容器接受，编码器=" + chain->encoder_name +
+                                             "），PTS 按统一原点平移重建";
+                    sample.confidence = model::SampleConfidence::Inferred;
+                    sample_ledger.Add(sample);
+                }
             }
             bytes_written += static_cast<uint64_t>(std::max(written, 0));
             if (max_output_bytes > 0 && bytes_written > max_output_bytes)
@@ -2245,9 +2442,21 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         std::string line = "音频流 #" + std::to_string(entry.first) + "：原编码 " + chain.source_codec + " → " +
                            chain.encoder_name + "（解码 " + std::to_string(chain.decoded_frames) + " 帧 / 编码 " +
                            std::to_string(chain.encoded_packets) + " 包）";
-        if (chain.timeline_gaps > 0) {
-            line += "；源时间戳有 " + std::to_string(chain.timeline_gaps) +
-                    " 处跳变，位置按源保留、未补静音（补静音是独立能力）";
+        if (chain.timeline_gaps > 0 || chain.silence_samples_inserted > 0) {
+            const int64_t filled_gaps =
+                static_cast<int64_t>(chain.silence_gaps.size()) - static_cast<int64_t>(chain.timeline_gaps);
+            if (filled_gaps > 0) {
+                line += "；源时间戳有 " + std::to_string(filled_gaps) + " 处空洞已补入 " +
+                        std::to_string(chain.silence_samples_inserted) + " 采样合成静音（合成内容，单独记账）";
+            }
+            if (chain.timeline_gaps > 0) {
+                line += "；另有 " + std::to_string(chain.timeline_gaps) +
+                        " 处跳变按源位置跳过、未补静音（原因见「音频合成填补」逐条说明）";
+            }
+        }
+        if (chain.synthetic_packets_excluded > 0) {
+            line += "；其中 " + std::to_string(chain.synthetic_packets_excluded) +
+                    " 个编码包含合成静音，未计入样本账本（含静音的编码块整块排除，恢复率因此偏保守）";
         }
         if (chain.tail_padding_samples > 0) {
             line += "；末帧不足一个编码块，静音补齐 " + std::to_string(chain.tail_padding_samples) +
@@ -2258,6 +2467,53 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         if (chain.dropped_packets > 0)
             line += "；" + std::to_string(chain.dropped_packets) + " 个源音频包解码失败已跳过";
         outcome.transcode_note += "；" + line;
+    }
+
+    // ---- 切片 W：音频合成填补逐轨落账 ----
+    //
+    // 顺序按输入流下标，报告里一眼能对上「轨道决策」。复制轨只有探测结论
+    // （补不了），转码轨才有动作与计数 —— 两种都进同一份逐轨账，读者才不会
+    // 因为「某轨没条目」而以为那条轨没有空洞。
+    // 注意：这里**不能**再用 in->nb_streams —— 输入上下文已经关闭，读的是释放后的内存
+    // （实测：紧接在这一行之后的字符串拷贝就 0xc0000005）。用关闭前固化的流数。
+    for (unsigned i = 0; i < input_stream_count; ++i) {
+        model::RepairSyntheticAudioFill fill;
+        const auto chain_it = audio_chains.find(static_cast<int>(i));
+        if (chain_it != audio_chains.end()) {
+            const AudioTranscodeChain& chain = *chain_it->second;
+            fill.inspected = true;
+            fill.requested = request.fill_audio_gaps_with_silence;
+            fill.coding_mode = "transcode";
+            fill.input_stream_index = static_cast<int>(i);
+            fill.codec = chain.source_codec;
+            fill.basis = chain.silence_basis;
+            fill.gaps = chain.silence_gaps;
+            // 秒数由逐处 gap_seconds 求和，不另算一遍：两处各算一份迟早漂移。
+            for (const auto& gap : fill.gaps) {
+                if (gap.inserted_samples <= 0)
+                    continue;
+                fill.samples_inserted += gap.inserted_samples;
+                fill.seconds_inserted += gap.gap_seconds;
+            }
+        } else {
+            const auto copy_it = copied_audio_fills.find(static_cast<int>(i));
+            if (copy_it == copied_audio_fills.end())
+                continue;
+            fill = copy_it->second;
+            if (pending_overflow) {
+                // 首帧探测阶段的缓存溢出会让相邻包之间出现一段**我们自己造成的**
+                // 缺口：那段不能被写成「源里有空洞」。
+                fill.basis += "；首帧探测阶段的包缓存溢出（见残余风险），前缀未完整回放，该段不做空洞判定";
+            }
+        }
+        fill.gaps_detected = static_cast<int64_t>(fill.gaps.size());
+        for (const auto& gap : fill.gaps) {
+            if (gap.inserted_samples <= 0)
+                ++fill.gaps_refused;
+        }
+        fill.summary = SilenceFillSummary(fill);
+        fill.note = SilenceFillBasisNote(fill);
+        outcome.synthetic_audio_tracks.push_back(std::move(fill));
     }
 
     // ---- 画质评估（独立解码输入与产物，按帧序号配对）----

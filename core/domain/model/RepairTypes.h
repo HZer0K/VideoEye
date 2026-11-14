@@ -609,6 +609,59 @@ struct RepairSyntheticFill {
     std::string note;
 };
 
+// ---- 合成音频填补（切片 W）----
+//
+// 与上面的视频黑帧同构，但**不能合并成一份账**：视频的「填了几帧」和音频的
+// 「补了几个采样」是两个量纲，混在一个字段里，报告就没法把「0.48 s 黑场」和
+// 「0.28 s 静音」分开说。而且音频是多轨的：一条轨补了静音、另一条没有，用
+// 一个总数表示就等于说「音轨整体被补过」。
+//
+// 口径（与本项目其它合成内容一致）：
+//   * 补进去的采样不是从源解出来的，绝不进恢复率分子；
+//   * 「探测到空洞」与「补了静音」是两件事：前者是证据，用户没启用 / 该轨是
+//     码流复制（手里没有编码器）时也必须如实报出来。
+struct RepairSyntheticAudioGap {
+    // 洞发生在第 N 个音频单元之后（0 基）。重编码路径这个是解码帧序号，
+    // 码流复制路径是包序号 —— 两条路的「单元」不同，报告里由 text 说清，
+    // 不要跨路径比较这个数字。
+    uint64_t after_audio_frames = 0;
+    // 洞的起点（源时间轴秒）：上一个已解码帧的结束位置。
+    double source_position_seconds = 0.0;
+    double gap_seconds = 0.0;
+    // 按采样率换算出的缺失采样数。
+    int64_t missing_samples = 0;
+    // 实际补进去的静音采样数（0 = 没补）。
+    int64_t inserted_samples = 0;
+    // filled / not_filled。
+    std::string action;
+    // 稳定机读码（audio_silence_*）。
+    std::string reason_code;
+    // repair 层渲染好的说明，报告只打印。
+    std::string text;
+};
+
+struct RepairSyntheticAudioFill {
+    // 是否真的做过音频空洞探测。false 只表示「没跑这条轨的解码 / 包级扫描」。
+    bool inspected = false;
+    bool requested = false;
+    // 这条轨的编码方式：copy / transcode / unknown。决定「能不能造出这段声音」。
+    std::string coding_mode;
+    int input_stream_index = -1;
+    std::string codec;
+    // 判据依据（源采样率 / 编码块大小 / 容差），渲染好的一句话。
+    std::string basis;
+    std::vector<RepairSyntheticAudioGap> gaps;
+    int64_t gaps_detected = 0;
+    int64_t gaps_refused = 0;
+    int64_t samples_inserted = 0;
+    double seconds_inserted = 0.0;
+    // 码流复制轨判空洞时，包时长不可用的包数：> 0 时探测不完整，
+    // 不能声称「这条轨都查过了」（与视频侧的 frames_without_source_pts 同义）。
+    uint64_t packets_without_duration = 0;
+    std::string summary;
+    std::string note;
+};
+
 // ---- 保真度 ----
 struct RepairFidelity {
     RepairFidelityStatus video = RepairFidelityStatus::NotVerified;
@@ -622,6 +675,8 @@ struct RepairFidelity {
     uint64_t synthetic_frame_count = 0;
     // 切片 U：合成填补的完整账（探测依据 / 逐处空洞 / 插了多少帧）。
     RepairSyntheticFill synthetic;
+    // 切片 W：音频轨的合成填补，**逐轨一条**（量纲与视频不同，不许并进上面那份）。
+    std::vector<RepairSyntheticAudioFill> synthetic_audio;
     // timeline_modified 只表示「引擎是否主动重写时间戳」，不等于「产物时间轴相对源未变」：
     // 借用参考初始化段时，未核验的 mdhd 时基会悄悄改变播放时长。
     bool timeline_modified = false;

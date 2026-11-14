@@ -57,6 +57,15 @@ struct TestMediaSpec {
     // video_gap_after_frame < 0（默认）= 不制造空洞。
     int video_gap_after_frame = -1;
     int video_gap_frames = 0;
+    // ---- 源侧音频时间轴空洞（切片 W 语料）----
+    //
+    // 在 audio_gap_after_frame 这一帧（**视频帧序号**）之后，丢掉音频的
+    // audio_gap_frames 个编码帧：后续音频 PTS 因此直接跳过这段，视频不受影响。
+    // 这与 video_gap_* 对称，区别是「丢的是声音」—— 补它需要生成源里不存在的
+    // 采样（静音），不是复制现有内容。
+    // audio_gap_after_frame < 0（默认）= 不制造音频空洞。
+    int audio_gap_after_frame = -1;
+    int audio_gap_frames = 0;
 };
 
 struct TestMedia {
