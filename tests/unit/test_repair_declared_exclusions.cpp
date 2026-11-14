@@ -383,9 +383,13 @@ TEST(RepairDeclaredExclusions, TriggerFactsAreStructuredFieldValues) {
               transcode->trigger_facts.end());
 }
 
-// 切片 T：S08 只重建一条视频链 —— 这条能力边界必须能被「未保留的第二视频轨」
-// 触发，但不能被「容器拒绝音频」或「源侧已丢弃」触发（那是别人的决定，不是
-// 我们的能力缺口）。
+// 切片 T / Z：S08 只有一条解码-重编码视频链 —— 这条能力边界必须能被「容器拒绝、
+// 只能丢掉的第二视频轨」触发，但不能被「容器拒绝音频」或「源侧已丢弃」触发
+// （那是别人的决定，不是我们的能力缺口）。
+//
+// 注意：切片 Z 之后第二视频轨在容器接受时是**复制保留**，所以「第二视频轨」这个词
+// 不再自动等于「能力缺口」。这里用真实的 drop 理由码构造事实，不能用「只要出现
+// 第二视频轨就算命中」的宽松判据。
 TEST(RepairDeclaredExclusions, ExtraTracksNotRebuiltOnlyTriggersOnOurOwnDrops) {
     RepairResult result = EvaluatedBaseline();
     result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
@@ -396,7 +400,7 @@ TEST(RepairDeclaredExclusions, ExtraTracksNotRebuiltOnlyTriggersOnOurOwnDrops) {
     extra_video.kind = "video";
     extra_video.source_codec = "h264";
     extra_video.action = "drop";
-    extra_video.reason_code = "extra_video_single_chain";
+    extra_video.reason_code = "extra_video_copy_container_rejected";
     extra_video.text = "流 #1（video, h264）→ 未保留：第二视频轨";
     result.fidelity.transcode.track_decisions.push_back(extra_video);
 
@@ -430,6 +434,21 @@ TEST(RepairDeclaredExclusions, ExtraTracksNotRebuiltOnlyTriggersOnOurOwnDrops) {
     EXPECT_TRUE(exclusion_for("stream_marked_discard") == nullptr) << "源侧标记丢弃同理";
     EXPECT_TRUE(exclusion_for("audio_drop_no_fitting_encoder") != nullptr)
         << "容器拒绝且没有可用重编码目标 = 我们的能力缺口，必须列进声明";
+
+    // 切片 Z 的反向守护：第二视频轨**被复制保留**时，这条能力边界不成立 ——
+    // 挂上去就等于告诉用户「这条轨没保留」，而产物里明明有。
+    RepairResult copied = EvaluatedBaseline();
+    copied.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
+    copied.fidelity.video_reencoded = true;
+    RepairTranscodeTrackDecision copied_extra_video;
+    copied_extra_video.input_stream_index = 1;
+    copied_extra_video.kind = "video";
+    copied_extra_video.action = "copy";
+    copied_extra_video.reason_code = "extra_video_copy_container_ok";
+    copied_extra_video.text = "流 #1（video, h264）→ 复制：第二视频轨按原码流复制保留";
+    copied.fidelity.transcode.track_decisions.push_back(copied_extra_video);
+    EXPECT_EQ(FindItem(repair::BuildDeclaredExclusions(copied), "extra_tracks_not_rebuilt"), nullptr)
+        << "第二视频轨已经复制保留，却仍声明「未重建 / 未保留」";
 }
 
 TEST(RepairDeclaredExclusions, ReferenceBorrowedBasisIsAnExplicitStructuredFact) {

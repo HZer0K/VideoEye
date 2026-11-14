@@ -200,9 +200,32 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
             continue;
         }
         if (probe.kind == "video") {
-            plan.decisions.push_back(MakeDecision(
-                probe, "drop", "extra_video_single_chain",
-                "第二视频轨：S08 只有一条解码-重编码链，产物未保留该轨（这是本模块的能力边界，不是容器限制）"));
+            // 切片 Z：非主视频轨不再一律丢弃。S08 只有一条解码-重编码链，所以这条轨
+            // **不做修复**（不能假装它被修复过）；但只要有容器接得下，就按原码流复制 ——
+            // 字节与源逐包相同，比「重编码一遍」还保真，代价只是不修其中的损伤。
+            const std::string detail = probe.container_fit_detail.empty()
+                                           ? std::string()
+                                           : std::string("（") + probe.container_fit_detail + "）";
+            switch (probe.container_fit) {
+            case TranscodeContainerFit::Accepted:
+                plan.decisions.push_back(
+                    MakeDecision(probe, "copy", "extra_video_copy_container_ok",
+                                 "第二视频轨：目标容器试写头接受该编码，按原码流复制保留（不重编码，"
+                                 "因此也不修复该轨内的损伤）"));
+                break;
+            case TranscodeContainerFit::Rejected:
+                plan.decisions.push_back(
+                    MakeDecision(probe, "drop", "extra_video_copy_container_rejected",
+                                 "第二视频轨：目标容器试写头拒绝该编码" + detail +
+                                     "；S08 没有第二条解码-重编码链可以把该轨转成容器能收的编码，产物未保留该轨"));
+                break;
+            case TranscodeContainerFit::Unknown:
+                plan.decisions.push_back(MakeDecision(probe, "copy", "extra_video_copy_container_unprobed",
+                                                      "第二视频轨：未能实测容器是否接受该编码，按原码流复制；"
+                                                      "若写头失败会在报告里给出失败原因" +
+                                                          detail));
+                break;
+            }
             continue;
         }
         if (probe.kind == "audio") {
@@ -300,9 +323,10 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
         plan.summary += "（决策表与源侧流数不一致：" + std::to_string(plan.decisions.size()) + " 条决策 / " +
                         std::to_string(probes.size()) + " 条输入轨，未列出的轨不能当成已保留）";
     }
-    plan.note = "容器接受性由内存试写头逐轨实测（只放该音频轨一条流），不是查表或按扩展名推断；"
-                "实测拒绝的音频轨优先转码成实测能收的编码（转码目标同样要过试写头），转不了才列为未保留 —— "
-                "两种结果都在决策表里逐条写明，且都不会让整份产物写头失败";
+    plan.note = "容器接受性由内存试写头逐轨实测（每轨单独放一条流，不是一次测整份产物），不是查表或按扩展名推断；"
+                "实测拒绝的音频轨优先转码成实测能收的编码（转码目标同样要过试写头），转不了才列为未保留；"
+                "非主视频轨只在容器接受时按原码流复制，不做修复 —— 两种结果都在决策表里逐条写明，"
+                "且都不会让整份产物写头失败";
     return plan;
 }
 

@@ -19,8 +19,12 @@
 //     「容器 × 该编码」，不代表整份产物一定能写。
 //   * 主视频轨的「是否有编码层损伤证据」来自诊断层的 decode 层 finding
 //     （`location.stream_index` 命中该轨），不是从「我们要重编码」反推的。
-//   * 除主视频轨外的视频轨一律 drop：S08 只有一条解码-重编码链，这不是容器
-//     限制，是本模块的能力边界。
+//   * 除主视频轨外的视频轨：S08 只有一条解码-重编码链，所以它们**不做修复**；
+//     但只要目标容器实测接受其编码，就按原码流复制保留（切片 Z）。这不是
+//     「尽力而为」的含糊话 —— 复制轨的字节与源逐包相同，因此「保留了」可以
+//     用载荷序列证明，「容器拒绝才丢」也有试写头的实测结论。
+//   * 封面图（attached_pic）仍然 drop：它不是内容轨，且 mp4 承载方式与源容器
+//     不同（covr 盒 vs 图片轨），本轮没有取证，不拿「大概能拷」当依据。
 
 #include <string>
 #include <vector>
@@ -50,7 +54,8 @@ struct TranscodeTrackProbe {
     bool decode_damage_detected = false;
     // 源侧已标记丢弃（AVDISCARD_ALL）：不会被读出来，产物必然没有该轨。
     bool discarded = false;
-    // 音频轨：目标容器是否接受该编码（实测）；非音频轨保持 Unknown
+    // 目标容器是否接受该编码（实测）：音频轨与**非主视频轨**都要测；
+    // 主视频轨恒 Unknown（它一律重编码，容器接受性与决策无关）。
     TranscodeContainerFit container_fit = TranscodeContainerFit::Unknown;
     // 实测的原始原因（拒绝时是封装器的原话，Unknown 时是为什么没测成）。
     // 报告里跟在理由后面，避免把「封装器原话」和我们的归纳混成一句。

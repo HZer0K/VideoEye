@@ -48,6 +48,8 @@ std::atomic<int> g_inject_write_failure_nth{0};
 std::atomic<bool> g_inject_trailer_failure{false};
 // 切片 V：强制把某条音频轨的容器接受性判成拒绝（-1 = 关，见头文件说明）。
 std::atomic<int> g_inject_audio_container_rejected{-1};
+// 切片 Z：强制把某条非主视频轨的容器接受性判成拒绝（-1 = 关）。
+std::atomic<int> g_inject_video_container_rejected{-1};
 
 bool ShouldInjectWriteFailure(uint64_t attempt) {
     const int nth = g_inject_write_failure_nth.load(std::memory_order_relaxed);
@@ -990,6 +992,10 @@ void SetTranscodeAudioContainerRejectedForTesting(int input_stream_index) {
     g_inject_audio_container_rejected.store(input_stream_index, std::memory_order_relaxed);
 }
 
+void SetTranscodeVideoContainerRejectedForTesting(int input_stream_index) {
+    g_inject_video_container_rejected.store(input_stream_index, std::memory_order_relaxed);
+}
+
 RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairRequest& request,
                                                         const model::RepairDiagnosis& diagnosis,
                                                         const model::RepairPlan& plan, const RepairOutputPaths& paths,
@@ -1055,6 +1061,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 切片 V：被目标容器拒绝的音频轨，在这里实测出一条能落地的重编码目标。
     // 编码器上下文随目标一起留着 —— 后面建输出流要用同一份 extradata。
     AudioReencodeTargets audio_targets;
+    // 切片 Z：第一条 video 探针就是主视频轨（`SelectPrimaryVideoIndex` 的判据同此）。
+    // 主视频轨一律重编码，容器接受性与它的决策无关，不必测。
+    bool primary_video_seen = false;
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         const AVStream* stream = in->streams[i];
         TranscodeTrackProbe probe;
@@ -1063,17 +1072,27 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                                             (stream->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0);
         probe.source_codec = avcodec_get_name(stream->codecpar->codec_id);
         probe.discarded = stream->discard == AVDISCARD_ALL;
-        // 容器接受性只对音频轨有决策意义，且必须实测：avformat_query_codec 会
-        // 对 mpegts 这类没实现 query 的封装器返回垃圾值，按它判会误删轨。
-        if (probe.kind == "audio" && !probe.discarded) {
+        const bool is_primary_video = probe.kind == "video" && !primary_video_seen;
+        if (probe.kind == "video")
+            primary_video_seen = true;
+        // 容器接受性只对「可能被复制」的轨有决策意义（音频轨 / 非主视频轨），
+        // 且必须实测：avformat_query_codec 会对 mpegts 这类没实现 query 的
+        // 封装器返回垃圾值，按它判会误删轨。
+        if ((probe.kind == "audio" || (probe.kind == "video" && !is_primary_video)) && !probe.discarded) {
             probe.container_fit = ProbeTrackFitsContainer(format_name, stream->codecpar, &probe.container_fit_detail);
             if (g_inject_audio_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
                 // 注入必须留下痕迹：万一哪次真跑进来，报告里能一眼看出这个结论不是实测的。
                 probe.container_fit = TranscodeContainerFit::Rejected;
                 probe.container_fit_detail = "被强制判为拒绝（测试注入 SetTranscodeAudioContainerRejectedForTesting）";
             }
-            probe.audio_reencode_allowed = request.reencode_audio_to_fit_container;
-            if (probe.container_fit == TranscodeContainerFit::Rejected) {
+            if (g_inject_video_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
+                probe.container_fit = TranscodeContainerFit::Rejected;
+                probe.container_fit_detail = "被强制判为拒绝（测试注入 SetTranscodeVideoContainerRejectedForTesting）";
+            }
+            if (probe.kind == "audio") {
+                probe.audio_reencode_allowed = request.reencode_audio_to_fit_container;
+            }
+            if (probe.kind == "audio" && probe.container_fit == TranscodeContainerFit::Rejected) {
                 if (!probe.audio_reencode_allowed) {
                     probe.audio_reencode_note = "本次未允许重编码（请求选项 reencode_audio_to_fit_container=false）";
                 } else {
@@ -1204,10 +1223,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     }
 
     uint64_t dropped_decode_packets = 0;
-    // 首帧之前出现的音频包必须缓存并在输出音轨建好后回放：B 帧延迟、自动解码
-    // 线程、视频起点靠后都会造成"先来一批音频"。旧实现直接 unref，产物静默
-    // 丢掉这一段，而且 S08 又不要求验证音频轨，丢了没人看得见。
-    PendingPackets pending_nonvideo;
+    // 首帧之前出现的**非主视频轨**包（音频 / 切片 Z 复制的第二视频轨）必须缓存并在
+    // 输出流建好后回放：B 帧延迟、自动解码线程、视频起点靠后都会造成「先来一批」。
+    // 旧实现直接 unref，产物静默丢掉这一段，而且 S08 又不要求验证音频轨，丢了没人看得见。
+    PendingPackets pending_side_packets;
     uint64_t pending_bytes = 0;
     bool pending_overflow = false;
     constexpr uint64_t kMaxPendingPackets = 16384;
@@ -1233,7 +1252,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             const std::size_t index = static_cast<std::size_t>(std::max(packet->stream_index, 0));
             const bool will_consume =
                 index < track_action.size() && (track_action[index] == "copy" || track_action[index] == "transcode");
-            if (will_consume && !pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets)) {
+            if (will_consume &&
+                !pending_side_packets.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets)) {
                 pending_overflow = true;
             }
             av_packet_unref(packet);
@@ -1462,6 +1482,34 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         stream_meta[audio_map[i]] = {"audio", output_codec};
     }
 
+    // ---- 切片 Z：非主视频轨按码流复制 ----
+    //
+    // 容器接不接受在决策阶段已实测，这里只建流。**故意放在音频循环之后**：
+    // 音频的输出流下标被 audio_chains / 验证目标 / 报告多处引用，中途插一条视频流
+    // 就会把它们全部挪位（而且错位不会编译报错，只会让结论指到别的轨上）。
+    std::vector<int> video_copy_map(in->nb_streams, -1);
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        const AVStream* src = in->streams[i];
+        if (src->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
+            continue;
+        if ((src->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0)
+            continue;
+        if (i >= track_action.size() || track_action[i] != "copy")
+            continue;
+        AVStream* dst = avformat_new_stream(out, nullptr);
+        if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
+            outcome.omitted_items.push_back("视频流 #" + std::to_string(i) + " 无法建立输出流，产物未保留");
+            continue;
+        }
+        // 时基照抄源流：码流复制不改写包时间戳的含义，只做统一原点平移。
+        dst->time_base = src->time_base;
+        dst->disposition = src->disposition;
+        dst->codecpar->codec_tag = 0;
+        av_dict_copy(&dst->metadata, src->metadata, 0);
+        video_copy_map[i] = static_cast<int>(out->nb_streams) - 1;
+        stream_meta[video_copy_map[i]] = {"video", avcodec_get_name(src->codecpar->codec_id)};
+    }
+
     if (avio_open(&out->pb, paths.part_path.c_str(), AVIO_FLAG_WRITE) < 0) {
         avcodec_free_context(&encoder);
         av_packet_free(&packet);
@@ -1541,27 +1589,32 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         if (!stream_start_seconds[video_index] || video_frame_seconds < *stream_start_seconds[video_index])
             stream_start_seconds[video_index] = video_frame_seconds;
     }
-    for (const AVPacket* cached : pending_nonvideo.items()) {
+    for (const AVPacket* cached : pending_side_packets.items()) {
         if (cached->stream_index < 0 || cached->stream_index >= static_cast<int>(in->nb_streams))
             continue;
         const std::size_t index = static_cast<std::size_t>(cached->stream_index);
-        if (audio_map[index] < 0 || stream_start_seconds[index].has_value())
+        // 切片 Z：复制的第二视频轨也要参与原点 —— 它的起点可能比主视频轨更早，
+        // 漏掉它会让该轨首包的 PTS 被减成负数。
+        if ((audio_map[index] < 0 && video_copy_map[index] < 0) || stream_start_seconds[index].has_value())
             continue;
         const int64_t pts = cached->pts != AV_NOPTS_VALUE ? cached->pts : cached->dts;
         if (pts != AV_NOPTS_VALUE)
             stream_start_seconds[index] = static_cast<double>(pts) * av_q2d(in->streams[index]->time_base);
     }
-    // 统一原点 = 已参与输出的轨里最早的呈现起点。两条轨都减它，相对关系因此保留。
+    // 统一原点 = 已参与输出的轨里最早的呈现起点。所有轨都减它，相对关系因此保留。
     source_video_start_seconds = stream_start_seconds[video_index];
     std::optional<double> origin_seconds_option;
     if (source_video_start_seconds)
         origin_seconds_option = *source_video_start_seconds;
     for (unsigned i = 0; i < in->nb_streams; ++i) {
-        if (audio_map[i] < 0 || !stream_start_seconds[i])
+        const bool participates = audio_map[i] >= 0 || video_copy_map[i] >= 0;
+        if (!participates || !stream_start_seconds[i])
             continue;
         if (!origin_seconds_option || *stream_start_seconds[i] < *origin_seconds_option)
             origin_seconds_option = *stream_start_seconds[i];
-        if (!source_audio_start_seconds || *stream_start_seconds[i] < *source_audio_start_seconds)
+        // 音画起点差只由音频轨决定：复制的第二视频轨不是「音频侧」。
+        if (audio_map[i] >= 0 &&
+            (!source_audio_start_seconds || *stream_start_seconds[i] < *source_audio_start_seconds))
             source_audio_start_seconds = *stream_start_seconds[i];
     }
     // 负的呈现起点只有一个来源：容器已经把编码器 priming 用 elst 补偿掉了
@@ -1577,7 +1630,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 视频侧平移量落在编码器时基（1/fps）上，按帧取整。
     const int64_t video_pts_offset_frames =
         source_video_start_seconds ? std::llround((*source_video_start_seconds - origin_seconds) * fps_value) : 0;
-    std::vector<int64_t> audio_origin_ticks(in->nb_streams, AV_NOPTS_VALUE);
+    // 复制轨（音频 / 切片 Z 的第二视频轨）共用的原点刻度：按各自时基换算后缓存一次。
+    std::vector<int64_t> copy_origin_ticks(in->nb_streams, AV_NOPTS_VALUE);
 
     // ---- 切片 V：为被容器拒绝、且实测出了目标的音频轨建转码链 ----
     //
@@ -2075,11 +2129,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             }
         }
         // 切片 P：所有音频轨减同一个原点（按各自时基换算），不再逐轨归零。
-        if (audio_origin_ticks[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
-            audio_origin_ticks[static_cast<std::size_t>(in_index)] =
+        if (copy_origin_ticks[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
+            copy_origin_ticks[static_cast<std::size_t>(in_index)] =
                 av_rescale_q(std::llround(origin_seconds * AV_TIME_BASE), AV_TIME_BASE_Q, src->time_base);
         }
-        const int64_t offset = audio_origin_ticks[static_cast<std::size_t>(in_index)];
+        const int64_t offset = copy_origin_ticks[static_cast<std::size_t>(in_index)];
         if (pkt->pts != AV_NOPTS_VALUE) {
             // 负的首包是 priming（容器用 elst 补掉），呈现起点不是负数：
             // 这里也要夹到 0，否则「本来对齐」的源会被算出一个 AAC 帧的假差值。
@@ -2187,28 +2241,91 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     for (auto& entry : audio_chains)
         audio_sinks[entry.first] = MakeAudioSink(entry.second.get());
 
-    // 非视频包的分发：重编码轨进链，复制轨直接写。两条路的失败语义一致（写盘失败
-    // 会置 write_failed），所以调用点不需要区分。
-    auto feed_audio_packet = [&](AVPacket* pkt) -> bool {
-        const auto it = audio_chains.find(pkt->stream_index);
-        if (it == audio_chains.end())
-            return write_audio_packet(pkt);
-        AudioTranscodeChain* chain = it->second.get();
-        std::string chain_error;
-        if (!chain->FeedPacket(pkt, audio_sinks.at(pkt->stream_index), &chain_error)) {
+    // ---- 切片 Z：第二视频轨的写包入口 ----
+    //
+    // 与音频复制轨共用「统一原点 + 逐包账本」的口径，差别只有两处：不做空洞探测
+    // （该轨不做任何修复，探测了也不能补，只会让报告多一份没有动作的证据），
+    // 账本里写明 config_id=s08_copied_video，避免与主视频轨的重编码样本混在一起。
+    auto write_copied_video_packet = [&](AVPacket* pkt) -> bool {
+        if (size_capped)
+            return true;
+        const int in_index = pkt->stream_index;
+        const int out_index = in_index >= 0 && in_index < static_cast<int>(video_copy_map.size())
+                                  ? video_copy_map[static_cast<std::size_t>(in_index)]
+                                  : -1;
+        if (out_index < 0)
+            return true;
+        AVStream* src = in->streams[in_index];
+        AVStream* dst = out->streams[out_index];
+        if (copy_origin_ticks[static_cast<std::size_t>(in_index)] == AV_NOPTS_VALUE) {
+            copy_origin_ticks[static_cast<std::size_t>(in_index)] =
+                av_rescale_q(std::llround(origin_seconds * AV_TIME_BASE), AV_TIME_BASE_Q, src->time_base);
+        }
+        const int64_t offset = copy_origin_ticks[static_cast<std::size_t>(in_index)];
+        if (pkt->pts != AV_NOPTS_VALUE)
+            pkt->pts -= offset;
+        if (pkt->dts != AV_NOPTS_VALUE)
+            pkt->dts -= offset;
+        av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
+        pkt->stream_index = out_index;
+        const int written = pkt->size;
+        ++write_attempts;
+        if (ShouldInjectWriteFailure(write_attempts)) {
+            av_packet_unref(pkt);
             write_failed = true;
-            write_error = chain_error;
+            write_error = "写入第二视频轨包失败（故障注入）";
             return false;
         }
+        if (av_interleaved_write_frame(out, pkt) < 0) {
+            write_failed = true;
+            write_error = "写入第二视频轨包失败";
+            return false;
+        }
+        {
+            model::RecoveredSample sample;
+            sample.size = static_cast<uint64_t>(std::max(written, 0));
+            sample.track_id = 0;
+            sample.stream_index = out_index;
+            sample.config_id = "s08_copied_video";
+            sample.decode_ordinal = sample_ledger.CountForTrack(out_index);
+            sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+            sample.inference_basis = "S08 第二视频轨码流复制（未重编码、未做修复），PTS 按统一原点平移";
+            sample.confidence = model::SampleConfidence::Inferred;
+            sample_ledger.Add(sample);
+        }
+        bytes_written += static_cast<uint64_t>(std::max(written, 0));
+        if (max_output_bytes > 0 && bytes_written > max_output_bytes)
+            size_capped = true;
         return true;
     };
 
-    // 回放首帧探测期间缓存的音频包，之后才继续读 `in`。
-    for (AVPacket* cached : pending_nonvideo.items()) {
-        if (!feed_audio_packet(cached))
+    // 非主视频轨包的分发：重编码音频轨进链，其余复制轨（音频 / 第二视频轨）直接写。
+    // 三条路的失败语义一致（写盘失败会置 write_failed），调用点不需要区分。
+    auto feed_side_packet = [&](AVPacket* pkt) -> bool {
+        const auto it = audio_chains.find(pkt->stream_index);
+        if (it != audio_chains.end()) {
+            AudioTranscodeChain* chain = it->second.get();
+            std::string chain_error;
+            if (!chain->FeedPacket(pkt, audio_sinks.at(pkt->stream_index), &chain_error)) {
+                write_failed = true;
+                write_error = chain_error;
+                return false;
+            }
+            return true;
+        }
+        if (pkt->stream_index >= 0 && pkt->stream_index < static_cast<int>(video_copy_map.size()) &&
+            video_copy_map[static_cast<std::size_t>(pkt->stream_index)] >= 0) {
+            return write_copied_video_packet(pkt);
+        }
+        return write_audio_packet(pkt);
+    };
+
+    // 回放首帧探测期间缓存的非主轨包（音频 + 第二视频轨），之后才继续读 `in`。
+    for (AVPacket* cached : pending_side_packets.items()) {
+        if (!feed_side_packet(cached))
             break;
     }
-    pending_nonvideo.Clear();
+    pending_side_packets.Clear();
 
     // ---- 解码 → 转码 → 封装 ----
     if (!resource_failed && encode_frame(first_frame) && !write_failed) {
@@ -2244,7 +2361,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                     }
                 }
             } else {
-                feed_audio_packet(packet);
+                feed_side_packet(packet);
             }
             av_packet_unref(packet);
             if (write_failed || resource_failed || size_capped)
@@ -2283,9 +2400,12 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     const uint32_t video_track_id = video_in->id > 0 ? static_cast<uint32_t>(video_in->id) : 0;
     const unsigned input_stream_count = in->nb_streams;
     std::vector<uint32_t> audio_track_ids(input_stream_count, 0);
+    std::vector<uint32_t> copied_video_track_ids(input_stream_count, 0);
     for (unsigned i = 0; i < input_stream_count; ++i) {
         if (audio_map[i] >= 0 && in->streams[i]->id > 0)
             audio_track_ids[i] = static_cast<uint32_t>(in->streams[i]->id);
+        if (video_copy_map[i] >= 0 && in->streams[i]->id > 0)
+            copied_video_track_ids[i] = static_cast<uint32_t>(in->streams[i]->id);
     }
 
     if (sws != nullptr)
@@ -2339,6 +2459,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         AVFormatContext* verify = nullptr;
         if (avformat_open_input(&verify, paths.part_path.c_str(), nullptr, nullptr) >= 0) {
             for (unsigned i = 0; i < verify->nb_streams; ++i) {
+                // 切片 Z：只测主视频轨。复制的第二视频轨自带源侧的 side data
+                // （codecpar 是整份拷过去的），拿它当证据等于把「拷来的」算成
+                // 「继承成功的」—— 主轨丢失方向矩阵时结论会照样显示已继承。
+                if (static_cast<int>(i) != video_out_index)
+                    continue;
                 const AVStream* stream = verify->streams[i];
                 if (stream->codecpar == nullptr || stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
                     continue;
@@ -2619,9 +2744,20 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     record.output_start_seconds = outcome.output_start_seconds;
     record.output_end_seconds = outcome.output_end_seconds;
     std::ostringstream detail;
+    // 各轨包数必须逐轨数出来，不能再拿「总数 - 主视频轨」当音频包数 ——
+    // 切片 Z 之后账本里还多了一条复制的第二视频轨，减出来会把它的包算成音频。
+    uint64_t audio_packets = 0;
+    uint64_t copied_video_packets = 0;
+    for (unsigned i = 0; i < audio_map.size(); ++i) {
+        if (audio_map[i] >= 0)
+            audio_packets += sample_ledger.CountForTrack(audio_map[i]);
+        if (video_copy_map[i] >= 0)
+            copied_video_packets += sample_ledger.CountForTrack(video_copy_map[i]);
+    }
     detail << "容忍式转码：解码并编码 " << encoded_frames << " 帧（" << std::string(encoder_codec->name) << "），跳过 "
-           << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 "
-           << (sample_ledger.Total() - sample_ledger.CountForTrack(video_out_index)) << " 个";
+           << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 " << audio_packets << " 个";
+    if (copied_video_packets > 0)
+        detail << "；第二视频轨按码流复制 " << copied_video_packets << " 个包（未重编码）";
     if (size_capped)
         detail << "；超过输出字节上限 " << max_output_bytes << " 字节，仅交付可播放前缀，其余源内容未恢复";
     if (psnr.samples > 0)
@@ -2657,6 +2793,23 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         audio_target.note = reencoded ? "S08 转码产物保留音频轨（原编码不被目标容器接受，已重编码）"
                                       : "S08 转码产物保留音频轨（码流复制，PTS 按统一原点平移）";
         outcome.verification_targets.push_back(std::move(audio_target));
+    }
+    // 切片 Z：复制的第二视频轨也必须进「保留轨 → 输出流」契约。不进的话 R04 覆盖
+    // 守护会发现产物里多了一条执行器没上报的媒体轨，把整份结论降级成「未覆盖」——
+    // 那条轨明明是我们自己写进去的。
+    for (unsigned i = 0; i < input_stream_count; ++i) {
+        if (video_copy_map[i] < 0)
+            continue;
+        model::RepairTrackVerificationTarget copied_video_target;
+        copied_video_target.track_id = copied_video_track_ids[i];
+        copied_video_target.input_stream_index = static_cast<int>(i);
+        copied_video_target.output_stream_index = video_copy_map[i];
+        copied_video_target.kind = "video";
+        const bool explicitly_requested = std::find(request.target_streams.begin(), request.target_streams.end(),
+                                                    static_cast<int>(i)) != request.target_streams.end();
+        copied_video_target.required = explicitly_requested || request.target_streams.empty();
+        copied_video_target.note = "S08 转码产物保留的第二视频轨（码流复制，未重编码、不做修复）";
+        outcome.verification_targets.push_back(std::move(copied_video_target));
     }
 
     {

@@ -31,9 +31,11 @@
 
 #include "core/domain/model/RepairRequest.h"
 #include "core/repair/RepairEngine.h"
+#include "core/repair/RepairTolerantTranscode.h"
 #include "core/repair/RepairTranscodeTracks.h"
 #include "core/reporting/RepairReportExporter.h"
 #include "infrastructure/serialization/Json.h"
+#include "tests/support/MediaSequenceFingerprint.h"
 #include "tests/support/TestMediaFactory.h"
 
 extern "C" {
@@ -270,6 +272,65 @@ TEST(RepairTranscodeTracks, AudioAcceptedByContainerReportsTheMeasurement) {
     EXPECT_NE(audio->reason.find("试写头接受"), std::string::npos) << audio->reason;
 }
 
+// ---- 切片 Z：非主视频轨按容器实测接受性决定复制还是丢弃 ----
+
+TEST(RepairTranscodeTracks, ExtraVideoCopiedWhenContainerAccepts) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "video", "h264")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Accepted;
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* extra = FindDecision(plan, 1);
+    ASSERT_NE(extra, nullptr);
+    EXPECT_EQ(extra->action, "copy");
+    EXPECT_EQ(extra->reason_code, "extra_video_copy_container_ok");
+    // 「复制」不等于「修好了」：这条轨没有任何修复动作，文案必须自己说出来。
+    EXPECT_NE(extra->reason.find("不重编码"), std::string::npos) << extra->reason;
+    EXPECT_NE(extra->reason.find("不修复"), std::string::npos) << extra->reason;
+    EXPECT_EQ(plan.transcode_count, 1u) << "第二视频轨绝不能被当成第二条重编码链";
+    EXPECT_EQ(plan.drop_count, 0u);
+}
+
+TEST(RepairTranscodeTracks, ExtraVideoDroppedWhenContainerRejects) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "video", "ffv1")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Rejected;
+    probes[1].container_fit_detail = "封装器返回 Invalid argument";
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* extra = FindDecision(plan, 1);
+    ASSERT_NE(extra, nullptr);
+    EXPECT_EQ(extra->action, "drop");
+    EXPECT_EQ(extra->reason_code, "extra_video_copy_container_rejected");
+    // 理由必须带上封装器原话，也要点明「没有第二条链」——不是「我们不想」。
+    EXPECT_NE(extra->reason.find("封装器返回 Invalid argument"), std::string::npos) << extra->reason;
+    EXPECT_NE(extra->reason.find("没有第二条解码-重编码链"), std::string::npos) << extra->reason;
+}
+
+TEST(RepairTranscodeTracks, ExtraVideoCopiedWhenFitUnmeasured) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "video", "h264")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Unknown;
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* extra = FindDecision(plan, 1);
+    ASSERT_NE(extra, nullptr);
+    EXPECT_EQ(extra->action, "copy");
+    EXPECT_EQ(extra->reason_code, "extra_video_copy_container_unprobed") << "没实测就不许写成「接受」";
+    EXPECT_NE(extra->reason.find("未能实测"), std::string::npos) << extra->reason;
+}
+
+// 反向守护：主视频轨**永远**重编码，容器接不接受都不影响它的决策。
+// 把「容器接受就复制」这条规则误用到主轨上，产物会变成「一条修好的视频都没有」，
+// 而报告里每一条理由都写得通顺 —— 只有这类反向断言能拦住。
+TEST(RepairTranscodeTracks, PrimaryVideoNeverBecomesACopy) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "audio", "aac")};
+    probes[0].container_fit = repair::TranscodeContainerFit::Accepted;
+    probes[1].container_fit = repair::TranscodeContainerFit::Accepted;
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* primary = FindDecision(plan, 0);
+    ASSERT_NE(primary, nullptr);
+    EXPECT_EQ(primary->action, "transcode") << "主视频轨被当成复制轨了：" << primary->text;
+}
+
 // ---- 主视频轨：重编码的理由必须来自证据 ----
 
 TEST(RepairTranscodeTracks, VideoReasonDistinguishesDamageFromModeChoice) {
@@ -393,34 +454,33 @@ TEST(RepairTranscodeTracks, S08AccountsForTheSecondVideoTrack) {
             extra = &decision;
     }
     ASSERT_NE(extra, nullptr) << "第二视频轨没有决策";
-    EXPECT_EQ(extra->action, "drop");
-    EXPECT_EQ(extra->reason_code, "extra_video_single_chain");
+    // 切片 Z：容器接得下就复制保留 —— 不再是「一律未保留」。
+    EXPECT_EQ(extra->action, "copy") << extra->text;
+    EXPECT_EQ(extra->reason_code, "extra_video_copy_container_ok") << extra->text;
     EXPECT_EQ(fidelity.track_decisions[0].action, "transcode") << "主视频轨必须被重建";
+    EXPECT_EQ(fidelity.track_decision_summary, "复制 2 轨 / 重编码 1 轨 / 未保留 0 轨");
 
-    // 2. 产物只有一条视频轨 —— 报告说「未保留」，产物里也不能有。
+    // 2. 产物里必须真的有两条视频轨 —— 报告说「复制保留」，产物就得有。
     const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
     ASSERT_TRUE(output_probe.opened) << output_probe.error;
-    EXPECT_EQ(output_probe.video_streams, 1);
+    EXPECT_EQ(output_probe.video_streams, 2);
 
-    // 3. 未保留项进 omitted_items（这是报告里「未保留」清单的唯一来源）。
+    // 3. 「未保留」清单里不能再有它（有它就是谎报丢了东西）。
     const bool omitted_mentions_second_video =
         std::any_of(result.fidelity.omitted_items.begin(), result.fidelity.omitted_items.end(),
                     [](const std::string& item) { return item.find("第二视频轨") != std::string::npos; });
-    EXPECT_TRUE(omitted_mentions_second_video) << "第二视频轨被丢了却不在未保留清单里";
+    EXPECT_FALSE(omitted_mentions_second_video) << "第二视频轨已经复制保留，却被列进未保留清单";
 
-    // 4. 三份报告同源：汇总行 + 未保留行各一次，不重复也不遗漏。
+    // 4. 三份报告同源：复制决策必须以决策行出现，且不能被写成「未保留」。
     const reporting::RepairReportWriteResult written =
         reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
     ASSERT_TRUE(written.AllOk()) << written.error;
     for (const auto& body : {ReadText(dir + "/r.txt"), ReadText(dir + "/r.html")}) {
         EXPECT_NE(body.find("轨道决策"), std::string::npos) << "报告缺少轨道决策行";
         EXPECT_NE(body.find("第二视频轨"), std::string::npos) << "报告没有交代第二视频轨的去向";
-        // 丢轨理由会出现在「未保留」清单、「已知限制」与「明确未恢复项」三处
-        // （后两者引用的都是同一条结论）。决策表**不能**再加一份：决策行以
-        // 「轨道决策: 流 #N」的形式出现，落选的轨不该有这种行。
-        EXPECT_EQ(body.find("轨道决策: 流 #1（video"), std::string::npos)
-            << "drop 决策被当成决策行打印，与未保留清单重复";
-        EXPECT_GE(CountOccurrences(body, "第二视频轨"), 1u);
+        EXPECT_NE(body.find("轨道决策: 流 #1（video"), std::string::npos)
+            << "复制决策必须作为决策行打印（drop 才由「未保留」清单承载）";
+        EXPECT_EQ(body.find("未保留: 流 #1（video"), std::string::npos) << "复制保留的轨被写进了未保留清单";
     }
 
     JsonValue root;
@@ -436,12 +496,141 @@ TEST(RepairTranscodeTracks, S08AccountsForTheSecondVideoTrack) {
     ASSERT_EQ(decisions->Size(), 3u);
     EXPECT_EQ(transcode->Find("track_decision_count")->IntValueOr(-1), 3);
     EXPECT_EQ(transcode->Find("track_decision_input_streams")->IntValueOr(-1), 3);
-    bool json_has_drop = false;
+    bool json_has_copy = false;
     for (const auto& node : decisions->Items()) {
-        if (node.Find("reason_code")->StringValueOr("") == "extra_video_single_chain")
-            json_has_drop = node.Find("action")->StringValueOr("") == "drop";
+        if (node.Find("reason_code")->StringValueOr("") == "extra_video_copy_container_ok")
+            json_has_copy = node.Find("action")->StringValueOr("") == "copy";
     }
-    EXPECT_TRUE(json_has_drop) << "JSON 里必须能机读到这条丢轨决策";
+    EXPECT_TRUE(json_has_copy) << "JSON 里必须能机读到这条复制决策";
+
+    // 5. 最硬的一条：复制轨的**逐包载荷序列**必须与源里那条轨完全相同。
+    //    只断言「产物有 2 条视频轨」抓不到「拷的是别的东西 / 拷了一半 / 重新编码过」；
+    //    三种退化在帧数与流数上都可能照样对得上。
+    const auto source_seq = videoeye_test::CaptureMediaSequence(media.path);
+    ASSERT_TRUE(source_seq.opened) << source_seq.error;
+    const auto output_seq = videoeye_test::CaptureMediaSequence(result.output_path);
+    ASSERT_TRUE(output_seq.opened) << output_seq.error;
+    const videoeye_test::StreamSequence* src_extra = nullptr;
+    for (const auto& stream : source_seq.streams) {
+        if (stream.codec_type == "video" && stream.index != 0)
+            src_extra = &stream;
+    }
+    const videoeye_test::StreamSequence* out_extra = nullptr;
+    for (const auto& stream : output_seq.streams) {
+        if (stream.codec_type == "video" && stream.index != 0)
+            out_extra = &stream;
+    }
+    ASSERT_NE(src_extra, nullptr) << "源里没找到第二视频轨";
+    ASSERT_NE(out_extra, nullptr) << "产物里没找到第二视频轨";
+    ASSERT_FALSE(src_extra->packets.empty()) << "源第二视频轨一个包都没有，判据无从谈起";
+    ASSERT_EQ(out_extra->packets.size(), src_extra->packets.size()) << "复制轨包数变了：不是原码流复制";
+    for (std::size_t k = 0; k < src_extra->packets.size(); ++k) {
+        EXPECT_EQ(out_extra->packets[k].payload_hash, src_extra->packets[k].payload_hash)
+            << "第 " << k << " 个包与源不一致：这条轨不是原样搬过去的";
+    }
+    // 解码帧数不能按「相等」断言：实测源里这条轨的**最后一个包带 AV_PKT_FLAG_DISCARD**
+    // （flag 4，测试语料的老毛病，主视频轨一样会少解一条），avcodec_send_packet 会跳过它，
+    // 于是源只解出 19 帧；复制进产物后同一个样本不再带该标记，解出 20 帧。
+    // 这是容器元数据的差异，不是码流差异 ——「拷过来的比源多解出一帧」是好事，
+    // 抹掉它去凑相等反而是错的。
+    EXPECT_GE(out_extra->decoded_frames, src_extra->decoded_frames) << "复制轨解出的帧数比源还少：包虽然在，画面丢了";
+    EXPECT_GT(out_extra->decoded_frames, 0u) << "复制轨一帧都解不出来，不能声称保留了内容";
+
+    // 6. 账本 / 守恒 / 逐轨验证三条都要跟着这条轨跑：
+    //    * 执行摘要里必须能看到「复制了多少个包」（否则它只是待在产物里、没进账）；
+    //    * 守恒问题表必须为空（账本与写入包数必须严格相等）；
+    //    * 逐轨验证必须真的验过这条轨 —— 不把它写进「保留轨 → 输出流」契约，
+    //      R04 覆盖守护会把它当成「执行器没上报的轨」，整份结论被降级。
+    const bool detail_mentions_copy =
+        std::any_of(result.executions.begin(), result.executions.end(), [](const RepairActionExecution& execution) {
+            return execution.detail.find("第二视频轨按码流复制") != std::string::npos;
+        });
+    EXPECT_TRUE(detail_mentions_copy) << "执行摘要里没有这条轨的复制包数";
+    EXPECT_TRUE(result.sample_conservation_problems.empty())
+        << (result.sample_conservation_problems.empty() ? "" : result.sample_conservation_problems.front());
+    // 输出侧的流下标要在**产物**里实际枚举出来，不能假设「第二视频轨排第 2」——
+    // 建流顺序变了这条断言就会指到别的轨上，而它照样能通过。
+    const videoeye_test::MediaSequence layout = videoeye_test::ProbeStreamLayout(result.output_path);
+    ASSERT_TRUE(layout.opened) << layout.error;
+    int copied_out_index = -1;
+    int video_streams_seen = 0;
+    for (const auto& stream : layout.streams) {
+        if (stream.codec_type != "video")
+            continue;
+        if (video_streams_seen++ == 1)
+            copied_out_index = stream.index;
+    }
+    ASSERT_GE(copied_out_index, 0) << "产物里没有第二视频轨";
+    const RepairTrackVerification* copied_verification = nullptr;
+    for (const auto& track : result.verification.per_track) {
+        if (track.output_stream_index == copied_out_index && track.kind == "video")
+            copied_verification = &track;
+    }
+    ASSERT_NE(copied_verification, nullptr) << "复制轨没有进逐轨验证（R04 会判成覆盖缺口）";
+    EXPECT_TRUE(copied_verification->verified) << "复制轨没被真的解码验证过：" << copied_verification->detail;
+}
+
+// 容器拒绝第二视频轨时必须**真的不写它**：只把决策改成 drop、产物里照样留着这条轨，
+// 是「说了做不到」的另一种形态（决策是对的，行为没跟上）。
+class VideoRejectInjection {
+public:
+    explicit VideoRejectInjection(int input_stream_index) {
+        repair::SetTranscodeVideoContainerRejectedForTesting(input_stream_index);
+    }
+    ~VideoRejectInjection() {
+        repair::SetTranscodeVideoContainerRejectedForTesting(-1);
+    }
+    VideoRejectInjection(const VideoRejectInjection&) = delete;
+    VideoRejectInjection& operator=(const VideoRejectInjection&) = delete;
+};
+
+TEST(RepairTranscodeTracks, RejectedSecondVideoTrackIsNotWrittenIntoTheProduct) {
+    const std::string dir = MakeTempDir("e2e_reject");
+    videoeye_test::TestMediaSpec spec;
+    spec.frame_count = 20;
+    spec.extra_video_tracks = 1;
+    const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir, "two_video_reject", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+
+    RepairResult result;
+    {
+        // 注入只改「容器接受性」这一个判定，丢轨之后的行为全是真的。
+        VideoRejectInjection injection(1);
+        RepairRequest request = MakeRequest(media.path, dir + "/out");
+        request.mode = RepairMode::RecoverContent;
+        result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    }
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    const RepairTranscodeTrackDecision* extra = nullptr;
+    for (const auto& decision : fidelity.track_decisions) {
+        if (decision.kind == "video" && decision.input_stream_index != 0)
+            extra = &decision;
+    }
+    ASSERT_NE(extra, nullptr);
+    EXPECT_EQ(extra->action, "drop");
+    EXPECT_EQ(extra->reason_code, "extra_video_copy_container_rejected") << extra->text;
+    EXPECT_NE(extra->reason.find("SetTranscodeVideoContainerRejectedForTesting"), std::string::npos)
+        << "注入必须留下痕迹，不能让人误以为这是实测结论：" << extra->reason;
+
+    // 决策说 drop，产物就必须真的没有这条轨。
+    const auto output_probe = videoeye_test::ProbeMediaFile(result.output_path);
+    ASSERT_TRUE(output_probe.opened) << output_probe.error;
+    EXPECT_EQ(output_probe.video_streams, 1) << "决策说未保留，产物里却有两条视频轨";
+
+    const bool omitted =
+        std::any_of(result.fidelity.omitted_items.begin(), result.fidelity.omitted_items.end(),
+                    [](const std::string& item) { return item.find("第二视频轨") != std::string::npos; });
+    EXPECT_TRUE(omitted) << "被丢的第二视频轨不在未保留清单里";
+
+    // drop 由「未保留」清单承载，决策表不再重复打印一行。
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    const std::string body = ReadText(dir + "/r.txt");
+    EXPECT_NE(body.find("未保留: 流 #1（video"), std::string::npos) << "未保留清单缺少这条轨";
+    EXPECT_EQ(body.find("轨道决策: 流 #1（video"), std::string::npos) << "drop 决策被当成决策行打印，与未保留清单重复";
 }
 
 // 单视频轨 + 音频的常规路径：决策表不得凭空写出「未保留」。
