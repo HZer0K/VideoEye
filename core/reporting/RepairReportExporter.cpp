@@ -405,10 +405,14 @@ JsonValue BuildSyntheticFill(const model::RepairSyntheticFill& synthetic) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("inspected", JsonValue(synthetic.inspected));
     object.Set("requested", JsonValue(synthetic.requested));
+    // 切片 Y：用户要的填补内容（black_frame / repeated_frame）。「要的」与逐处
+    // `gaps[].synthetic_kind`（实际填的）分开落 —— 两者在退回黑帧时不一致。
+    object.Set("content", JText(synthetic.content));
     object.Set("basis", JText(synthetic.basis));
     object.Set("gaps_detected", J64(synthetic.gaps_detected));
     object.Set("gaps_refused", J64(synthetic.gaps_refused));
     object.Set("frames_inserted", J64(synthetic.frames_inserted));
+    object.Set("fallback_black_frames", J64(synthetic.fallback_black_frames));
     object.Set("seconds_inserted", JsonValue(synthetic.seconds_inserted));
     object.Set("frames_without_source_pts", J64(synthetic.frames_without_source_pts));
     object.Set("summary", JText(synthetic.summary));
@@ -423,6 +427,8 @@ JsonValue BuildSyntheticFill(const model::RepairSyntheticFill& synthetic) {
         node.Set("inserted_frames", J64(gap.inserted_frames));
         node.Set("action", JText(gap.action));
         node.Set("reason_code", JText(gap.reason_code));
+        // 逐处自描述：这一处填的是黑帧还是重复画面。单条记录离开上下文也能读懂。
+        node.Set("synthetic_kind", JText(gap.synthetic_kind));
         node.Set("text", JText(gap.text));
         gaps.PushBack(node);
     }

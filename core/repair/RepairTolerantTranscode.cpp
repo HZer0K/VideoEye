@@ -14,12 +14,12 @@
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
 #include "core/repair/RepairAudioTranscode.h"
-#include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairSilenceFill.h"
 #include "core/repair/RepairTranscodeFidelity.h"
 #include "core/repair/RepairTranscodeTracks.h"
 #include "core/repair/RepairUtils.h"
+#include "core/repair/RepairVideoGapFill.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 extern "C" {
@@ -1692,22 +1692,24 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 不参与平移 —— 平移量统一由 origin_seconds 决定。
     std::optional<double> observed_audio_start_seconds = source_audio_start_seconds;
 
-    // ---- 切片 U：时间轴空洞探测与合成黑帧 ----
+    // ---- 切片 U / Y：时间轴空洞探测与合成填补 ----
     //
     // 只要解码链跑起来就探测（探测是证据，插帧是动作，两件事分开：用户没启用
     // 时报告也要能说「源里确实有 2 处空洞」，不能因为没插帧就当没发生）。
-    BlackFillPolicy black_policy;
-    black_policy.frame_seconds = frame_seconds;
-    black_policy.frame_rate_from_source = frame_rate_from_source;
-    black_policy.fill_enabled = request.fill_video_gaps_with_black_frames;
-    black_policy.merge_contiguous = request.gap_policy == model::RepairGapPolicy::MergeContiguous;
+    VideoGapFillPolicy video_gap_policy;
+    video_gap_policy.frame_seconds = frame_seconds;
+    video_gap_policy.frame_rate_from_source = frame_rate_from_source;
+    video_gap_policy.fill_enabled = request.fill_video_gaps;
+    video_gap_policy.content = request.video_gap_fill_content;
+    video_gap_policy.merge_contiguous = request.gap_policy == model::RepairGapPolicy::MergeContiguous;
     model::RepairSyntheticFill& synthetic_fill = outcome.synthetic_fill;
     synthetic_fill.inspected = false;
-    synthetic_fill.requested = black_policy.fill_enabled;
-    synthetic_fill.basis = "判据：相邻源解码帧 PTS 间隔 vs 标称帧率 " + std::to_string(fps.num) + "/" +
-                           std::to_string(fps.den) + " fps（" +
-                           (frame_rate_from_source ? "源侧声明" : "非源侧证据，不做填补") +
-                           "）；容差 1.5 帧，且间隔须为帧时长的整数倍";
+    synthetic_fill.requested = video_gap_policy.fill_enabled;
+    synthetic_fill.content = VideoGapFillContentCode(request.video_gap_fill_content);
+    synthetic_fill.basis =
+        "判据：相邻源解码帧 PTS 间隔 vs 标称帧率 " + std::to_string(fps.num) + "/" + std::to_string(fps.den) +
+        " fps（" + (frame_rate_from_source ? "源侧声明" : "非源侧证据，不做填补") +
+        "）；容差 1.5 帧，且间隔须为帧时长的整数倍；填补内容：" + VideoGapFillContentName(synthetic_fill.content);
     // 上一个「有源时间戳」的解码帧（秒）。用它和当前帧比出间隔。
     std::optional<double> last_source_video_seconds;
     uint64_t decoded_video_frames = 0;
@@ -1715,6 +1717,12 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 合成帧在编码器时基上的 PTS。drain_encoder 按 PTS 精确归因（帧序号唯一
     // 且单调，不会与真实帧撞号），据此把合成帧排除在样本账本之外。
     std::unordered_set<int64_t> synthetic_video_pts;
+    // 切片 Y：`converted` 里当前是否躺着一幅**真实解码画面**（上一次 sws_scale
+    // 的产物）。重复帧填补直接复用它 —— 探测发生在当前帧 sws_scale 之前，此刻
+    // `converted` 装的正是上一帧，不需要额外留一份拷贝。
+    // 首帧之前 / 上一帧在转换阶段就被丢弃时它是 false：那时缓冲里是未初始化内存，
+    // 拿去当画面重复就是往产物里写垃圾。
+    bool have_picture_in_converted = false;
     // 复用一块黑帧缓冲：每帧 av_frame_make_writable 保证编码器还持着引用时
     // 不会读到我们正在改的内存。
     AVFrame* black_frame = av_frame_alloc();
@@ -1809,10 +1817,47 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
     };
 
+    // 切片 Y：把 `converted` 里的上一帧画面重复 count 次，返回**实际**送进去的帧数。
+    //
+    // 复用同一个 AVFrame 反复送编码器：每次 make_writable 会按引用计数决定要不要
+    // 换缓冲，但内容始终是同一幅画面 —— 这正是「冻结」的语义。占位方式与黑帧完全
+    // 一致（共用 encoded_frames 序号），所以时间轴效果也一致。
+    //
+    // **前置条件**：调用前 `converted` 里必须是一幅真实解码画面（见
+    // have_picture_in_converted）。这一条由判定层保证：每次 PlanVideoGapFill 之前
+    // 都把 policy.previous_frame_available 赋成 have_picture_in_converted，没有画面
+    // 时判定结果是 FillWithBlackFallback，根本不会走到这里。
+    // 这里**不再重复判一次**：真走到没有画面的话，静默返回 0 会被上层记成「编码器
+    // 拒收」，那是个假理由 —— 留一个说不清的兜底，比把不变量写清楚更糟。
+    auto encode_repeated_frames = [&](int64_t count) -> int64_t {
+        if (count <= 0)
+            return 0;
+        int64_t sent = 0;
+        for (int64_t i = 0; i < count; ++i) {
+            if (av_frame_make_writable(converted) < 0) {
+                resource_failed = true;
+                resource_error = "重复帧缓冲不可写（无法分配新的输出帧缓冲）";
+                break;
+            }
+            converted->pts = static_cast<int64_t>(encoded_frames) + video_pts_offset_frames;
+            const int64_t assigned = converted->pts;
+            if (avcodec_send_frame(encoder, converted) < 0)
+                break; // 编码器拒收：不重试、不假装插进去了
+            synthetic_video_pts.insert(assigned);
+            ++encoded_frames;
+            ++sent;
+            if (!drain_encoder())
+                break;
+            if (size_capped || write_failed || resource_failed)
+                break;
+        }
+        return sent;
+    };
+
     // 切片 U：把 count 个合成黑帧送进编码器，返回**实际**送进去的帧数。
     //
-    // PTS 与真实帧共用同一个 encoded_frames 序号，所以黑帧是真的占住了时间轴上
-    // 的那几格，后续真实帧自然顺延 —— 这就是"把空洞补回去"的全部含义，没有别的
+    // PTS 与真实帧共用同一个 encoded_frames 序号，所以填充帧是真的占住了时间轴上
+    // 的那几格，后续真实帧自然顺延 —— 这就是「把空洞补回去」的全部含义，没有别的
     // 隐式时间轴改写。返回值和 count 不等时必须如实上报（编码器拒收 / 写失败）。
     auto encode_black_frames = [&](int64_t count) -> int64_t {
         if (black_frame == nullptr || count <= 0)
@@ -1841,8 +1886,16 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return sent;
     };
 
+    // 判为可填之后按请求的内容落地。返回实际插入帧数；`fallback_black` 表示
+    // 「本该重复却只能填黑帧」（调用方据此累计 fallback_black_frames）。
+    // 放在两个填充函数之后：lambda 按值/引用捕获，必须先声明后使用。
+    auto encode_gap_fill = [&](int64_t count, bool fallback_black) -> int64_t {
+        const bool repeat = video_gap_policy.content == model::VideoGapFillContent::PreviousFrame && !fallback_black;
+        return repeat ? encode_repeated_frames(count) : encode_black_frames(count);
+    };
+
     auto encode_frame = [&](AVFrame* source) -> bool {
-        // ---- 切片 U：先按源时间戳探测空洞，再决定要不要在它前面补黑帧 ----
+        // ---- 切片 U / Y：先按源时间戳探测空洞，再决定要不要在它前面补内容 ----
         //
         // 探测与插帧是两件事：探测是证据（用户没启用也要如实进报告），插帧是
         // 动作（只有显式启用才做）。缺源时间戳时探测不完整，单独计数上报。
@@ -1850,25 +1903,38 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             const double source_seconds = static_cast<double>(source->pts) * av_q2d(video_in->time_base);
             synthetic_fill.inspected = true;
             if (last_source_video_seconds) {
-                BlackFillPlan plan = PlanBlackFill(*last_source_video_seconds, source_seconds, black_policy,
-                                                   synthetic_fill.frames_inserted);
-                if (plan.verdict != BlackFillVerdict::NoGap) {
+                // 「有没有可重复的上一帧」是**逐处**的事实，不是整轮的属性：第一处
+                // 空洞之前那一帧若在转换阶段被丢弃，这一处就只能退回黑帧。
+                video_gap_policy.previous_frame_available = have_picture_in_converted;
+                VideoGapFillPlan plan = PlanVideoGapFill(*last_source_video_seconds, source_seconds, video_gap_policy,
+                                                         synthetic_fill.frames_inserted);
+                if (plan.verdict != VideoGapFillVerdict::NoGap) {
                     plan.gap.after_decoded_frames = decoded_video_frames;
                     ++synthetic_fill.gaps_detected;
-                    if (plan.verdict == BlackFillVerdict::Fill) {
-                        const int64_t sent = encode_black_frames(plan.gap.missing_frames);
+                    const bool attempted = plan.verdict == VideoGapFillVerdict::Fill ||
+                                           plan.verdict == VideoGapFillVerdict::FillWithBlackFallback;
+                    if (attempted) {
+                        const int64_t sent = encode_gap_fill(
+                            plan.gap.missing_frames, plan.verdict == VideoGapFillVerdict::FillWithBlackFallback);
                         plan.gap.inserted_frames = sent;
                         synthetic_fill.frames_inserted += sent;
                         synthetic_seconds_accum += static_cast<double>(sent) * frame_seconds;
+                        if (plan.verdict == VideoGapFillVerdict::FillWithBlackFallback)
+                            synthetic_fill.fallback_black_frames += sent;
                         if (sent != plan.gap.missing_frames) {
-                            plan.verdict = BlackFillVerdict::EncoderRejected;
+                            plan.verdict = VideoGapFillVerdict::EncoderRejected;
                             plan.gap.action = "not_filled";
-                            plan.gap.reason_code = BlackFillReasonCode(plan.verdict, black_policy.fill_enabled);
+                            plan.gap.reason_code = VideoGapFillReasonCode(plan.verdict, video_gap_policy.fill_enabled);
+                            // 内容类型跟着**实际送进去的**走：退回黑帧的那一处即使
+                            // 只送进一半，也不许写成「重复画面」。
+                            plan.gap.synthetic_kind = plan.gap.synthetic_kind.empty()
+                                                          ? VideoGapFillKind(plan.verdict, video_gap_policy.content)
+                                                          : plan.gap.synthetic_kind;
                         }
                     }
                     if (plan.gap.inserted_frames <= 0)
                         ++synthetic_fill.gaps_refused;
-                    plan.gap.text = BlackFillGapText(plan.gap);
+                    plan.gap.text = VideoGapFillGapText(plan.gap);
                     synthetic_fill.gaps.push_back(plan.gap);
                     if (write_failed || resource_failed)
                         return false;
@@ -1902,6 +1968,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
         sws_scale(sws, (const uint8_t* const*)source->data, source->linesize, 0, scale_state.source_height,
                   converted->data, converted->linesize);
+        // 切片 Y：从这一刻起 `converted` 里装的是真实画面，可以拿来重复。
+        // 探测发生在下一帧的入口处，那时 sws_scale 还没覆盖它 —— 所以不必另存一份。
+        have_picture_in_converted = true;
         // encoder->time_base = av_inv_q(fps)，PTS 每帧 +1 tick = 1/fps 秒。
         converted->pts = static_cast<int64_t>(encoded_frames) + video_pts_offset_frames;
         if (avcodec_send_frame(encoder, converted) < 0) {
@@ -2371,8 +2440,8 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 切片 U：合成填补的收尾渲染。放在失败 / 取消分支**之前** —— 探测到的空洞
     // 与已插入的帧数是既成事实，后面转码失败也不能把它们从报告里抹掉。
     synthetic_fill.seconds_inserted = synthetic_seconds_accum;
-    synthetic_fill.summary = BlackFillSummary(synthetic_fill);
-    synthetic_fill.note = BlackFillBasisNote(synthetic_fill);
+    synthetic_fill.summary = VideoGapFillSummary(synthetic_fill);
+    synthetic_fill.note = VideoGapFillBasisNote(synthetic_fill);
     if (synthetic_fill.frames_inserted > 0) {
         outcome.transcode_note += "；合成黑帧=" + std::to_string(synthetic_fill.frames_inserted) + " 帧（" +
                                   FormatSeconds(synthetic_seconds_accum) + " s），不是从源恢复的内容";

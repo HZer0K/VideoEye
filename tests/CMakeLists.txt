@@ -2859,10 +2859,10 @@ add_test(NAME RepairTranscodeTracksTests COMMAND test_repair_transcode_tracks)
 # 探测与插帧分开（没启用也要报出空洞）；只有「间隔是帧时长整数倍」的跳变才
 # 可填；大段缺失拒绝填补；合成帧不进样本账本、不进恢复率分子。
 # =================================================
-videoeye_add_test(test_repair_black_frame_fill
-    unit/test_repair_black_frame_fill.cpp
+videoeye_add_test(test_repair_video_gap_fill
+    unit/test_repair_video_gap_fill.cpp
 )
-target_link_libraries(test_repair_black_frame_fill PRIVATE
+target_link_libraries(test_repair_video_gap_fill PRIVATE
     VideoEyeRepair
     VideoEyeReporting
     VideoEyeDomain
@@ -2871,7 +2871,7 @@ target_link_libraries(test_repair_black_frame_fill PRIVATE
     FFmpeg::avformat
     FFmpeg::avcodec
     FFmpeg::avutil)
-add_test(NAME RepairBlackFrameFillTests COMMAND test_repair_black_frame_fill)
+add_test(NAME RepairVideoGapFillTests COMMAND test_repair_video_gap_fill)
 
 # =================================================
 # 测试：音频轨转码成目标容器能收的编码（阶段 6 / 切片 V）

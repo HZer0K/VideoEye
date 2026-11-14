@@ -265,12 +265,25 @@ void RepairPanel::BuildUi() {
     single_track_check_->setToolTip(
         QStringLiteral("仅当某条轨的全部样本都确认不可读时，把它从产物中剔除，保证其余轨道仍可播放；"
                        "被剔除轨道的内容不可找回。"));
-    black_fill_check_ = new QCheckBox(QStringLiteral("空档补黑帧"), config_group);
-    black_fill_check_->setChecked(false);
-    black_fill_check_->setToolTip(
-        QStringLiteral("源视频轨中间缺帧时，用合成黑帧把那段时长补回去，避免产物变短、越到后面口型越偏。\n"
-                       "黑帧是合成内容：逐处记账、不计入恢复比例，报告会标明产物含合成内容。\n"
-                       "只在「救内容」模式生效；单处空洞超过 5 秒不填补（大段缺失该如实呈现，不用黑场掩盖）。"));
+    video_fill_check_ = new QCheckBox(QStringLiteral("空档补帧"), config_group);
+    video_fill_check_->setChecked(false);
+    video_fill_check_->setObjectName(QStringLiteral("VideoGapFillToggle"));
+    video_fill_check_->setToolTip(
+        QStringLiteral("源视频轨中间缺帧时，用合成内容把那段时长补回去，避免产物变短、越到后面口型越偏。\n"
+                       "填进去的是合成内容：逐处记账、不计入恢复比例，报告会标明「填了什么」。\n"
+                       "只在「救内容」模式生效；单处空洞超过 5 秒不填补（大段缺失该如实呈现，不用填充掩盖）。"));
+    video_fill_content_combo_ = new QComboBox(config_group);
+    video_fill_content_combo_->setObjectName(QStringLiteral("VideoGapFillContentCombo"));
+    video_fill_content_combo_->addItem(QStringLiteral("黑帧"),
+                                       static_cast<int>(model::VideoGapFillContent::BlackFrame));
+    video_fill_content_combo_->addItem(QStringLiteral("重复上一帧"),
+                                       static_cast<int>(model::VideoGapFillContent::PreviousFrame));
+    video_fill_content_combo_->setToolTip(
+        QStringLiteral("黑帧：一眼就能看出「这里原本没有画面」，误读风险最低（默认）。\n"
+                       "重复上一帧（冻结）：播放更连续，但画出来的是一幅真实画面，容易被当成源里本来就有的内容 —— "
+                       "报告会逐处标明「重复画面」。\n"
+                       "某处没有可用的上一帧时退回黑帧，并逐处写明退回了。"));
+    video_fill_content_combo_->setEnabled(false);
     audio_reencode_check_ = new QCheckBox(QStringLiteral("音轨不符容器时重编码"), config_group);
     audio_reencode_check_->setChecked(true);
     audio_reencode_check_->setObjectName(QStringLiteral("AudioReencodeToggle"));
@@ -295,7 +308,8 @@ void RepairPanel::BuildUi() {
     capability_row->addWidget(timeline_check_);
     capability_row->addWidget(fill_missing_check_);
     capability_row->addWidget(single_track_check_);
-    capability_row->addWidget(black_fill_check_);
+    capability_row->addWidget(video_fill_check_);
+    capability_row->addWidget(video_fill_content_combo_);
     capability_row->addWidget(audio_reencode_check_);
     capability_row->addWidget(silence_fill_check_);
     capability_row->addWidget(keep_partial_check_);
@@ -306,17 +320,28 @@ void RepairPanel::BuildUi() {
         if (fill_missing_check_)
             fill_missing_check_->setEnabled(checked && start_button_ != nullptr && start_button_->isEnabled());
     });
-    // 空档补黑帧只在「救内容」模式生效：模式切换时同步可用状态，避免勾了不生效。
-    connect(mode_combo_, &QComboBox::currentIndexChanged, this, [this](int) {
-        if (black_fill_check_ == nullptr)
+    // 空档补帧只在「救内容」模式生效：模式切换时同步可用状态，避免勾了不生效。
+    // 「补什么」跟着勾选框走 —— 没勾就没必要选，勾了才有意义。
+    const auto sync_video_fill_content = [this]() {
+        if (video_fill_content_combo_ == nullptr)
+            return;
+        const bool armed =
+            video_fill_check_ != nullptr && video_fill_check_->isEnabled() && video_fill_check_->isChecked();
+        video_fill_content_combo_->setEnabled(armed);
+    };
+    connect(video_fill_check_, &QCheckBox::toggled, this,
+            [sync_video_fill_content](bool) { sync_video_fill_content(); });
+    connect(mode_combo_, &QComboBox::currentIndexChanged, this, [this, sync_video_fill_content](int) {
+        if (video_fill_check_ == nullptr)
             return;
         const bool salvaging =
             mode_combo_->currentData().toInt() == static_cast<int>(model::RepairMode::RecoverContent);
-        black_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
+        video_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
         if (audio_reencode_check_ != nullptr)
             audio_reencode_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
         if (silence_fill_check_ != nullptr)
             silence_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
+        sync_video_fill_content();
     });
 
     root->addWidget(config_group);
@@ -569,9 +594,12 @@ model::RepairRequest RepairPanel::BuildRequest(const QString& source) const {
     request.repair_timeline = timeline_check_->isChecked();
     request.fill_missing_timestamps = request.repair_timeline && fill_missing_check_->isChecked();
     request.allow_single_track = single_track_check_->isChecked();
-    // 黑帧填补只在「救内容」模式有意义（保码流路径不重新生成视频帧）。
-    request.fill_video_gaps_with_black_frames =
-        request.mode == model::RepairMode::RecoverContent && black_fill_check_->isChecked();
+    // 空档补帧只在「救内容」模式有意义（保码流路径不重新生成视频帧）。
+    request.fill_video_gaps = request.mode == model::RepairMode::RecoverContent && video_fill_check_->isChecked();
+    // 切片 Y：补什么。勾选框没开时这个值不会被用到，但仍然照实填 —— 避免
+    // 报告里出现「content=black_frame」而用户其实选了重复帧、只是没启用。
+    request.video_gap_fill_content =
+        static_cast<model::VideoGapFillContent>(video_fill_content_combo_->currentData().toInt());
     // 音频重编码同样只在 S08 转码链里存在（保码流路径不重新编码）。
     request.reencode_audio_to_fit_container =
         request.mode == model::RepairMode::RecoverContent && audio_reencode_check_->isChecked();
@@ -785,16 +813,19 @@ void RepairPanel::SetRunning(bool running) {
     timeline_check_->setEnabled(idle);
     fill_missing_check_->setEnabled(idle && timeline_check_->isChecked());
     single_track_check_->setEnabled(idle);
-    // 黑帧填补只影响 S08 转码链：只在「救内容」模式下有意义，其他模式禁用以避免
+    // 空档补帧只影响 S08 转码链：只在「救内容」模式下有意义，其他模式禁用以避免
     // 用户勾了却什么也没发生（勾了不生效比没有这个选项更糟）。
-    if (black_fill_check_ != nullptr) {
+    if (video_fill_check_ != nullptr) {
         const bool salvaging =
             mode_combo_->currentData().toInt() == static_cast<int>(model::RepairMode::RecoverContent);
-        black_fill_check_->setEnabled(idle && salvaging);
+        video_fill_check_->setEnabled(idle && salvaging);
         if (audio_reencode_check_ != nullptr)
             audio_reencode_check_->setEnabled(idle && salvaging);
         if (silence_fill_check_ != nullptr)
             silence_fill_check_->setEnabled(idle && salvaging);
+        // 「补什么」的可用性完全跟随勾选框（含未勾 / 非救内容两种不可用情形）。
+        if (video_fill_content_combo_ != nullptr)
+            video_fill_content_combo_->setEnabled(idle && salvaging && video_fill_check_->isChecked());
     }
     keep_partial_check_->setEnabled(idle);
     batch_table_->setEnabled(idle);

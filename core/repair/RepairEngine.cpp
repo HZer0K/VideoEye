@@ -5,7 +5,6 @@
 #include <sstream>
 
 #include "core/domain/io/Utf8Path.h"
-#include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairDeclaredExclusions.h"
 #include "core/repair/RepairExecutor.h"
@@ -15,6 +14,7 @@
 #include "core/repair/RepairSilenceFill.h"
 #include "core/repair/RepairUtils.h"
 #include "core/repair/RepairVerifier.h"
+#include "core/repair/RepairVideoGapFill.h"
 #include "infrastructure/concurrency/Cancellation.h"
 
 namespace videoeye {
@@ -470,9 +470,9 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     // 非 S08 路径没有解码链，探测根本没做。这两句也必须由 repair 层渲染好 ——
     // 报告层只打印，不许自己拼「未探测」这类结论，否则两处各拼一份迟早对不上。
     if (fidelity.synthetic.summary.empty())
-        fidelity.synthetic.summary = repair::BlackFillSummary(fidelity.synthetic);
+        fidelity.synthetic.summary = repair::VideoGapFillSummary(fidelity.synthetic);
     if (fidelity.synthetic.note.empty())
-        fidelity.synthetic.note = repair::BlackFillBasisNote(fidelity.synthetic);
+        fidelity.synthetic.note = repair::VideoGapFillBasisNote(fidelity.synthetic);
     // 切片 W：音频合成填补**逐轨**落账（量纲与视频不同，不许并进上面那份）。
     // 汇总行与依据也在这里一次写好：报告层只打印，不自己拼「未探测」这类结论。
     fidelity.synthetic_audio = execution.synthetic_audio_tracks;
@@ -510,13 +510,15 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
                                  std::string("源时间戳不再保留，帧序与源侧可解码帧一一对应");
-        // 切片 U：插过黑帧之后「一一对应」就不再成立了 —— 帧序里多了没有源侧
-        // 对应帧的合成帧。这句话必须当场改掉，不能留给读者去别处发现。
+        // 切片 U / Y：插过合成帧之后「一一对应」就不再成立了 —— 帧序里多了没有
+        // 源侧对应帧的合成帧。这句话必须当场改掉，不能留给读者去别处发现。
+        // 而且**填的是什么**必须写清：重复画面画出来像真内容，比黑场更容易被误读。
         if (execution.synthetic_fill.frames_inserted > 0) {
             fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
                                      std::string("源时间戳不再保留，帧序 = 源侧可解码帧 + ") +
-                                     std::to_string(execution.synthetic_fill.frames_inserted) +
-                                     " 帧合成黑帧（合成帧没有源侧对应帧，用于补回源时间轴空洞）";
+                                     std::to_string(execution.synthetic_fill.frames_inserted) + " 帧" +
+                                     repair::VideoGapFillContentName(execution.synthetic_fill.content) +
+                                     "（合成帧没有源侧对应帧，用于补回源时间轴空洞）";
         }
     } else if (timeline_mismatch) {
         fidelity.timeline_status = "modified";
@@ -698,18 +700,24 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         }
     }
 
-    // 切片 U：「合成与原始分开」的落账点。填补过的产物必须在这里说清楚它含合成
-    // 内容，且合成的那段时长没有算进恢复比例 —— 两件事分开写，不能合成一句
-    // 「已尽力恢复」糊过去。
+    // 切片 U / Y：「合成与原始分开」的落账点。填补过的产物必须在这里说清楚它含
+    // 合成内容、**含的是哪一种**，且合成的那段时长没有算进恢复比例 —— 几件事分开
+    // 写，不能合成一句「已尽力恢复」糊过去。
     if (execution.synthetic_fill.frames_inserted > 0) {
-        fidelity.limitations.push_back("产物含 " + std::to_string(execution.synthetic_fill.frames_inserted) +
-                                       " 帧合成黑帧（" + FormatSeconds(execution.synthetic_fill.seconds_inserted) +
-                                       " s）：它们补回的是源时间轴上的空洞，不是从源解出来的画面" +
-                                       (fidelity.original_content_recovery_ratio.has_value()
-                                            ? "；这段时长已从恢复比例分子中扣除"
-                                            : "；本次没有给出恢复比例"));
+        const auto& fill = execution.synthetic_fill;
+        std::string what = std::to_string(fill.frames_inserted) + " 帧" +
+                           repair::VideoGapFillContentName(fill.content) + "（" + FormatSeconds(fill.seconds_inserted) +
+                           " s）";
+        if (fill.fallback_black_frames > 0 && fill.fallback_black_frames < fill.frames_inserted) {
+            what += "，其中 " + std::to_string(fill.fallback_black_frames) + " 帧因该处无可用上一帧而改用黑帧";
+        }
+        fidelity.limitations.push_back(
+            "产物含 " + what + "：它们补回的是源时间轴上的空洞，不是从源解出来的画面" +
+            (fill.content == "repeated_frame" ? "；重复画面沿用的是上一帧的真实画面，不要当成源里本来就有的内容" : "") +
+            (fidelity.original_content_recovery_ratio.has_value() ? "；这段时长已从恢复比例分子中扣除"
+                                                                  : "；本次没有给出恢复比例"));
     } else if (execution.synthetic_fill.gaps_detected > 0) {
-        // 探到洞却没填：同样是结论，必须写出来，否则「没插黑帧」会被读成「没有空洞」。
+        // 探到洞却没填：同样是结论，必须写出来，否则「没插帧」会被读成「没有空洞」。
         fidelity.limitations.push_back("源视频轨探测到 " + std::to_string(execution.synthetic_fill.gaps_detected) +
                                        " 处时间轴空洞，本次未插入合成帧（原因见「合成填补」逐条说明）；"
                                        "这部分时长在产物里表现为画面跳变");

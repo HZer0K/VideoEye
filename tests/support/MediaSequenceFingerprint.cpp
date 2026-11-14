@@ -44,12 +44,35 @@ uint64_t HashFrameLuma(const AVFrame* frame) {
     return hash;
 }
 
+// 同一个采样网格上的亮度均值。哈希只能回答「是不是同一幅画面」，回答不了
+// 「这幅画面是黑的还是上一帧」—— 有损重编码后哈希必然变，但均值仍然可比。
+// 切片 Y 的重复帧填补就是要区分这两件事：重复画面 ≈ 上一帧亮度，黑帧 ≈ 16。
+double MeanFrameLuma(const AVFrame* frame) {
+    if (frame->data[0] == nullptr || frame->width <= 0 || frame->height <= 0)
+        return 0.0;
+    const int step_x = std::max(1, frame->width / 16);
+    const int step_y = std::max(1, frame->height / 16);
+    double sum = 0.0;
+    int64_t samples = 0;
+    for (int y = 0; y < frame->height; y += step_y) {
+        const uint8_t* row = frame->data[0] + static_cast<ptrdiff_t>(y) * frame->linesize[0];
+        for (int x = 0; x < frame->width; x += step_x) {
+            sum += row[x];
+            ++samples;
+        }
+    }
+    return samples > 0 ? sum / static_cast<double>(samples) : 0.0;
+}
+
 void DrainDecoder(AVCodecContext* decoder, AVFrame* frame, StreamSequence& out, uint64_t& rolling,
                   int64_t& last_display_pts) {
     int rc = 0;
     while ((rc = avcodec_receive_frame(decoder, frame)) == 0) {
         const uint64_t frame_hash = HashFrameLuma(frame);
         rolling = Fnv1a64(rolling, &frame_hash, sizeof(frame_hash));
+        // 逐帧亮度均值（显示顺序）。合成填补的判别要靠它：重复画面 ≈ 上一帧，
+        // 黑帧 ≈ 16；只比哈希会因为重编码后的细微差异永远不相等。
+        out.frame_mean_luma.push_back(MeanFrameLuma(frame));
         // avcodec_receive_frame 的输出顺序 = 显示顺序。B 帧重排正确时这里的
         // PTS 单调递增；包顺序里的 PTS 则必然是锯齿状，不能拿来判断错序。
         const int64_t display_pts = frame->pts != AV_NOPTS_VALUE ? frame->pts : frame->best_effort_timestamp;

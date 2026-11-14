@@ -40,6 +40,20 @@ enum class RepairGapPolicy {
     MergeContiguous,          // 删除损坏区间，把后续片段平移到前一段末尾
 };
 
+// ---- 视频轨空洞的填补内容（切片 Y）----
+//
+// 「把空洞补回去」与「补什么」是两件事：前者是时间轴动作（切片 U 已做），后者决定
+// 产物里出现的是黑场还是冻结画面。
+//
+// 两种内容都不是源里解出来的，但**误读风险完全不同**：黑场一眼就知道「这里没有
+// 画面」，而重复上一帧画出来的是一幅真实画面 —— 读者很可能把它当成源里本来就有的
+// 内容。所以内容类型必须逐处落账（`RepairSyntheticGap::synthetic_kind`），不许只
+// 在汇总里写一句「填补了 N 帧」。
+enum class VideoGapFillContent {
+    BlackFrame,    // 合成黑帧：明确表示「这里没有画面」，默认
+    PreviousFrame, // 重复上一帧画面（冻结）：播放更连续，但最容易被误当成真实内容
+};
+
 // ---- 跳段恢复点的证据来源 ----
 //
 // 「恢复点」不能只写一句自由文本：seek 成功不等于内容可解码，索引也许根本不可用。
@@ -584,8 +598,13 @@ struct RepairSyntheticGap {
     int64_t inserted_frames = 0;
     // filled / not_filled（动作）。
     std::string action;
-    // 稳定机读码（black_fill_*），决定「为什么不填」。
+    // 稳定机读码（video_gap_fill_*），决定「为什么不填」。
     std::string reason_code;
+    // 这一处填进去的到底是什么：black_frame / repeated_frame（切片 Y）。
+    //
+    // 逐处自描述，不只放在汇总里 —— 报告消费方（以及以后的报告版本）拿到单条
+    // 空洞记录时，必须能自己判断「这段画面是冻结帧还是黑场」，不能靠上下文。
+    std::string synthetic_kind;
     // repair 层渲染好的说明，报告只打印，不自己拼。
     std::string text;
 };
@@ -597,10 +616,17 @@ struct RepairSyntheticFill {
     std::string basis;
     // 用户是否显式启用了插帧。
     bool requested = false;
+    // 用户要求的填补内容：black_frame / repeated_frame（切片 Y）。
+    // 「要的」与「实际填进去的」可能不同（例如该处没有可用的上一帧，只能用黑帧），
+    // 所以逐处还用 `gaps[].synthetic_kind` 各记一份，两者不许互相顶替。
+    std::string content;
     std::vector<RepairSyntheticGap> gaps;
     int64_t gaps_detected = 0;
     int64_t frames_inserted = 0;
     double seconds_inserted = 0.0;
+    // 其中因为「没有可用的上一帧」而退回黑帧的帧数（⊆ frames_inserted）。
+    // 只有用户要求 repeated_frame 时才可能非 0；这是实测计数，不是派生值。
+    int64_t fallback_black_frames = 0;
     // 探到了但没填（未启用 / 超上限 / 时间戳可疑 / 策略要求塌缩）。
     int64_t gaps_refused = 0;
     // 没有源时间戳的解码帧数：> 0 时探测不完整，不能声称「整条轨都查过了」。

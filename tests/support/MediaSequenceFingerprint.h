@@ -60,6 +60,11 @@ struct StreamSequence {
     // 逐包 / 逐帧的滚动哈希，十六进制字符串，便于断言里直接打印。
     std::string payload_sequence_hash;
     std::string frame_sequence_hash;
+
+    // 逐帧亮度均值（显示顺序，与 frame_sequence_hash 同一遍解码产出）。
+    // 存在的理由：哈希在重编码后必然变化，回答不了「这一帧是黑的还是上一帧」，
+    // 而切片 Y（重复帧 / 黑帧）恰恰需要这个判别。空 = 没解码过视频帧。
+    std::vector<double> frame_mean_luma;
 };
 
 struct MediaSequence {

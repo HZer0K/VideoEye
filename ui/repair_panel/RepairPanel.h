@@ -87,8 +87,10 @@ private:
     QCheckBox* timeline_check_ = nullptr;
     QCheckBox* fill_missing_check_ = nullptr;
     QCheckBox* single_track_check_ = nullptr;
-    // 切片 U：空档补黑帧（合成内容，默认关）。
-    QCheckBox* black_fill_check_ = nullptr;
+    // 切片 U：空档补帧（合成内容，默认关）。
+    QCheckBox* video_fill_check_ = nullptr;
+    // 切片 Y：补什么 —— 黑帧 / 重复上一帧。只在上面那个勾选框打开时可用。
+    QComboBox* video_fill_content_combo_ = nullptr;
     // 切片 V：容器拒绝原音频编码时整轨重编码（默认开，替代「丢轨」）。
     QCheckBox* audio_reencode_check_ = nullptr;
     // 切片 W：音频空洞补静音（合成内容，默认关；只有重编码轨能补）。
