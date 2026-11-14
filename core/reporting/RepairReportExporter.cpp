@@ -398,6 +398,35 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
     return object;
 }
 
+JsonValue BuildSyntheticFill(const model::RepairSyntheticFill& synthetic) {
+    JsonValue object = JsonValue::MakeObject();
+    object.Set("inspected", JsonValue(synthetic.inspected));
+    object.Set("requested", JsonValue(synthetic.requested));
+    object.Set("basis", JText(synthetic.basis));
+    object.Set("gaps_detected", J64(synthetic.gaps_detected));
+    object.Set("gaps_refused", J64(synthetic.gaps_refused));
+    object.Set("frames_inserted", J64(synthetic.frames_inserted));
+    object.Set("seconds_inserted", JsonValue(synthetic.seconds_inserted));
+    object.Set("frames_without_source_pts", J64(synthetic.frames_without_source_pts));
+    object.Set("summary", JText(synthetic.summary));
+    object.Set("note", JText(synthetic.note));
+    JsonValue gaps = JsonValue::MakeArray();
+    for (const auto& gap : synthetic.gaps) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("after_decoded_frames", J64(static_cast<std::int64_t>(gap.after_decoded_frames)));
+        node.Set("source_position_seconds", JsonValue(gap.source_position_seconds));
+        node.Set("gap_seconds", JsonValue(gap.gap_seconds));
+        node.Set("missing_frames", J64(gap.missing_frames));
+        node.Set("inserted_frames", J64(gap.inserted_frames));
+        node.Set("action", JText(gap.action));
+        node.Set("reason_code", JText(gap.reason_code));
+        node.Set("text", JText(gap.text));
+        gaps.PushBack(node);
+    }
+    object.Set("gaps", gaps);
+    return object;
+}
+
 JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     JsonValue object = JsonValue::MakeObject();
     object.Set("video", JText(model::ToString(fidelity.video)));
@@ -406,6 +435,7 @@ JsonValue BuildFidelity(const model::RepairFidelity& fidelity) {
     object.Set("audio_reencoded", JsonValue(fidelity.audio_reencoded));
     object.Set("synthetic_frames_inserted", JsonValue(fidelity.synthetic_frames_inserted));
     object.Set("synthetic_frame_count", J64(fidelity.synthetic_frame_count));
+    object.Set("synthetic", BuildSyntheticFill(fidelity.synthetic));
     object.Set("timeline_modified", JsonValue(fidelity.timeline_modified));
     object.Set("timeline_status", JText(fidelity.timeline_status));
     object.Set("timeline_note", JText(fidelity.timeline_note));
@@ -1327,6 +1357,17 @@ std::vector<ReportSection> BuildSections(const model::RepairResult& result) {
         }
         if (!transcode.track_decision_note.empty())
             fidelity.items.push_back("轨道决策依据: " + transcode.track_decision_note);
+    }
+    // 切片 U：合成填补。只报「插了 N 帧」不够 —— 读者要能看出插在哪、以及
+    // 那几处为什么没插。汇总一行、逐处一行，依据单独一条。
+    {
+        const model::RepairSyntheticFill& synthetic = result.fidelity.synthetic;
+        if (!synthetic.summary.empty())
+            fidelity.rows.emplace_back("合成填补", synthetic.summary);
+        for (const auto& gap : synthetic.gaps)
+            fidelity.items.push_back("合成填补: " + gap.text);
+        if (!synthetic.note.empty())
+            fidelity.items.push_back("合成填补依据: " + synthetic.note);
     }
     if (!transcode.inspected) {
         fidelity.rows.emplace_back("源侧属性结论", "未探测，不能声称位深 / 色彩 / 旋转 / HDR 均已保留");

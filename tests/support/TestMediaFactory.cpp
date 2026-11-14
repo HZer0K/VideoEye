@@ -342,7 +342,12 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
             return media;
         }
         FillVideoFrame(frame, i);
-        frame->pts = i;
+        // 时间轴空洞：把指定帧之后的视频 PTS 整体后推 gap_frames 个帧时长。
+        // 音频不跟着推 —— 这正是「视频丢包、音频照常」的真实形态，也是 S08 把
+        // 空洞压掉之后音画越拖越偏的那条路径。
+        const int64_t gap_shift =
+            (spec.video_gap_after_frame >= 0 && i > spec.video_gap_after_frame) ? spec.video_gap_frames : 0;
+        frame->pts = static_cast<int64_t>(i) + gap_shift;
         avcodec_send_frame(venc, frame);
         // 同帧喂给额外编码器必须在 free 之前：send_frame 只是取引用，
         // 释放后再送就是悬空帧。

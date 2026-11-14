@@ -118,7 +118,9 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     b.not_covered_scope = {
         "GOP 级局部重编码：只重编损坏 GOP、其余段原样拷贝（当前一律整轨重编码）",
         "拼接边界的兼容性验证：重编段与原始段的参数集、参考帧链能否衔接",
-        "黑帧 / 静音填补等合成内容（synthetic_frames_inserted 恒为 false）",
+        "静音填补 / 重复帧填补：音轨只有码流复制与剔除两条路，补静音需要先把音频转码成目标容器能收的编码",
+        "视频黑帧填补要显式启用（RepairRequest::fill_video_gaps_with_black_frames），且只覆盖"
+        "「相邻解码帧之间整帧缺失」这一种形态，不覆盖轨道起点之前 / 整段轨道缺失",
     };
     b.preconditions = {
         "能定位 IDR / 关键帧边界，且从该点起解码器可连续解出至少一组完整 GOP",
@@ -135,8 +137,8 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     b.timeline_impact = "必然改写：丢弃不可解码段会留下时间轴缺口；S08 按源声明帧率推定为恒定帧率，"
                         "起点、时长与音画同步都要重算。content_completeness 只能是 partial，"
                         "timeline_status=modified，salvage_end_seconds 之后的内容明确丢失。"
-                        "⚠️ 当前 S08 不插入黑帧 / 重复 / 合成帧，synthetic_frames_inserted 恒为 false；"
-                        "若将来启用填补策略，必须与恢复出的原始内容分开记账，不能计入恢复率分子。";
+                        "默认不插入任何合成内容（synthetic_frames_inserted=false）；显式启用「空档补黑帧」时"
+                        "只补视频轨的整帧空洞，逐处记账，填补时长不计入恢复率分子，报告同时标出产物含合成内容。";
     b.quality_risks = {
         "重编码代际损失（二次压缩），低码率下块效应与细节丢失明显",
         "丢帧导致卡顿、合成帧导致画面冻结或抖动；GOP 边界判断错误会让段首花屏",

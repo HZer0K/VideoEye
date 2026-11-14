@@ -78,6 +78,9 @@ struct RepairExecutionOutcome {
     // 阶段 6 / 切片 J：重编码前后源侧属性逐项实测。非转码路径保持
     // inspected=false —— 空表不许冒充「属性均已保留」。
     model::RepairTranscodeFidelity transcode_fidelity;
+    // 切片 U：视频轨时间轴空洞的探测与合成黑帧填补。inspected=false 表示本次
+    // 没跑解码链（未探测），不等于「没有空洞」。
+    model::RepairSyntheticFill synthetic_fill;
 
     std::optional<double> output_start_seconds;
     std::optional<double> output_end_seconds;

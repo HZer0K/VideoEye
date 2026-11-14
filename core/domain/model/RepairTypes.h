@@ -564,6 +564,48 @@ struct RepairTranscodeFidelity {
     std::string track_decision_note;
 };
 
+// ---- 合成填补（切片 U）----
+//
+// 「插黑帧 / 补静音」产出的是**合成内容**，不是从源里解出来的东西。所以它与
+// 恢复出来的内容必须分开记账：填补的秒数绝不计入恢复率分子，否则「填了 5 s
+// 黑场」会被报告成「多恢复了 5 s 内容」。
+struct RepairSyntheticGap {
+    // 洞发生在第 N 个已解码帧之后（0 基）。定位用，不是样本序号。
+    uint64_t after_decoded_frames = 0;
+    // 洞的起点（源时间轴秒）：相邻两帧源 PTS 中的前者。
+    double source_position_seconds = 0.0;
+    double gap_seconds = 0.0;
+    // 按标称帧率换算出的缺失帧数。
+    int64_t missing_frames = 0;
+    // 实际插入的合成帧数（0 = 没填）。
+    int64_t inserted_frames = 0;
+    // filled / not_filled（动作）。
+    std::string action;
+    // 稳定机读码（black_fill_*），决定「为什么不填」。
+    std::string reason_code;
+    // repair 层渲染好的说明，报告只打印，不自己拼。
+    std::string text;
+};
+
+struct RepairSyntheticFill {
+    // 是否真的做过空洞探测。false 只表示「没跑解码链」，不表示「没有空洞」。
+    bool inspected = false;
+    // 判据依据（渲染好的一句话）。
+    std::string basis;
+    // 用户是否显式启用了插帧。
+    bool requested = false;
+    std::vector<RepairSyntheticGap> gaps;
+    int64_t gaps_detected = 0;
+    int64_t frames_inserted = 0;
+    double seconds_inserted = 0.0;
+    // 探到了但没填（未启用 / 超上限 / 时间戳可疑 / 策略要求塌缩）。
+    int64_t gaps_refused = 0;
+    // 没有源时间戳的解码帧数：> 0 时探测不完整，不能声称「整条轨都查过了」。
+    uint64_t frames_without_source_pts = 0;
+    std::string summary;
+    std::string note;
+};
+
 // ---- 保真度 ----
 struct RepairFidelity {
     RepairFidelityStatus video = RepairFidelityStatus::NotVerified;
@@ -571,8 +613,12 @@ struct RepairFidelity {
 
     bool video_reencoded = false;
     bool audio_reencoded = false;
+    // 这两个字段是 synthetic 的派生值，由 repair 层一次写好；报告侧读哪一个都
+    // 一致，不许两处各算一份。
     bool synthetic_frames_inserted = false;
     uint64_t synthetic_frame_count = 0;
+    // 切片 U：合成填补的完整账（探测依据 / 逐处空洞 / 插了多少帧）。
+    RepairSyntheticFill synthetic;
     // timeline_modified 只表示「引擎是否主动重写时间戳」，不等于「产物时间轴相对源未变」：
     // 借用参考初始化段时，未核验的 mdhd 时基会悄悄改变播放时长。
     bool timeline_modified = false;

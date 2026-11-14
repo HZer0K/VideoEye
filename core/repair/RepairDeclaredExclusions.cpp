@@ -123,11 +123,14 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
                                  "不可与 lost_ranges 的损失区间相减，也不得把 gap_count=0 读成无损。",
                                  "切片 K 刻意不补输入侧时间戳：解码器异步、源包与输出帧不是一一对应，"
                                  "硬关联只会造出假的覆盖区间。"));
-        items.push_back(MakeBase("synthetic_content_not_inserted", "不插入黑帧 / 静音 / 重复帧", "S08 容忍式转码",
-                                 "不可解码段留下的时间轴空洞不会被填补，产物可能出现卡顿或静默；"
-                                 "synthetic_frames_inserted=false 是尚未实现该能力，不是「已经补齐」。",
-                                 "阶段 6 现状：黑帧 / 静音 / 重复帧是完全空能力；启用时必须由用户显式选择，"
-                                 "单独记账且不计入恢复率分子。"));
+        items.push_back(MakeBase("synthetic_content_not_inserted", "本次没有插入合成黑帧 / 静音 / 重复帧",
+                                 "S08 容忍式转码",
+                                 "产物里没有补出来的画面或声音：要么本次未启用「空档补黑帧」，要么源时间轴"
+                                 "没有可解释的整帧空洞。静音填补与重复帧填补仍属空能力 —— 音轨只有码流复制 / "
+                                 "剔除两条路，补静音必须先把它转码成目标容器能收的编码。",
+                                 "切片 U 已实现**显式启用**的视频黑帧填补（逐处空洞记账、填补时长不计入恢复率"
+                                 "分子）；黑帧以外的合成内容仍未实现，synthetic_frames_inserted=false 只表示"
+                                 "这次没插，不代表能力缺失清单里「没有这一项」。"));
         items.push_back(MakeBase("transcode_properties_not_inherited", "实测到的转码属性损失不补回",
                                  "S08 且做过源侧保真探测",
                                  "位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据等实测损失本版本不补回；"

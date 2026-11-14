@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <memory>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTranscodeFidelity.h"
 #include "core/repair/RepairTranscodeTracks.h"
@@ -145,10 +147,23 @@ private:
 
 AVRational SourceFrameRate(const AVStream* stream) {
     AVRational fps = stream->avg_frame_rate;
+    // 切片 U 实测：avg_frame_rate 是「帧数 ÷ 总时长」，源中间缺一段时它会显著偏小。
+    // 25 fps 的 40 帧片子里空掉 12 帧（0.48 s）之后 avg 掉到 19.23，而 r_frame_rate
+    // （时间戳的最小公倍帧率，即名义帧率）仍是 25。拿 19.23 当 CFR 帧率会给每帧
+    // 多算 12 ms：整条视频被拉慢 30%，而报告只会说「按推定帧率重建」。
+    //
+    // 只在名义帧率**明显高于**平均值（> 10%）时改用名义帧率 —— 那正是「有空档/
+    // 丢帧」的签名。两者接近时仍沿用 avg（VFR 源的平均值更有代表性）。
+    const AVRational nominal = stream->r_frame_rate;
+    if (fps.num > 0 && fps.den > 0 && nominal.num > 0 && nominal.den > 0) {
+        const double avg_value = av_q2d(fps);
+        const double nominal_value = av_q2d(nominal);
+        if (avg_value > 0.0 && nominal_value > avg_value * 1.10)
+            return nominal;
+        return fps;
+    }
     if (fps.num <= 0 || fps.den <= 0)
         fps = stream->r_frame_rate;
-    if (fps.num <= 0 || fps.den <= 0)
-        fps = AVRational{25, 1};
     if (fps.num <= 0 || fps.den <= 0)
         fps = AVRational{25, 1};
     return fps;
@@ -671,6 +686,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     const int width = first_frame->width;
     const int height = first_frame->height;
     const AVRational fps = SourceFrameRate(video_in);
+    // 切片 U：「帧时长」这个数只允许来自源侧证据。SourceFrameRate 在没有证据时
+    // 会兜底 25 fps —— 拿兜底值去把空洞秒数换算成帧数是纯粹的编造，所以这里
+    // 单独记下证据是否真的存在，供黑帧填补的判据拒绝使用兜底值。
+    const bool frame_rate_from_source = (video_in->avg_frame_rate.num > 0 && video_in->avg_frame_rate.den > 0) ||
+                                        (video_in->r_frame_rate.num > 0 && video_in->r_frame_rate.den > 0);
 
     AVCodecContext* encoder = avcodec_alloc_context3(encoder_codec);
     if (encoder == nullptr) {
@@ -1025,6 +1045,52 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     // 不参与平移 —— 平移量统一由 origin_seconds 决定。
     std::optional<double> observed_audio_start_seconds = source_audio_start_seconds;
 
+    // ---- 切片 U：时间轴空洞探测与合成黑帧 ----
+    //
+    // 只要解码链跑起来就探测（探测是证据，插帧是动作，两件事分开：用户没启用
+    // 时报告也要能说「源里确实有 2 处空洞」，不能因为没插帧就当没发生）。
+    BlackFillPolicy black_policy;
+    black_policy.frame_seconds = frame_seconds;
+    black_policy.frame_rate_from_source = frame_rate_from_source;
+    black_policy.fill_enabled = request.fill_video_gaps_with_black_frames;
+    black_policy.merge_contiguous = request.gap_policy == model::RepairGapPolicy::MergeContiguous;
+    model::RepairSyntheticFill& synthetic_fill = outcome.synthetic_fill;
+    synthetic_fill.inspected = false;
+    synthetic_fill.requested = black_policy.fill_enabled;
+    synthetic_fill.basis = "判据：相邻源解码帧 PTS 间隔 vs 标称帧率 " + std::to_string(fps.num) + "/" +
+                           std::to_string(fps.den) + " fps（" +
+                           (frame_rate_from_source ? "源侧声明" : "非源侧证据，不做填补") +
+                           "）；容差 1.5 帧，且间隔须为帧时长的整数倍";
+    // 上一个「有源时间戳」的解码帧（秒）。用它和当前帧比出间隔。
+    std::optional<double> last_source_video_seconds;
+    uint64_t decoded_video_frames = 0;
+    double synthetic_seconds_accum = 0.0;
+    // 合成帧在编码器时基上的 PTS。drain_encoder 按 PTS 精确归因（帧序号唯一
+    // 且单调，不会与真实帧撞号），据此把合成帧排除在样本账本之外。
+    std::unordered_set<int64_t> synthetic_video_pts;
+    // 复用一块黑帧缓冲：每帧 av_frame_make_writable 保证编码器还持着引用时
+    // 不会读到我们正在改的内存。
+    AVFrame* black_frame = av_frame_alloc();
+    if (black_frame != nullptr) {
+        black_frame->format = encoder_format;
+        black_frame->width = width;
+        black_frame->height = height;
+        // av_image_fill_black 要的是 ptrdiff_t 行宽数组，AVFrame::linesize 是 int[8]，
+        // 两个类型在 64 位下不能隐式转换（C2664），必须显式摊平一次。
+        ptrdiff_t black_linesize[4] = {0, 0, 0, 0};
+        bool black_ok = av_frame_get_buffer(black_frame, 0) >= 0;
+        if (black_ok) {
+            for (int plane = 0; plane < 4; ++plane)
+                black_linesize[plane] = black_frame->linesize[plane];
+            black_ok =
+                av_image_fill_black(black_frame->data, black_linesize, encoder_format,
+                                    encoder->color_range == AVCOL_RANGE_JPEG ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG,
+                                    width, height) >= 0;
+        }
+        if (!black_ok)
+            av_frame_free(&black_frame);
+    }
+
     auto drain_encoder = [&]() -> bool {
         for (;;) {
             const int ret = avcodec_receive_packet(encoder, encoded);
@@ -1036,6 +1102,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 return false;
             }
             encoded->stream_index = video_out_index;
+            // 切片 U：合成黑帧的归因必须在 rescale 之前抓 —— 集合里存的都是
+            // 编码器时基上的帧序号，换算成封装器时基就对不上了。
+            const bool is_synthetic_frame =
+                encoded->pts != AV_NOPTS_VALUE && synthetic_video_pts.count(encoded->pts) > 0;
             av_packet_rescale_ts(encoded, encoder->time_base, video_out->time_base);
             if (encoded->pts != AV_NOPTS_VALUE) {
                 const double tb = av_q2d(video_out->time_base);
@@ -1071,7 +1141,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                 write_error = "写入编码包失败";
                 return false;
             }
-            {
+            // 样本账本记的是「与源对应的已恢复样本」。合成黑帧没有源侧对应样本，
+            // 记进去会让逐轨覆盖把填补的空档算成"恢复出来的内容" —— 那正是
+            // 切片 U 明令禁止的事。它们单独记在 synthetic_fill 里。
+            if (!is_synthetic_frame) {
                 model::RecoveredSample sample;
                 sample.size = static_cast<uint64_t>(std::max(written, 0));
                 sample.track_id = 0; // 重编码产物以输出流下标归属，轨号未映射
@@ -1089,7 +1162,77 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
     };
 
+    // 切片 U：把 count 个合成黑帧送进编码器，返回**实际**送进去的帧数。
+    //
+    // PTS 与真实帧共用同一个 encoded_frames 序号，所以黑帧是真的占住了时间轴上
+    // 的那几格，后续真实帧自然顺延 —— 这就是"把空洞补回去"的全部含义，没有别的
+    // 隐式时间轴改写。返回值和 count 不等时必须如实上报（编码器拒收 / 写失败）。
+    auto encode_black_frames = [&](int64_t count) -> int64_t {
+        if (black_frame == nullptr || count <= 0)
+            return 0;
+        int64_t sent = 0;
+        for (int64_t i = 0; i < count; ++i) {
+            if (av_frame_make_writable(black_frame) < 0) {
+                resource_failed = true;
+                resource_error = "合成黑帧缓冲不可写（无法分配新的输出帧缓冲）";
+                break;
+            }
+            black_frame->pts = static_cast<int64_t>(encoded_frames) + video_pts_offset_frames;
+            const int64_t assigned = black_frame->pts;
+            if (avcodec_send_frame(encoder, black_frame) < 0)
+                break; // 编码器拒收：不重试、不假装插进去了
+            synthetic_video_pts.insert(assigned);
+            ++encoded_frames;
+            ++sent;
+            if (!drain_encoder()) {
+                // 写盘失败已经由 drain_encoder 记好原因，这里只停止继续插帧。
+                break;
+            }
+            if (size_capped || write_failed || resource_failed)
+                break;
+        }
+        return sent;
+    };
+
     auto encode_frame = [&](AVFrame* source) -> bool {
+        // ---- 切片 U：先按源时间戳探测空洞，再决定要不要在它前面补黑帧 ----
+        //
+        // 探测与插帧是两件事：探测是证据（用户没启用也要如实进报告），插帧是
+        // 动作（只有显式启用才做）。缺源时间戳时探测不完整，单独计数上报。
+        if (source->pts != AV_NOPTS_VALUE) {
+            const double source_seconds = static_cast<double>(source->pts) * av_q2d(video_in->time_base);
+            synthetic_fill.inspected = true;
+            if (last_source_video_seconds) {
+                BlackFillPlan plan = PlanBlackFill(*last_source_video_seconds, source_seconds, black_policy,
+                                                   synthetic_fill.frames_inserted);
+                if (plan.verdict != BlackFillVerdict::NoGap) {
+                    plan.gap.after_decoded_frames = decoded_video_frames;
+                    ++synthetic_fill.gaps_detected;
+                    if (plan.verdict == BlackFillVerdict::Fill) {
+                        const int64_t sent = encode_black_frames(plan.gap.missing_frames);
+                        plan.gap.inserted_frames = sent;
+                        synthetic_fill.frames_inserted += sent;
+                        synthetic_seconds_accum += static_cast<double>(sent) * frame_seconds;
+                        if (sent != plan.gap.missing_frames) {
+                            plan.verdict = BlackFillVerdict::EncoderRejected;
+                            plan.gap.action = "not_filled";
+                            plan.gap.reason_code = BlackFillReasonCode(plan.verdict, black_policy.fill_enabled);
+                        }
+                    }
+                    if (plan.gap.inserted_frames <= 0)
+                        ++synthetic_fill.gaps_refused;
+                    plan.gap.text = BlackFillGapText(plan.gap);
+                    synthetic_fill.gaps.push_back(plan.gap);
+                    if (write_failed || resource_failed)
+                        return false;
+                }
+            }
+            last_source_video_seconds = source_seconds;
+        } else {
+            ++synthetic_fill.frames_without_source_pts;
+        }
+        ++decoded_video_frames;
+
         // 编码器可能仍持有上一帧的引用；make_writable 会在必要时换一块缓冲，
         // 且不会像 av_frame_unref 那样把 format / width / height 一并清掉。
         if (av_frame_make_writable(converted) < 0) {
@@ -1264,6 +1407,23 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         sws_freeContext(sws);
     av_packet_free(&encoded);
     av_frame_free(&converted);
+    // 切片 U：恢复比例需要源侧时长基线。S08 以前根本不填这个字段，于是转码产物
+    // 永远只拿到「缺少源侧时长基线，未给出恢复比例」—— 空着不是「没问题」，
+    // 是结论缺失；而「填补不许抬高恢复比例」这条也只有在有基线时才可验证。
+    {
+        double source_duration = in->duration > 0 ? static_cast<double>(in->duration) / AV_TIME_BASE : 0.0;
+        for (unsigned i = 0; i < in->nb_streams; ++i) {
+            const AVStream* stream = in->streams[i];
+            if (stream->duration <= 0)
+                continue;
+            const bool counted = (stream->codecpar != nullptr && stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) ||
+                                 audio_map[i] >= 0;
+            if (counted)
+                source_duration =
+                    std::max(source_duration, static_cast<double>(stream->duration) * av_q2d(stream->time_base));
+        }
+        outcome.source_duration_seconds = source_duration;
+    }
     const int trailer_ret = av_write_trailer(out);
     const bool trailer_injected = g_inject_trailer_failure.load(std::memory_order_relaxed);
     if ((trailer_ret < 0 || trailer_injected) && !write_failed) {
@@ -1276,6 +1436,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     avcodec_free_context(&encoder);
     av_packet_free(&packet);
     av_frame_free(&frame);
+    av_frame_free(&black_frame);
     avcodec_free_context(&decoder);
     avformat_close_input(&in);
 
@@ -1390,6 +1551,21 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             outcome.transcode_fidelity.av_sync_note =
                 "音频轨存在但没有取得可比的源侧起点，本次未做音画起点比对（不声称音画同步已保持）";
         }
+    }
+    // 切片 U：合成填补的收尾渲染。放在失败 / 取消分支**之前** —— 探测到的空洞
+    // 与已插入的帧数是既成事实，后面转码失败也不能把它们从报告里抹掉。
+    synthetic_fill.seconds_inserted = synthetic_seconds_accum;
+    synthetic_fill.summary = BlackFillSummary(synthetic_fill);
+    synthetic_fill.note = BlackFillBasisNote(synthetic_fill);
+    if (synthetic_fill.frames_inserted > 0) {
+        outcome.transcode_note += "；合成黑帧=" + std::to_string(synthetic_fill.frames_inserted) + " 帧（" +
+                                  FormatSeconds(synthetic_seconds_accum) + " s），不是从源恢复的内容";
+        // 样本账本记的是「与源对应的已恢复样本」，合成帧不在里面；而
+        // packets_written 必须与账本总数严格相等（上层守恒会逐项核对），
+        // 所以这两个数字必然不同，必须说出来，不能让读者自己猜。
+        synthetic_fill.note += "；合成帧已写入产物但未计入样本账本与写入包数（它们没有源侧对应样本），" +
+                               std::string("故写入包数比实际封装包数少 ") +
+                               std::to_string(synthetic_fill.frames_inserted) + " 个";
     }
     if (size_capped) {
         outcome.transcode_note += "；超过输出字节上限 " + std::to_string(max_output_bytes) + " 字节，仅交付前 " +

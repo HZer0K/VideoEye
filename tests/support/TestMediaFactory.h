@@ -48,6 +48,15 @@ struct TestMediaSpec {
     // 额外视频轨数量（默认 0）。用于验证「多条视频轨时哪条被重建、其余怎么交代」：
     // 第二视频轨在 S08 里没有解码-重编码链，必须被显式列为未保留，不能无声消失。
     int extra_video_tracks = 0;
+    // ---- 源侧时间轴空洞（切片 U 语料）----
+    //
+    // 在 video_gap_after_frame 这一帧之后，把后续视频帧的 PTS 整体后推
+    // video_gap_frames 个帧时长，音频不跟着推。这是「视频中间丢了一段包、
+    // 时间戳链没断」的最小可复现形态：S08 会把这段静默压掉，产物变短，
+    // 于是音画越往后差得越多 —— 黑帧填补要修的正是这个。
+    // video_gap_after_frame < 0（默认）= 不制造空洞。
+    int video_gap_after_frame = -1;
+    int video_gap_frames = 0;
 };
 
 struct TestMedia {

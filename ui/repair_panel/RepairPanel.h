@@ -87,6 +87,8 @@ private:
     QCheckBox* timeline_check_ = nullptr;
     QCheckBox* fill_missing_check_ = nullptr;
     QCheckBox* single_track_check_ = nullptr;
+    // 切片 U：空档补黑帧（合成内容，默认关）。
+    QCheckBox* black_fill_check_ = nullptr;
     QCheckBox* keep_partial_check_ = nullptr;
 
     QPushButton* start_button_ = nullptr;

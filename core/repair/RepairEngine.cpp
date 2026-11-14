@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "core/domain/io/Utf8Path.h"
+#include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairBudget.h"
 #include "core/repair/RepairDeclaredExclusions.h"
 #include "core/repair/RepairExecutor.h"
@@ -458,8 +459,19 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     model::RepairFidelity& fidelity = result.fidelity;
     fidelity.video_reencoded = execution.video_reencoded;
     fidelity.audio_reencoded = execution.audio_reencoded;
-    fidelity.synthetic_frames_inserted = false;
-    fidelity.synthetic_frame_count = 0;
+    // 切片 U：合成填补的三个数字只有 repair 层一处来源。synthetic_frames_inserted
+    // 与 synthetic_frame_count 是 synthetic 的派生值 —— 底层的账（探测到几处、
+    // 填了几帧、为什么没填）才是事实，这里只做投影。
+    fidelity.synthetic = execution.synthetic_fill;
+    fidelity.synthetic_frames_inserted = execution.synthetic_fill.frames_inserted > 0;
+    fidelity.synthetic_frame_count =
+        static_cast<uint64_t>(std::max<int64_t>(0, execution.synthetic_fill.frames_inserted));
+    // 非 S08 路径没有解码链，探测根本没做。这两句也必须由 repair 层渲染好 ——
+    // 报告层只打印，不许自己拼「未探测」这类结论，否则两处各拼一份迟早对不上。
+    if (fidelity.synthetic.summary.empty())
+        fidelity.synthetic.summary = repair::BlackFillSummary(fidelity.synthetic);
+    if (fidelity.synthetic.note.empty())
+        fidelity.synthetic.note = repair::BlackFillBasisNote(fidelity.synthetic);
     // timeline_modified 只表示「引擎主动重写了时间戳」。旧实现在这里恒写 false，
     // 于是借用未核验参考时基导致播放时长改变时，报告仍声称「时间轴改写: no」。
     const bool timeline_adjusted = execution.timeline_repair.gap_removed ||
@@ -476,6 +488,14 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
                                  std::string("源时间戳不再保留，帧序与源侧可解码帧一一对应");
+        // 切片 U：插过黑帧之后「一一对应」就不再成立了 —— 帧序里多了没有源侧
+        // 对应帧的合成帧。这句话必须当场改掉，不能留给读者去别处发现。
+        if (execution.synthetic_fill.frames_inserted > 0) {
+            fidelity.timeline_note = "视频轨经过解码后重新编码，输出时间戳按推定帧率从 0 起重新生成；" +
+                                     std::string("源时间戳不再保留，帧序 = 源侧可解码帧 + ") +
+                                     std::to_string(execution.synthetic_fill.frames_inserted) +
+                                     " 帧合成黑帧（合成帧没有源侧对应帧，用于补回源时间轴空洞）";
+        }
     } else if (timeline_mismatch) {
         fidelity.timeline_status = "modified";
         fidelity.timeline_note = "产物实测时长 " + FormatSeconds(verified.verification.observed_duration_seconds) +
@@ -623,6 +643,11 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
                         covered += std::max(0.0, segment.input_end_seconds - segment.input_start_seconds);
                 } else if (execution.output_start_seconds.has_value() && execution.output_end_seconds.has_value()) {
                     covered = std::max(0.0, *execution.output_end_seconds - *execution.output_start_seconds);
+                    // 切片 U：合成黑帧把产物时长补长了，但那段不是恢复出来的内容。
+                    // 不从分子里扣掉的话，「填了 5 s 黑场」会被算成「多恢复了 5 s」。
+                    const double synthetic_seconds = execution.synthetic_fill.seconds_inserted;
+                    if (synthetic_seconds > 0.0)
+                        covered = std::max(0.0, covered - synthetic_seconds);
                 }
                 if (covered > 0.0)
                     recovery_ratio = covered / source_duration;
@@ -649,6 +674,23 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
         } else {
             fidelity.limitations.push_back("缺少源侧时长或样本基线，未给出恢复比例");
         }
+    }
+
+    // 切片 U：「合成与原始分开」的落账点。填补过的产物必须在这里说清楚它含合成
+    // 内容，且合成的那段时长没有算进恢复比例 —— 两件事分开写，不能合成一句
+    // 「已尽力恢复」糊过去。
+    if (execution.synthetic_fill.frames_inserted > 0) {
+        fidelity.limitations.push_back("产物含 " + std::to_string(execution.synthetic_fill.frames_inserted) +
+                                       " 帧合成黑帧（" + FormatSeconds(execution.synthetic_fill.seconds_inserted) +
+                                       " s）：它们补回的是源时间轴上的空洞，不是从源解出来的画面" +
+                                       (fidelity.original_content_recovery_ratio.has_value()
+                                            ? "；这段时长已从恢复比例分子中扣除"
+                                            : "；本次没有给出恢复比例"));
+    } else if (execution.synthetic_fill.gaps_detected > 0) {
+        // 探到洞却没填：同样是结论，必须写出来，否则「没插黑帧」会被读成「没有空洞」。
+        fidelity.limitations.push_back("源视频轨探测到 " + std::to_string(execution.synthetic_fill.gaps_detected) +
+                                       " 处时间轴空洞，本次未插入合成帧（原因见「合成填补」逐条说明）；"
+                                       "这部分时长在产物里表现为画面跳变");
     }
 
     if (container_limits)
