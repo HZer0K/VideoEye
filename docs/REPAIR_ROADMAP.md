@@ -2548,23 +2548,24 @@ S08 转码链（救内容模式）里、由用户**显式启用**时才补。判
 - **验证**：176/176 ctest（2028 gtest）、离屏启动 rc=124、四门禁 + `git diff --check`
   全绿、README 快照 157 · 157 · 2028 · 19。新增 19 个用例（13 纯函数 + 6 端到端），
   另更新 3 个既有文件（声明排除的触发矩阵一分为二、能力契约文案、界面勾选框）。
-- **判别力变异 W1–W13 全部精确判红后按字节恢复复跑绿**：
+- **判别力变异 X1–X13 全部精确判红后按字节恢复复跑绿**（标签用 X 不用 W：
+`build/mut_v.py` 已占用 `W1–W10`，同号两义会让后来人对不上账）：
 
 | 变异 | 破坏点 | 结果 |
 |---|---|---|
-| W1 | 容差归零（±1 采样也算洞） | 精确判红（`JitterWithinToleranceIsNotAGap`） |
-| W2 | 无视未启用，照样补 | 精确判红（`DisabledFillStillRecordsTheGap` + 2 个端到端） |
-| W3 | 码流复制轨也当可补 | 精确判红（`CopyTrackCannotSynthesizeEvenWhenEnabled` + `CopiedTrackReportsGapButCannotSynthesize`） |
-| W4 | 无视 `gap_policy` | 精确判红（`MergePolicyWinsOverFillRequest`） |
-| W5 | 无视单处上限 | 精确判红（`LargeGapIsRefusedNotPartiallyFilled`） |
-| W6 | 无视累计预算 | 精确判红（`TotalBudgetStopsInsertion`） |
-| W7 | 判为可补却不真写采样 | 精确判红（`FillInsertsSilenceWithoutInflatingTheLedger` + 报告用例） |
-| W8 | 合成包照进样本账本 | 精确判红（`FillInsertsSilenceWithoutInflatingTheLedger`） |
-| W9 | 探到空洞但不落账 | 精确判红（3 个端到端） |
-| W10 | 认不出「撑大的包时长」形态 | 精确判红（`CopiedTrackReportsGapButCannotSynthesize`） |
-| W11 | 未探测渲染成「0 处空洞」 | 精确判红（`UninspectedSummaryDoesNotClaimZeroGaps`） |
-| W12 | 理由码重复（复制轨/未启用同码） | 精确判红（`LargeGapIsRefusedNotPartiallyFilled` + `EveryRefusalHasItsOwnReasonCode`） |
-| W13 | 未填补的文案写「已补入」 | 精确判红（`RefusalTextNeverClaimsInsertion`） |
+| X1 | 容差归零（±1 采样也算洞） | 精确判红（`JitterWithinToleranceIsNotAGap`） |
+| X2 | 无视未启用，照样补 | 精确判红（`DisabledFillStillRecordsTheGap` + 2 个端到端） |
+| X3 | 码流复制轨也当可补 | 精确判红（`CopyTrackCannotSynthesizeEvenWhenEnabled` + `CopiedTrackReportsGapButCannotSynthesize`） |
+| X4 | 无视 `gap_policy` | 精确判红（`MergePolicyWinsOverFillRequest`） |
+| X5 | 无视单处上限 | 精确判红（`LargeGapIsRefusedNotPartiallyFilled`） |
+| X6 | 无视累计预算 | 精确判红（`TotalBudgetStopsInsertion`） |
+| X7 | 判为可补却不真写采样 | 精确判红（`FillInsertsSilenceWithoutInflatingTheLedger` + 报告用例） |
+| X8 | 合成包照进样本账本 | 精确判红（`FillInsertsSilenceWithoutInflatingTheLedger`） |
+| X9 | 探到空洞但不落账 | 精确判红（3 个端到端） |
+| X10 | 认不出「撑大的包时长」形态 | 精确判红（`CopiedTrackReportsGapButCannotSynthesize`） |
+| X11 | 未探测渲染成「0 处空洞」 | 精确判红（`UninspectedSummaryDoesNotClaimZeroGaps`） |
+| X12 | 理由码重复（复制轨/未启用同码） | 精确判红（`LargeGapIsRefusedNotPartiallyFilled` + `EveryRefusalHasItsOwnReasonCode`） |
+| X13 | 未填补的文案写「已补入」 | 精确判红（`RefusalTextNeverClaimsInsertion`） |
 
 **本轮踩到的真 bug（都进了结论层）**
 
