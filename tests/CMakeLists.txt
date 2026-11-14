@@ -2522,7 +2522,7 @@ add_test(NAME AnalysisPipelineEdgeTests COMMAND test_analysis_pipeline_edges)
 # =================================================
 # 测试: 码流一致性（端到端，从 AnalysisPipeline 入口跑真实样本）
 #
-# docs/audit/CODEC_AUDIT_2026-10-24.md 第五节 Step 0 的遗留项。现有的解析器用例
+# 2026-10-24 码流审计（本地过程文档）第五节 Step 0 的遗留项。现有的解析器用例
 # 多是「逐位拼出参数集，断言解出来的数等于拼进去的数」—— 生成器和解析器可能犯同一个
 # 错（383×215 那个错值就这么活下来的）。这一层换两样东西：
 #   * 输入是 ffmpeg/libx264 真编出来的文件（tests/corpus/codec/）；

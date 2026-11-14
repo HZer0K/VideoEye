@@ -333,7 +333,6 @@ HLS / DASH 清单、字幕 + SCTE-35。它们只在 **Linux + clang**
 - **各分析维度**的设计说明（码流 / MP4 样本表 / 码率 GOP / 色彩 HDR / 音频 QC /
   画面缺陷 / 字幕时码 / HLS-DASH）在 `docs/` 下按主题各有一篇。
 - **横切能力**：`docs/DIAGNOSTICS_QC.md`（规则引擎）、`docs/REPORTING_BATCH_QC.md`（批量与导出）。
-- **历史审计快照**在 `docs/audit/`，是某一时刻的记录，不随代码演进。
 
 ## 开源协议
 
