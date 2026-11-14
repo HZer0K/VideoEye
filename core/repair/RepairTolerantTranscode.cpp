@@ -50,6 +50,8 @@ std::atomic<bool> g_inject_trailer_failure{false};
 std::atomic<int> g_inject_audio_container_rejected{-1};
 // 切片 Z：强制把某条非主视频轨的容器接受性判成拒绝（-1 = 关）。
 std::atomic<int> g_inject_video_container_rejected{-1};
+// 切片 AA：强制把封面图（attached_pic）的容器接受性判成拒绝（-1 = 关）。
+std::atomic<int> g_inject_cover_container_rejected{-1};
 
 bool ShouldInjectWriteFailure(uint64_t attempt) {
     const int nth = g_inject_write_failure_nth.load(std::memory_order_relaxed);
@@ -996,6 +998,10 @@ void SetTranscodeVideoContainerRejectedForTesting(int input_stream_index) {
     g_inject_video_container_rejected.store(input_stream_index, std::memory_order_relaxed);
 }
 
+void SetTranscodeCoverArtContainerRejectedForTesting(int input_stream_index) {
+    g_inject_cover_container_rejected.store(input_stream_index, std::memory_order_relaxed);
+}
+
 RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairRequest& request,
                                                         const model::RepairDiagnosis& diagnosis,
                                                         const model::RepairPlan& plan, const RepairOutputPaths& paths,
@@ -1075,10 +1081,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         const bool is_primary_video = probe.kind == "video" && !primary_video_seen;
         if (probe.kind == "video")
             primary_video_seen = true;
-        // 容器接受性只对「可能被复制」的轨有决策意义（音频轨 / 非主视频轨），
+        // 容器接受性只对「可能被复制」的轨有决策意义（音频轨 / 非主视频轨 / 封面图），
         // 且必须实测：avformat_query_codec 会对 mpegts 这类没实现 query 的
         // 封装器返回垃圾值，按它判会误删轨。
-        if ((probe.kind == "audio" || (probe.kind == "video" && !is_primary_video)) && !probe.discarded) {
+        if ((probe.kind == "audio" || probe.kind == "attached_pic" || (probe.kind == "video" && !is_primary_video)) &&
+            !probe.discarded) {
             probe.container_fit = ProbeTrackFitsContainer(format_name, stream->codecpar, &probe.container_fit_detail);
             if (g_inject_audio_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
                 // 注入必须留下痕迹：万一哪次真跑进来，报告里能一眼看出这个结论不是实测的。
@@ -1088,6 +1095,11 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             if (g_inject_video_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
                 probe.container_fit = TranscodeContainerFit::Rejected;
                 probe.container_fit_detail = "被强制判为拒绝（测试注入 SetTranscodeVideoContainerRejectedForTesting）";
+            }
+            if (g_inject_cover_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
+                probe.container_fit = TranscodeContainerFit::Rejected;
+                probe.container_fit_detail =
+                    "被强制判为拒绝（测试注入 SetTranscodeCoverArtContainerRejectedForTesting）";
             }
             if (probe.kind == "audio") {
                 probe.audio_reencode_allowed = request.reencode_audio_to_fit_container;
@@ -1508,6 +1520,39 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         av_dict_copy(&dst->metadata, src->metadata, 0);
         video_copy_map[i] = static_cast<int>(out->nb_streams) - 1;
         stream_meta[video_copy_map[i]] = {"video", avcodec_get_name(src->codecpar->codec_id)};
+    }
+
+    // ---- 切片 AA：封面图按原字节携带 ----
+    //
+    // 建流放在最后：上面的音频轨 / 复制视频轨下标都被 audio_chains、验证目标、
+    // 报告引用，中途插一条流会把它们整体挪位（错位不报编译错，只会让结论指到
+    // 别的轨上）。
+    //
+    // ❗ 只复制 codecpar + disposition 就够：mov 封装器按 AV_DISPOSITION_ATTACHED_PIC
+    // 把这条轨的样本写成 `covr` 盒（实测：产物里 `trak` 仍是 2 条，封面在
+    // meta/ilst/covr/data 里，重新打开时 demuxer 又把它读成一条 attached_pic 轨，
+    // 图片字节与源逐字节相同）。所以「携带」不需要我们重建图片轨，也不需要
+    // 额外的 box 拼装代码。
+    std::vector<int> cover_map(in->nb_streams, -1);
+    uint64_t cover_art_packets = 0;
+    uint64_t cover_art_bytes = 0;
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        const AVStream* src = in->streams[i];
+        if ((src->disposition & AV_DISPOSITION_ATTACHED_PIC) == 0)
+            continue;
+        if (i >= track_action.size() || track_action[i] != "copy")
+            continue;
+        AVStream* dst = avformat_new_stream(out, nullptr);
+        if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
+            outcome.omitted_items.push_back("封面图流 #" + std::to_string(i) + " 无法建立输出流，产物未携带该封面");
+            continue;
+        }
+        dst->time_base = src->time_base;
+        dst->disposition = src->disposition;
+        dst->codecpar->codec_tag = 0;
+        av_dict_copy(&dst->metadata, src->metadata, 0);
+        cover_map[i] = static_cast<int>(out->nb_streams) - 1;
+        stream_meta[cover_map[i]] = {"attached_pic", avcodec_get_name(src->codecpar->codec_id)};
     }
 
     if (avio_open(&out->pb, paths.part_path.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -2299,6 +2344,46 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return true;
     };
 
+    // ---- 切片 AA：封面图的写包入口 ----
+    //
+    // 与复制轨共用预算 / 故障注入，差别有三处：不做统一原点平移（封面没有时间轴
+    // 语义，mov 封装器把它写成 covr，不写 stts）；不进样本账本（账本口径是「与源
+    // 对应的已恢复媒体样本」，封面不是样本）；单独计数，好让执行摘要能说清
+    // 「封面按原字节携带了 N 字节」。
+    auto write_cover_packet = [&](AVPacket* pkt) -> bool {
+        if (size_capped)
+            return true;
+        const int in_index = pkt->stream_index;
+        const int out_index = in_index >= 0 && in_index < static_cast<int>(cover_map.size())
+                                  ? cover_map[static_cast<std::size_t>(in_index)]
+                                  : -1;
+        if (out_index < 0)
+            return true;
+        AVStream* src = in->streams[in_index];
+        AVStream* dst = out->streams[out_index];
+        pkt->stream_index = out_index;
+        av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
+        const int written = pkt->size;
+        ++write_attempts;
+        if (ShouldInjectWriteFailure(write_attempts)) {
+            av_packet_unref(pkt);
+            write_failed = true;
+            write_error = "写入封面图失败（故障注入）";
+            return false;
+        }
+        if (av_interleaved_write_frame(out, pkt) < 0) {
+            write_failed = true;
+            write_error = "写入封面图失败";
+            return false;
+        }
+        ++cover_art_packets;
+        cover_art_bytes += static_cast<uint64_t>(std::max(written, 0));
+        bytes_written += static_cast<uint64_t>(std::max(written, 0));
+        if (max_output_bytes > 0 && bytes_written > max_output_bytes)
+            size_capped = true;
+        return true;
+    };
+
     // 非主视频轨包的分发：重编码音频轨进链，其余复制轨（音频 / 第二视频轨）直接写。
     // 三条路的失败语义一致（写盘失败会置 write_failed），调用点不需要区分。
     auto feed_side_packet = [&](AVPacket* pkt) -> bool {
@@ -2316,6 +2401,10 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         if (pkt->stream_index >= 0 && pkt->stream_index < static_cast<int>(video_copy_map.size()) &&
             video_copy_map[static_cast<std::size_t>(pkt->stream_index)] >= 0) {
             return write_copied_video_packet(pkt);
+        }
+        if (pkt->stream_index >= 0 && pkt->stream_index < static_cast<int>(cover_map.size()) &&
+            cover_map[static_cast<std::size_t>(pkt->stream_index)] >= 0) {
+            return write_cover_packet(pkt);
         }
         return write_audio_packet(pkt);
     };
@@ -2401,11 +2490,14 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     const unsigned input_stream_count = in->nb_streams;
     std::vector<uint32_t> audio_track_ids(input_stream_count, 0);
     std::vector<uint32_t> copied_video_track_ids(input_stream_count, 0);
+    std::vector<uint32_t> cover_track_ids(input_stream_count, 0);
     for (unsigned i = 0; i < input_stream_count; ++i) {
         if (audio_map[i] >= 0 && in->streams[i]->id > 0)
             audio_track_ids[i] = static_cast<uint32_t>(in->streams[i]->id);
         if (video_copy_map[i] >= 0 && in->streams[i]->id > 0)
             copied_video_track_ids[i] = static_cast<uint32_t>(in->streams[i]->id);
+        if (cover_map[i] >= 0 && in->streams[i]->id > 0)
+            cover_track_ids[i] = static_cast<uint32_t>(in->streams[i]->id);
     }
 
     if (sws != nullptr)
@@ -2758,6 +2850,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
            << outcome.dropped_video_frames << " 个解码失败包/帧；音频包 " << audio_packets << " 个";
     if (copied_video_packets > 0)
         detail << "；第二视频轨按码流复制 " << copied_video_packets << " 个包（未重编码）";
+    if (cover_art_packets > 0)
+        detail << "；封面图按原字节携带 " << cover_art_packets << " 张 / " << cover_art_bytes
+               << " 字节（未重建图片轨）";
     if (size_capped)
         detail << "；超过输出字节上限 " << max_output_bytes << " 字节，仅交付可播放前缀，其余源内容未恢复";
     if (psnr.samples > 0)
@@ -2810,6 +2905,23 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         copied_video_target.required = explicitly_requested || request.target_streams.empty();
         copied_video_target.note = "S08 转码产物保留的第二视频轨（码流复制，未重编码、不做修复）";
         outcome.verification_targets.push_back(std::move(copied_video_target));
+    }
+    // 切片 AA：封面图同样是「我们自己写进产物的轨」，必须进契约 —— 否则 R04 覆盖
+    // 守护会把它当成「上报之外多出来的媒体轨」。
+    //
+    // required=false：封面不是可播放内容，验证器不为它解码 / 比对像素；它的
+    // 「携带成功」由产物重新打开后逐字节比对来证明（见用例），不由这条契约证明。
+    for (unsigned i = 0; i < input_stream_count; ++i) {
+        if (cover_map[i] < 0)
+            continue;
+        model::RepairTrackVerificationTarget cover_target;
+        cover_target.track_id = cover_track_ids[i];
+        cover_target.input_stream_index = static_cast<int>(i);
+        cover_target.output_stream_index = cover_map[i];
+        cover_target.kind = "attached_pic";
+        cover_target.required = false;
+        cover_target.note = "S08 转码产物携带的封面图（原字节复制，不重建图片轨、不做修复）";
+        outcome.verification_targets.push_back(std::move(cover_target));
     }
 
     {

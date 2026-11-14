@@ -66,6 +66,13 @@ struct TestMediaSpec {
     // audio_gap_after_frame < 0（默认）= 不制造音频空洞。
     int audio_gap_after_frame = -1;
     int audio_gap_frames = 0;
+    // ---- 封面图（切片 AA 语料）----
+    //
+    // 为 true 时多写一条 `attached_pic` 的 MJPEG 轨（64x64、图案确定性）。
+    // 封装器会把它写成 moov/meta/ilst 里的 `covr` 盒，而不是第三条 `trak`；
+    // demuxer 重新打开时又把它读成一条 attached_pic 轨，并给出 1 个包。
+    // 用来验证「S08 携带封面」以及「携带 ≠ 重建图片轨」。
+    bool with_cover_art = false;
 };
 
 struct TestMedia {

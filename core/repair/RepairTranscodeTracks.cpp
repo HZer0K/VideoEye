@@ -195,8 +195,34 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
             continue;
         }
         if (probe.kind == "attached_pic") {
-            plan.decisions.push_back(MakeDecision(probe, "drop", "cover_art_not_rebuilt",
-                                                  "封面图片（attached_pic）不是视频内容，S08 不重建该轨"));
+            // 切片 AA：封面图不再「一律 drop」。
+            //
+            // 旧文案把两件事写成了因果：「封面不是视频内容」→「产物不含该轨」。
+            // 封面确实不是内容轨（不重编码、不重建图片轨、不修图），但这不构成
+            // 「连字节都不带过去」的理由 —— 它的载荷是一张完整图片，原样搬到目标
+            // 容器里不会引入任何损失。与第二视频轨同一个口径：**修不了 ≠ 不保留**。
+            const std::string detail = probe.container_fit_detail.empty()
+                                           ? std::string()
+                                           : std::string("（") + probe.container_fit_detail + "）";
+            switch (probe.container_fit) {
+            case TranscodeContainerFit::Accepted:
+                plan.decisions.push_back(
+                    MakeDecision(probe, "copy", "cover_art_copy_container_ok",
+                                 "封面图片（attached_pic）：目标容器试写头接受该图片编码，按原字节携带"
+                                 "（不重建图片轨，也不改图片内容）"));
+                break;
+            case TranscodeContainerFit::Rejected:
+                plan.decisions.push_back(MakeDecision(probe, "drop", "cover_art_copy_container_rejected",
+                                                      "封面图片（attached_pic）：目标容器试写头拒绝该图片编码" +
+                                                          detail + "；封面不是内容轨，产物未保留该封面"));
+                break;
+            case TranscodeContainerFit::Unknown:
+                plan.decisions.push_back(MakeDecision(probe, "copy", "cover_art_copy_container_unprobed",
+                                                      "封面图片（attached_pic）：未能实测容器是否接受该图片编码，"
+                                                      "按原字节携带；若写头失败会在报告里给出失败原因" +
+                                                          detail));
+                break;
+            }
             continue;
         }
         if (probe.kind == "video") {
@@ -326,7 +352,8 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
     plan.note = "容器接受性由内存试写头逐轨实测（每轨单独放一条流，不是一次测整份产物），不是查表或按扩展名推断；"
                 "实测拒绝的音频轨优先转码成实测能收的编码（转码目标同样要过试写头），转不了才列为未保留；"
                 "非主视频轨只在容器接受时按原码流复制，不做修复 —— 两种结果都在决策表里逐条写明，"
-                "且都不会让整份产物写头失败";
+                "且都不会让整份产物写头失败；封面图同样只搬不改（容器拒绝才丢），"
+                "「携带」不等于「重建图片轨」";
     return plan;
 }
 

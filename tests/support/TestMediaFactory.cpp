@@ -120,8 +120,10 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
 
     AVCodecContext* venc = nullptr;
     AVCodecContext* aenc = nullptr;
+    AVCodecContext* cenc = nullptr; // 封面图（attached_pic）编码器，默认不用
     AVStream* vst = nullptr;
     AVStream* ast = nullptr;
+    AVStream* cst = nullptr;
     // 额外视频轨：每条一个独立编码器上下文（编码器状态不能共用），
     // 编的是同一批帧 —— 只为让产物里真的存在第二条视频轨。
     struct ExtraVideoTrack {
@@ -144,6 +146,8 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         }
         if (aenc)
             avcodec_free_context(&aenc);
+        if (cenc)
+            avcodec_free_context(&cenc);
         if (venc)
             avcodec_free_context(&venc);
         media.ok = ok;
@@ -286,6 +290,35 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         media.audio_codec = acodec->name;
     }
 
+    // ---- 封面图（attached_pic）----
+    //
+    // 只建流、不把它当内容轨：disposition 打上 ATTACHED_PIC，MJPEG 编码一帧写一个包。
+    // 封装器据此把图片写进 `covr` 盒（实测产物里 `trak` 数不变），demuxer 重新
+    // 打开时又把它读成一条 attached_pic 轨 —— 这正是真实 mp4 封面的形态。
+    if (spec.with_cover_art) {
+        const AVCodec* ccodec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+        if (!ccodec)
+            return finish(false, "该 FFmpeg 构建没有 MJPEG 编码器（无法生成封面图语料）");
+        cenc = avcodec_alloc_context3(ccodec);
+        if (!cenc)
+            return finish(false, "无法分配封面图编码器上下文");
+        cenc->width = 64;
+        cenc->height = 64;
+        cenc->pix_fmt = AV_PIX_FMT_YUVJ420P;
+        cenc->time_base = AVRational{1, 25};
+        if (fmt->oformat->flags & AVFMT_GLOBALHEADER)
+            cenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        if (avcodec_open2(cenc, ccodec, nullptr) < 0)
+            return finish(false, "打开封面图编码器失败");
+        cst = avformat_new_stream(fmt, nullptr);
+        if (!cst)
+            return finish(false, "无法创建封面图流");
+        if (avcodec_parameters_from_context(cst->codecpar, cenc) < 0)
+            return finish(false, "写入封面图流参数失败");
+        cst->time_base = cenc->time_base;
+        cst->disposition |= AV_DISPOSITION_ATTACHED_PIC;
+    }
+
     if (!(fmt->oformat->flags & AVFMT_NOFILE)) {
         if (avio_open(&fmt->pb, media.path.c_str(), AVIO_FLAG_WRITE) < 0)
             return finish(false, "无法创建输出文件");
@@ -309,6 +342,43 @@ TestMedia CreateTestMedia(const std::string& directory, const std::string& name,
         }
         av_packet_free(&pkt);
     };
+
+    // 封面图：单帧图片就够了 —— 封装器拿这一个包去填 `covr`。
+    if (cenc != nullptr) {
+        AVFrame* cover = av_frame_alloc();
+        if (!cover) {
+            finish(false, "无法分配封面图帧");
+            return media;
+        }
+        cover->format = AV_PIX_FMT_YUVJ420P;
+        cover->width = cenc->width;
+        cover->height = cenc->height;
+        if (av_frame_get_buffer(cover, 0) < 0) {
+            av_frame_free(&cover);
+            finish(false, "无法分配封面图帧缓冲");
+            return media;
+        }
+        for (int y = 0; y < cover->height; ++y) {
+            uint8_t* row = cover->data[0] + static_cast<ptrdiff_t>(y) * cover->linesize[0];
+            for (int x = 0; x < cover->width; ++x)
+                row[x] = static_cast<uint8_t>(((x / 8) * 16 + (y / 8) * 8) & 0xFF);
+        }
+        for (int plane = 1; plane < 3; ++plane) {
+            for (int y = 0; y < cover->height / 2; ++y) {
+                uint8_t* row = cover->data[plane] + static_cast<ptrdiff_t>(y) * cover->linesize[plane];
+                for (int x = 0; x < cover->width / 2; ++x)
+                    row[x] = static_cast<uint8_t>(plane == 1 ? 96 : 160);
+            }
+        }
+        cover->pts = 0;
+        const int send_ret = avcodec_send_frame(cenc, cover);
+        av_frame_free(&cover);
+        if (send_ret < 0) {
+            finish(false, "编码封面图失败");
+            return media;
+        }
+        drain(cenc, cst);
+    }
 
     const int audio_frame_size = aenc ? aenc->frame_size : 0;
     // 音频总采样数向上取整到整帧: AAC 只接受整帧, 尾部补的那一小段由编码器自己吞掉。

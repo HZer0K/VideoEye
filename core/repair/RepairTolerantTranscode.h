@@ -9,7 +9,8 @@
 // ⚠️ 契约：
 //   * 视频：主视频轨统一重编码（救内容）；第二视频轨在目标容器实测接受其编码时
 //     按**原码流复制**保留（不重编码，因此也不修复该轨内的损伤），容器拒绝才列为
-//     未保留；封面 / 字幕 / 数据 / 附件轨显式列为未保留。
+//     未保留；封面图（attached_pic）同理按原字节携带，容器拒绝才不携带；
+//     字幕 / 数据 / 附件轨显式列为未保留。
 //   * 音频：目标容器接受原编码则按码流复制；拒绝时（切片 V）整轨解码后重编码成
 //     实测能收的编码；一条候选都过不了试写头才剔除，并逐条报出被拒原因。
 //   * 解码失败的包 / 帧被计数，不能静默丢弃。
@@ -61,6 +62,14 @@ void SetTranscodeAudioContainerRejectedForTesting(int input_stream_index);
 // 决定，测试里造不出这种落差。注入只影响**容器接受性这一个判定**，丢轨之后的行为
 // （不建输出流、进「未保留」清单、三格式同源）全是真的。
 void SetTranscodeVideoContainerRejectedForTesting(int input_stream_index);
+
+// 测试专用故障注入（默认关闭，-1 = 关）：把**封面图（attached_pic）**的容器接受性
+// 强制判成拒绝，用来跑通「容器装不下这张图 → 只能不携带」这条分支。
+//
+// 为什么这里也要注入：mp4 源带封面、目标容器也是 mp4（由源扩展名决定）时，图片编码
+// 一定被接受 —— 造不出真实落差。注入只改「接受性」这一个判定，不携带之后的行为
+// （不建输出流、进「未保留」清单、报告写明实测原因）全是真的。
+void SetTranscodeCoverArtContainerRejectedForTesting(int input_stream_index);
 
 } // namespace repair
 } // namespace videoeye

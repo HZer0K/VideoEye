@@ -41,6 +41,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavcodec/codec_par.h>
+#include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
 }
@@ -185,14 +186,18 @@ TEST(RepairTranscodeTracks, CoverArtIsNeverThePrimaryVideoTrack) {
         Probe(1, "video", "h264"),
         Probe(2, "audio", "aac"),
     };
+    probes[0].container_fit = repair::TranscodeContainerFit::Accepted;
     probes[2].container_fit = repair::TranscodeContainerFit::Accepted;
     const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
 
+    // 切片 AA：封面图现在**会被携带**（按原字节复制），但携带不等于它是内容轨 ——
+    // 主视频轨选择必须仍跳过它。容器接受性显式给「实测接受」，这样决策行走
+    // cover_art_copy_container_ok；「没测成不许写成接受」另有专门用例守。
     EXPECT_EQ(plan.primary_video_index, 1) << "封面图（attached_pic）不能被选成主视频轨";
     const RepairTranscodeTrackDecision* cover = FindDecision(plan, 0);
     ASSERT_NE(cover, nullptr);
-    EXPECT_EQ(cover->action, "drop");
-    EXPECT_EQ(cover->reason_code, "cover_art_not_rebuilt");
+    EXPECT_EQ(cover->action, "copy");
+    EXPECT_EQ(cover->reason_code, "cover_art_copy_container_ok");
     const RepairTranscodeTrackDecision* video = FindDecision(plan, 1);
     ASSERT_NE(video, nullptr);
     EXPECT_EQ(video->action, "transcode");
@@ -317,9 +322,57 @@ TEST(RepairTranscodeTracks, ExtraVideoCopiedWhenFitUnmeasured) {
     EXPECT_NE(extra->reason.find("未能实测"), std::string::npos) << extra->reason;
 }
 
-// 反向守护：主视频轨**永远**重编码，容器接不接受都不影响它的决策。
-// 把「容器接受就复制」这条规则误用到主轨上，产物会变成「一条修好的视频都没有」，
-// 而报告里每一条理由都写得通顺 —— 只有这类反向断言能拦住。
+// ---- 切片 AA：封面图（attached_pic）按原字节携带 ----
+//
+// 旧行为的理由是一句因果：「封面不是视频内容」→「产物不含该轨」。前半句对，
+// 后半句推不出来：封面的载荷是一张完整图片，原样搬进目标容器不引入任何损失。
+// 这三条钉住「搬」与「不搬」的分界 —— 分界只能是容器实测，不是轨的类型。
+
+TEST(RepairTranscodeTracks, CoverArtCopiedWhenContainerAccepts) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "attached_pic", "mjpeg")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Accepted;
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* cover = FindDecision(plan, 1);
+    ASSERT_NE(cover, nullptr);
+    EXPECT_EQ(cover->action, "copy");
+    EXPECT_EQ(cover->reason_code, "cover_art_copy_container_ok");
+    // 「携带」不等于「重建图片轨」：这句话必须写在理由里，否则读者会以为我们修了图。
+    EXPECT_NE(cover->reason.find("原字节"), std::string::npos) << cover->reason;
+    EXPECT_NE(cover->reason.find("不重建图片轨"), std::string::npos) << cover->reason;
+    EXPECT_EQ(plan.transcode_count, 1u) << "封面绝不能被当成第二条重编码链";
+    EXPECT_EQ(plan.drop_count, 0u);
+}
+
+TEST(RepairTranscodeTracks, CoverArtDroppedWhenContainerRejects) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "attached_pic", "mjpeg")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Rejected;
+    probes[1].container_fit_detail = "封装器返回 Invalid argument";
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* cover = FindDecision(plan, 1);
+    ASSERT_NE(cover, nullptr);
+    EXPECT_EQ(cover->action, "drop");
+    EXPECT_EQ(cover->reason_code, "cover_art_copy_container_rejected");
+    EXPECT_NE(cover->reason.find("封装器返回 Invalid argument"), std::string::npos)
+        << "容器拒绝的理由必须带实测原话，不能只写「不支持」：" << cover->reason;
+}
+
+TEST(RepairTranscodeTracks, CoverArtCopiedWhenFitUnmeasured) {
+    std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "attached_pic", "mjpeg")};
+    probes[1].container_fit = repair::TranscodeContainerFit::Unknown;
+    const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
+
+    const RepairTranscodeTrackDecision* cover = FindDecision(plan, 1);
+    ASSERT_NE(cover, nullptr);
+    EXPECT_EQ(cover->action, "copy");
+    EXPECT_EQ(cover->reason_code, "cover_art_copy_container_unprobed") << "没实测就不许写成「接受」";
+    EXPECT_NE(cover->reason.find("未能实测"), std::string::npos) << cover->reason;
+}
+
+// 反向守护：主视频轨**永远**重编码，容器接不接受都不影响它的决策。//
+// 把「容器接受就复制」这条规则误用到主轨上，产物会变成「一条修好的视频都没有」， 而报告里每一条理由都写得通顺 ——
+// 只有这类反向断言能拦住。
 TEST(RepairTranscodeTracks, PrimaryVideoNeverBecomesACopy) {
     std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "audio", "aac")};
     probes[0].container_fit = repair::TranscodeContainerFit::Accepted;
@@ -653,4 +706,200 @@ TEST(RepairTranscodeTracks, SingleVideoPathHasNothingDropped) {
     EXPECT_EQ(fidelity.track_decision_summary, "复制 1 轨 / 重编码 1 轨 / 未保留 0 轨");
 }
 
+// ---- 端到端：封面图必须真的到了产物里，且不是靠重建图片轨实现的 ----
+//
+// 这一组用例把「携带」证到字节级：
+//   1. 源里真的有封面（否则后面所有断言都成了空转的假绿）；
+//   2. 产物重新打开后仍有一条 attached_pic 轨，图片字节与源**逐字节相同**；
+//   3. 产物里 `trak` 的数量不多不少 —— 封面走的是 moov/meta/ilst 的 `covr` 盒，
+//      不是第三条图片轨。只断言「能读出封面」是不够的：把封面写成一条真实
+//      视频轨也能读出来，但播放器会把它当成一路可解画面。
+
+struct CoverArtProbe {
+    bool present = false;
+    std::string codec;
+    std::vector<uint8_t> bytes;
+};
+
+// 读取文件里的封面：优先用 demuxer 挂好的 attached_pic，没有再退到读包。
+// FFmpeg 8 的 mov demuxer 两种都会给，这里取到一份即可。
+CoverArtProbe ReadCoverArt(const std::string& path) {
+    CoverArtProbe cover;
+    AVFormatContext* ctx = nullptr;
+    if (avformat_open_input(&ctx, path.c_str(), nullptr, nullptr) < 0)
+        return cover;
+    if (avformat_find_stream_info(ctx, nullptr) < 0) {
+        avformat_close_input(&ctx);
+        return cover;
+    }
+    int cover_index = -1;
+    for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+        AVStream* stream = ctx->streams[i];
+        if ((stream->disposition & AV_DISPOSITION_ATTACHED_PIC) == 0)
+            continue;
+        cover_index = static_cast<int>(i);
+        cover.present = true;
+        cover.codec = avcodec_get_name(stream->codecpar->codec_id);
+        if (stream->attached_pic.data != nullptr && stream->attached_pic.size > 0) {
+            cover.bytes.assign(stream->attached_pic.data, stream->attached_pic.data + stream->attached_pic.size);
+        }
+        break;
+    }
+    if (cover_index >= 0 && cover.bytes.empty()) {
+        AVPacket* packet = av_packet_alloc();
+        while (av_read_frame(ctx, packet) >= 0) {
+            if (packet->stream_index == cover_index && packet->size > 0) {
+                cover.bytes.assign(packet->data, packet->data + packet->size);
+                av_packet_unref(packet);
+                break;
+            }
+            av_packet_unref(packet);
+        }
+        av_packet_free(&packet);
+    }
+    avformat_close_input(&ctx);
+    return cover;
+}
+
+// 数文件里某个 4 字节 box 名的出现次数（`trak` / `covr`）。只用于判「封面有没有
+// 被写成真实轨道」这一件事，不拿它当通用 box 解析器。
+std::size_t CountFourCc(const std::string& path, const std::string& tag) {
+    std::ifstream in(path, std::ios::binary);
+    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::size_t count = 0;
+    for (std::size_t pos = data.find(tag); pos != std::string::npos; pos = data.find(tag, pos + 1))
+        ++count;
+    return count;
+}
+
 } // namespace
+
+TEST(RepairTranscodeTracks, S08CarriesTheCoverArtWithoutRebuildingAnImageTrack) {
+    const std::string dir = MakeTempDir("cover");
+    videoeye_test::TestMediaSpec spec;
+    spec.frame_count = 20;
+    spec.with_cover_art = true;
+    const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir, "with_cover", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+
+    const CoverArtProbe source_cover = ReadCoverArt(media.path);
+    ASSERT_TRUE(source_cover.present) << "语料本身没有封面，这条用例就什么都证明不了";
+    ASSERT_GT(source_cover.bytes.size(), 0u);
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    // 1. 决策行必须写「复制」，理由码必须是实测接受，且明说「不重建图片轨」。
+    const RepairTranscodeFidelity& fidelity = result.fidelity.transcode;
+    const RepairTranscodeTrackDecision* cover_decision = nullptr;
+    for (const auto& decision : fidelity.track_decisions) {
+        if (decision.kind == "attached_pic")
+            cover_decision = &decision;
+    }
+    ASSERT_NE(cover_decision, nullptr) << "封面轨没有决策行";
+    EXPECT_EQ(cover_decision->action, "copy") << cover_decision->text;
+    EXPECT_EQ(cover_decision->reason_code, "cover_art_copy_container_ok") << cover_decision->text;
+
+    // 2. 产物里必须真的能读回同一张图 —— 逐字节相同。
+    const CoverArtProbe output_cover = ReadCoverArt(result.output_path);
+    ASSERT_TRUE(output_cover.present) << "报告说携带了封面，产物里却读不到";
+    EXPECT_EQ(output_cover.bytes.size(), source_cover.bytes.size()) << "封面字节数变了就不是「原字节」";
+    EXPECT_TRUE(output_cover.bytes == source_cover.bytes) << "封面字节与源不一致";
+    EXPECT_EQ(output_cover.codec, source_cover.codec);
+
+    // 3. 承载方式：`covr` 盒在，`trak` 数量不变（2 = 视频 + 音频，没有图片轨）。
+    EXPECT_EQ(CountFourCc(result.output_path, "covr"), 1u) << "封面没有落在 covr 盒里";
+    EXPECT_EQ(CountFourCc(result.output_path, "trak"), 2u)
+        << "产物里多了一条轨道 —— 封面被写成真实图片轨，而不是 covr 盒";
+
+    // 4. 「未保留」清单里不能再提它（提了就是谎报丢了东西）；执行摘要要点出携带字节数。
+    const bool omitted_mentions_cover =
+        std::any_of(result.fidelity.omitted_items.begin(), result.fidelity.omitted_items.end(),
+                    [](const std::string& item) { return item.find("attached_pic") != std::string::npos; });
+    EXPECT_FALSE(omitted_mentions_cover) << "封面明明携带了，却被列进未保留";
+    const bool detail_mentions_cover =
+        std::any_of(result.executions.begin(), result.executions.end(), [](const RepairActionExecution& execution) {
+            return execution.detail.find("封面图按原字节携带") != std::string::npos &&
+                   execution.detail.find("未重建图片轨") != std::string::npos;
+        });
+    EXPECT_TRUE(detail_mentions_cover) << "执行摘要没交代封面搬了多少字节，也没说清没重建图片轨";
+
+    // 报告同源：复制决策必须作为「轨道决策」行出现，不能落到「未保留」清单里。
+    const reporting::RepairReportWriteResult written =
+        reporting::RepairReportExporter::WriteAll(result, dir + "/r.json", dir + "/r.txt", dir + "/r.html");
+    ASSERT_TRUE(written.AllOk()) << written.error;
+    const std::string body = ReadText(dir + "/r.txt");
+    EXPECT_NE(body.find("轨道决策"), std::string::npos);
+    EXPECT_NE(body.find("（attached_pic"), std::string::npos) << "决策表没有封面这一行";
+    EXPECT_EQ(body.find("未保留: 流 #2（attached_pic"), std::string::npos) << "复制保留的封面被写进了未保留清单";
+
+    // 5. 封面也要进「保留轨 → 输出流」契约，否则 R04 覆盖守护会把它当成未上报的轨
+    //    （BuildTargets 枚举产物时 attached_pic 也算一条媒体轨，漏报就标 coverage_gap，
+    //    整份结论被降级）。它是图片轨，required=false，因此只进记录、不参与解码验证。
+    const RepairTrackVerification* cover_verification = nullptr;
+    for (const auto& track : result.verification.per_track) {
+        if (track.kind == "attached_pic")
+            cover_verification = &track;
+    }
+    ASSERT_NE(cover_verification, nullptr) << "封面轨没有进逐轨验证记录";
+    EXPECT_EQ(cover_verification->detail.find("未上报保留映射"), std::string::npos)
+        << "封面没进保留映射契约，R04 会把它判成覆盖缺口并降级整份结论";
+    EXPECT_FALSE(cover_verification->verified) << "封面是图片轨，把它写成「已解码验证」是伪造结论";
+}
+
+TEST(RepairTranscodeTracks, RejectedCoverArtIsNotWrittenIntoTheProduct) {
+    const std::string dir = MakeTempDir("cover_rejected");
+    videoeye_test::TestMediaSpec spec;
+    spec.frame_count = 20;
+    spec.with_cover_art = true;
+    const videoeye_test::TestMedia media = videoeye_test::CreateTestMedia(dir, "with_cover", spec);
+    ASSERT_TRUE(media.ok) << media.error;
+    const CoverArtProbe source_cover = ReadCoverArt(media.path);
+    ASSERT_TRUE(source_cover.present) << "语料本身没有封面";
+
+    // 找出封面输入流下标（注入按输入流下标生效）。
+    int cover_input_index = -1;
+    {
+        AVFormatContext* ctx = nullptr;
+        if (avformat_open_input(&ctx, media.path.c_str(), nullptr, nullptr) >= 0) {
+            avformat_find_stream_info(ctx, nullptr);
+            for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+                if ((ctx->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0) {
+                    cover_input_index = static_cast<int>(i);
+                    break;
+                }
+            }
+            avformat_close_input(&ctx);
+        }
+    }
+    ASSERT_GE(cover_input_index, 0);
+    repair::SetTranscodeCoverArtContainerRejectedForTesting(cover_input_index);
+
+    RepairRequest request = MakeRequest(media.path, dir + "/out");
+    request.mode = RepairMode::RecoverContent;
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    repair::SetTranscodeCoverArtContainerRejectedForTesting(-1);
+    ASSERT_TRUE(result.output_published) << result.summary << " | " << result.error;
+
+    // 决策必须落成 drop，并且理由里带注入痕迹 —— 这个结论不是实测的，不能装成实测。
+    const RepairTranscodeTrackDecision* cover_decision = nullptr;
+    for (const auto& decision : result.fidelity.transcode.track_decisions) {
+        if (decision.kind == "attached_pic")
+            cover_decision = &decision;
+    }
+    ASSERT_NE(cover_decision, nullptr);
+    EXPECT_EQ(cover_decision->action, "drop") << cover_decision->text;
+    EXPECT_EQ(cover_decision->reason_code, "cover_art_copy_container_rejected");
+    EXPECT_NE(cover_decision->reason.find("测试注入"), std::string::npos) << cover_decision->reason;
+
+    // 产物里不能有封面，不能有图片轨，且必须在「未保留」清单里被点名。
+    const CoverArtProbe output_cover = ReadCoverArt(result.output_path);
+    EXPECT_FALSE(output_cover.present) << "决策是未携带，产物里却有封面";
+    EXPECT_EQ(CountFourCc(result.output_path, "trak"), 2u);
+    const bool omitted_mentions_cover =
+        std::any_of(result.fidelity.omitted_items.begin(), result.fidelity.omitted_items.end(),
+                    [](const std::string& item) { return item.find("attached_pic") != std::string::npos; });
+    EXPECT_TRUE(omitted_mentions_cover) << "封面没被携带，却没进未保留清单";
+}
