@@ -34,7 +34,10 @@ std::string FormatIso8601Now() {
 #else
     localtime_r(&t, &tm_local);
 #endif
-    char buffer[32] = {};
+    // GCC -Wformat-truncation 按 int 的最坏宽度（含符号共 11 字符）估算每个
+    // %04d，6 个字段合计最多 72 字节；32 字节会被判「可能截断」。留足余量，
+    // 真实输出恒为 19 字符 + NUL。
+    char buffer[80] = {};
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d", tm_local.tm_year + 1900, tm_local.tm_mon + 1,
                   tm_local.tm_mday, tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec);
     return std::string(buffer);

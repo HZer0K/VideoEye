@@ -974,13 +974,16 @@ StreamByteRows BuildStreamByteRows(const model::ContainerStructureResult& result
             ++bin.count;
             if (sample.keyframe)
                 ++bin.keyframes;
-            const quint64 end = sample.offset + sample.size;
+            // Linux 上 quint64 是 unsigned long long、uint64_t 是 unsigned long，
+            // std::min 直接混用会因模板推导冲突编不过（Windows 两者同型看不出来）。
+            const quint64 begin = static_cast<quint64>(sample.offset);
+            const quint64 end = begin + sample.size;
             row.last_expanded_end = std::max(row.last_expanded_end, end);
-            bin.min_offset = bin.count == 1 ? sample.offset : std::min(bin.min_offset, sample.offset);
+            bin.min_offset = bin.count == 1 ? begin : std::min(bin.min_offset, begin);
             bin.max_end = bin.count == 1 ? end : std::max(bin.max_end, end);
             row.total_bytes += sample.size;
             ++row.total_count;
-            out.min_offset = have_extent ? std::min(out.min_offset, sample.offset) : sample.offset;
+            out.min_offset = have_extent ? std::min(out.min_offset, begin) : begin;
             out.max_offset = have_extent ? std::max(out.max_offset, end) : end;
             have_extent = true;
         }

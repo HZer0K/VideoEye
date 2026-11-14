@@ -949,3 +949,16 @@ TEST(ReportFormatConsistency, GuardsRejectMissingFactsAndMutatedConclusions) {
     wrong_error.integrity.error = "分析被取消";
     EXPECT_FALSE(CompareFacts(wrong_error, data.expected).empty()) << "错误原因被改必须判红";
 }
+
+// ---------------------------------------------------------------------------
+// 4) 错误原因净化：全角竖线是完整性行的分隔符，必须换成半角；方括号换全角，
+//    换行压空格，保证 "[...]" 仍能界定整段原因。旧写法把 U+FF5C 写成
+//    c == '｜'（多字节字符常量），逐字节比较恒为假 —— 这条用例会精确判红。
+// ---------------------------------------------------------------------------
+TEST(ReportFormatConsistency, SanitizeErrorKeepsBracketDelimitersIntact) {
+    using videoeye::reporting::detail::SanitizeIntegrityError;
+    EXPECT_EQ(std::string("a|b［c］ d"), SanitizeIntegrityError("a｜b[c]\nd"));
+    // 反向守护：只命中完整的 EF BD 9C 序列，普通中文 UTF-8 不能被误伤。
+    EXPECT_EQ(std::string("中文原因保留"), SanitizeIntegrityError("中文原因保留"));
+    EXPECT_EQ(std::string("x|y"), SanitizeIntegrityError("x|y"));
+}

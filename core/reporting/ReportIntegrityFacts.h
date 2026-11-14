@@ -12,6 +12,7 @@
 // （PDF 正文本来就是 BuildText 的结果），所以三端只需要一套解析口径。
 // JSON / CSV 各用自己的结构化写法，但值一律从 ReadIntegrityFacts() 取。
 
+#include <cstddef>
 #include <string>
 
 #include "core/reporting/QcReportExporter.h"
@@ -50,11 +51,19 @@ inline const char* YesNo(bool value) {
 inline std::string SanitizeIntegrityError(const std::string& text) {
     std::string out;
     out.reserve(text.size());
-    for (char c : text) {
+    for (std::size_t i = 0; i < text.size();) {
+        // 全角竖线 U+FF5C 的 UTF-8 是 EF BD 9C。写成 c == '｜' 是
+        // multi-character character constant，对逐字节 char 比较恒为假
+        // （GCC -Wmultichar 会告警），错误原因里的分隔符也就永远漏替换。
+        if (i + 2 < text.size() && static_cast<unsigned char>(text[i]) == 0xEF &&
+            static_cast<unsigned char>(text[i + 1]) == 0xBD && static_cast<unsigned char>(text[i + 2]) == 0x9C) {
+            out += '|';
+            i += 3;
+            continue;
+        }
+        const char c = text[i++];
         if (c == '\n' || c == '\r')
             out += ' ';
-        else if (c == '｜')
-            out += '|';
         else if (c == '[')
             out += "［";
         else if (c == ']')

@@ -18,6 +18,16 @@ namespace videoeye {
 namespace repair {
 namespace {
 
+// FFmpeg 7.0（libavformat 61）把 write_packet 的缓冲区改成了 const uint8_t*，
+// 6.x 及更早是非 const。头文件里的 FF_API_AVIO_WRITE_NONCONST 正是这个差异的
+// 开关，7.0 之后该宏被移除 —— 未定义本身即代表 const 版本。
+// 回调是函数指针，const 的加与去都不能隐式转换，签名必须精确匹配。
+#if defined(FF_API_AVIO_WRITE_NONCONST) && FF_API_AVIO_WRITE_NONCONST
+using AvioWriteBuffer = std::uint8_t*;
+#else
+using AvioWriteBuffer = const std::uint8_t*;
+#endif
+
 // 内存写头：只为拿「容器接不接受这条轨」的实测结论，落盘内容全部丢弃。
 //
 // 为什么用内存而不是临时文件：探测发生在每次转码的失败路径上，落盘意味着
@@ -28,7 +38,7 @@ struct MemSink {
     int64_t written = 0;
 };
 
-int MemWrite(void* opaque, const std::uint8_t* /*buffer*/, int size) {
+int MemWrite(void* opaque, AvioWriteBuffer /*buffer*/, int size) {
     auto* sink = static_cast<MemSink*>(opaque);
     if (size <= 0)
         return 0;
