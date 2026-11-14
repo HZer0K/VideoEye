@@ -2874,6 +2874,29 @@ target_link_libraries(test_repair_black_frame_fill PRIVATE
 add_test(NAME RepairBlackFrameFillTests COMMAND test_repair_black_frame_fill)
 
 # =================================================
+# 测试：音频轨转码成目标容器能收的编码（阶段 6 / 切片 V）
+#
+# 「容器拒绝 → 丢轨」补成第三条路：解码 → 重采样 → 重编码。目标不是查表：
+# 编码器存在 + 参数能开 + 试写头接受，三条全过才选它；一条都过不了才 drop，
+# 并逐条报出被拒原因。端到端靠容器接受性的测试注入跑通（本构建造不出
+# 「源容器能装、目标容器不收」的真实语料 —— mov 写不进它自己拒绝的编码）。
+# =================================================
+videoeye_add_test(test_repair_audio_transcode
+    unit/test_repair_audio_transcode.cpp
+)
+target_link_libraries(test_repair_audio_transcode PRIVATE
+    VideoEyeRepair
+    VideoEyeReporting
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    videoeye_test_media_factory
+    FFmpeg::swresample
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil)
+add_test(NAME RepairAudioTranscodeTests COMMAND test_repair_audio_transcode)
+
+# =================================================
 # 测试：修复结论层「本次明确未恢复项」（阶段 5 / 切片 L）
 #
 # 静态目录覆盖守护 + 结构化触发矩阵（含未探测 / 已补齐 / 预检早退等反向守护）

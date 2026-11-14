@@ -79,14 +79,18 @@ std::vector<std::string> TriggerFactsFor(const std::string& code, const model::R
             facts.push_back("fidelity.video_reencoded=true");
     } else if (code == "extra_tracks_not_rebuilt") {
         // 切片 T：只有「决策表里真的被判未保留」的轨才构成适用事实。
-        // 容器拒绝（audio_drop_container_rejected）与源侧已丢弃（stream_marked_discard）
-        // 不属于「我们不重建」这条能力边界，得排除掉 —— 否则会把别人的决定
-        // 算成自己的能力缺口。
+        //
+        // 两种 drop 要排除，因为它们不是「我们不重建」这条能力边界：
+        //   * stream_marked_discard —— 源侧自己标记丢弃；
+        //   * audio_drop_reencode_disabled —— 用户在请求里关掉了重编码（切片 V），
+        //     是别人的决定。
+        // 反过来，audio_drop_no_fitting_encoder（切片 V：容器拒绝且没有一条能过试写头
+        // 的重编码路）恰恰**是**我们的能力缺口，必须列进来。
         for (const auto& decision : result.fidelity.transcode.track_decisions) {
             if (decision.action != "drop")
                 continue;
-            if (decision.reason_code == "audio_drop_container_rejected" ||
-                decision.reason_code == "stream_marked_discard")
+            if (decision.reason_code == "stream_marked_discard" ||
+                decision.reason_code == "audio_drop_reencode_disabled")
                 continue;
             facts.push_back("fidelity.transcode.track_decisions[]=" + decision.text);
         }
@@ -126,8 +130,8 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
         items.push_back(MakeBase("synthetic_content_not_inserted", "本次没有插入合成黑帧 / 静音 / 重复帧",
                                  "S08 容忍式转码",
                                  "产物里没有补出来的画面或声音：要么本次未启用「空档补黑帧」，要么源时间轴"
-                                 "没有可解释的整帧空洞。静音填补与重复帧填补仍属空能力 —— 音轨只有码流复制 / "
-                                 "剔除两条路，补静音必须先把它转码成目标容器能收的编码。",
+                                 "没有可解释的整帧空洞。静音填补与重复帧填补仍属空能力 —— 音轨能复制、"
+                                 "能在容器拒绝时整轨重编码、也能剔除，但没有「在时间轴空洞里补静音」这一步。",
                                  "切片 U 已实现**显式启用**的视频黑帧填补（逐处空洞记账、填补时长不计入恢复率"
                                  "分子）；黑帧以外的合成内容仍未实现，synthetic_frames_inserted=false 只表示"
                                  "这次没插，不代表能力缺失清单里「没有这一项」。"));
@@ -150,12 +154,12 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
                      "但重编码范围仍是整条视频轨：按 GOP 局部重编码需要拼接边界参数兼容性校验，本版本未做；"
                      "实际使用的编码器以报告「重编码编码器」一行为准（本构建首选 libx264 不可用，会回退）。"));
         items.push_back(MakeBase("extra_tracks_not_rebuilt", "第二视频轨 / 字幕 / 数据轨不重建", "S08 容忍式转码",
-                                 "S08 的输出链只有一条解码-重编码视频轨与可复制的音频轨；其余轨（第二视频轨、"
-                                 "封面图、字幕、数据、附件）在产物中不存在，已在「轨道决策」表与「未保留」"
-                                 "清单里逐条列出，不能读成「源里没有这些轨」。",
+                                 "S08 的输出链只有一条解码-重编码视频轨，与「复制或重编码」的音频轨；"
+                                 "其余轨（第二视频轨、封面图、字幕、数据、附件）在产物中不存在，"
+                                 "已在「轨道决策」表与「未保留」清单里逐条列出，不能读成「源里没有这些轨」。",
                                  "切片 T：轨级决策显式落账。多视频轨需要并行的解码-重编码链与各自的时基 / "
-                                 "参数集管理，本版本未做；容器拒绝的音频轨宁可丢弃并报出，也不让整份产物"
-                                 "写头失败。"));
+                                 "参数集管理，本版本未做；容器拒绝的音频轨优先重编码成实测能收的编码，"
+                                 "一条候选都过不了时才丢弃并逐条报出原因，任何情况下都不让整份产物写头失败。"));
         return items;
     }();
     return catalog;

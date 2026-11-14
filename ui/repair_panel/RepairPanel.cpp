@@ -271,6 +271,14 @@ void RepairPanel::BuildUi() {
         QStringLiteral("源视频轨中间缺帧时，用合成黑帧把那段时长补回去，避免产物变短、越到后面口型越偏。\n"
                        "黑帧是合成内容：逐处记账、不计入恢复比例，报告会标明产物含合成内容。\n"
                        "只在「救内容」模式生效；单处空洞超过 5 秒不填补（大段缺失该如实呈现，不用黑场掩盖）。"));
+    audio_reencode_check_ = new QCheckBox(QStringLiteral("音轨不符容器时重编码"), config_group);
+    audio_reencode_check_->setChecked(true);
+    audio_reencode_check_->setObjectName(QStringLiteral("AudioReencodeToggle"));
+    audio_reencode_check_->setToolTip(
+        QStringLiteral("目标容器不接受原音频编码时（例如 mov 里的 opus、mp4 里的 truehd），把它解码后"
+                       "重编码成实测能收的编码，避免整条音轨被剔除。\n"
+                       "重编码是有损的：报告会写清原编码 → 目标编码、实际编码器，以及采样率 / 声道是否被迫改变。\n"
+                       "关闭时该轨按「容器拒绝」剔除并写明原因。只在「救内容」模式生效。"));
     keep_partial_check_ = new QCheckBox(QStringLiteral("取消时保留已写前缀"), config_group);
     keep_partial_check_->setChecked(false);
     keep_partial_check_->setToolTip(QStringLiteral("取消或超出预算时，把已经写入的产物前缀另存为 *.partial.<ext>。\n"
@@ -280,6 +288,7 @@ void RepairPanel::BuildUi() {
     capability_row->addWidget(fill_missing_check_);
     capability_row->addWidget(single_track_check_);
     capability_row->addWidget(black_fill_check_);
+    capability_row->addWidget(audio_reencode_check_);
     capability_row->addWidget(keep_partial_check_);
     capability_row->addStretch(1);
     grid->addLayout(capability_row, row, 1, 1, 2);
@@ -295,6 +304,8 @@ void RepairPanel::BuildUi() {
         const bool salvaging =
             mode_combo_->currentData().toInt() == static_cast<int>(model::RepairMode::RecoverContent);
         black_fill_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
+        if (audio_reencode_check_ != nullptr)
+            audio_reencode_check_->setEnabled(salvaging && start_button_ != nullptr && start_button_->isEnabled());
     });
 
     root->addWidget(config_group);
@@ -550,6 +561,9 @@ model::RepairRequest RepairPanel::BuildRequest(const QString& source) const {
     // 黑帧填补只在「救内容」模式有意义（保码流路径不重新生成视频帧）。
     request.fill_video_gaps_with_black_frames =
         request.mode == model::RepairMode::RecoverContent && black_fill_check_->isChecked();
+    // 音频重编码同样只在 S08 转码链里存在（保码流路径不重新编码）。
+    request.reencode_audio_to_fit_container =
+        request.mode == model::RepairMode::RecoverContent && audio_reencode_check_->isChecked();
     request.keep_partial_on_cancel = keep_partial_check_->isChecked();
     request.write_report = true;
     return request;
@@ -762,6 +776,8 @@ void RepairPanel::SetRunning(bool running) {
         const bool salvaging =
             mode_combo_->currentData().toInt() == static_cast<int>(model::RepairMode::RecoverContent);
         black_fill_check_->setEnabled(idle && salvaging);
+        if (audio_reencode_check_ != nullptr)
+            audio_reencode_check_->setEnabled(idle && salvaging);
     }
     keep_partial_check_->setEnabled(idle);
     batch_table_->setEnabled(idle);

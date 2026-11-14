@@ -381,19 +381,27 @@ TEST(RepairDeclaredExclusions, ExtraTracksNotRebuiltOnlyTriggersOnOurOwnDrops) {
                     [](const std::string& fact) { return fact.find("第二视频轨") != std::string::npos; });
     EXPECT_TRUE(mentions_dropped_track) << item->trigger_facts[0];
 
-    // 反向守护：容器拒绝 / 源侧已丢弃的丢轨不是「我们不重建」。
-    RepairResult container_result = EvaluatedBaseline();
-    container_result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
-    container_result.fidelity.video_reencoded = true;
-    RepairTranscodeTrackDecision rejected;
-    rejected.input_stream_index = 1;
-    rejected.kind = "audio";
-    rejected.action = "drop";
-    rejected.reason_code = "audio_drop_container_rejected";
-    rejected.text = "流 #1（audio, flac）→ 未保留：目标容器拒绝该编码";
-    container_result.fidelity.transcode.track_decisions.push_back(rejected);
-    EXPECT_TRUE(FindItem(repair::BuildDeclaredExclusions(container_result), "extra_tracks_not_rebuilt") == nullptr)
-        << "容器拒绝音频轨不该被算成「我们不重建」的能力缺口";
+    // 反向守护（切片 V 之后分成两支）：
+    //   * 用户自己关掉了音频重编码 → 别人的决定，不算我们的能力缺口；
+    //   * 容器拒绝且没有一条能过试写头的重编码路 → 这正是我们的能力缺口，必须列。
+    auto exclusion_for = [](const std::string& reason_code) {
+        RepairResult result = EvaluatedBaseline();
+        result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
+        result.fidelity.video_reencoded = true;
+        RepairTranscodeTrackDecision rejected;
+        rejected.input_stream_index = 1;
+        rejected.kind = "audio";
+        rejected.action = "drop";
+        rejected.reason_code = reason_code;
+        rejected.text = "流 #1（audio, flac）→ 未保留：" + reason_code;
+        result.fidelity.transcode.track_decisions.push_back(rejected);
+        return FindItem(repair::BuildDeclaredExclusions(result), "extra_tracks_not_rebuilt");
+    };
+    EXPECT_TRUE(exclusion_for("audio_drop_reencode_disabled") == nullptr)
+        << "用户关掉重编码是别人的决定，不能算成「我们不重建」的能力缺口";
+    EXPECT_TRUE(exclusion_for("stream_marked_discard") == nullptr) << "源侧标记丢弃同理";
+    EXPECT_TRUE(exclusion_for("audio_drop_no_fitting_encoder") != nullptr)
+        << "容器拒绝且没有可用重编码目标 = 我们的能力缺口，必须列进声明";
 }
 
 TEST(RepairDeclaredExclusions, ReferenceBorrowedBasisIsAnExplicitStructuredFact) {

@@ -454,6 +454,9 @@ struct RepairTranscodeTrackDecision {
     std::string action;      // "copy" / "transcode" / "drop"
     std::string reason_code; // 稳定标识，见 repair::TranscodeReasonFor
     std::string reason;      // 渲染好的说明（唯一渲染入口在 repair 层）
+    // 重编码目标编码（切片 V）：只有 action=transcode 的音频轨会填，其余为空。
+    // 机读字段单独落，避免让报告层从 reason 文本里再解析一次。
+    std::string target_codec;
     // 整行渲染结果（"流 #2（audio, aac）→ 复制：…"）。报告层只打印这一行 ——
     // core/reporting 不链 core/repair，自己拼就会和决策表漂移。
     std::string text;

@@ -89,6 +89,8 @@ private:
     QCheckBox* single_track_check_ = nullptr;
     // 切片 U：空档补黑帧（合成内容，默认关）。
     QCheckBox* black_fill_check_ = nullptr;
+    // 切片 V：容器拒绝原音频编码时整轨重编码（默认开，替代「丢轨」）。
+    QCheckBox* audio_reencode_check_ = nullptr;
     QCheckBox* keep_partial_check_ = nullptr;
 
     QPushButton* start_button_ = nullptr;

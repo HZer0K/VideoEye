@@ -157,10 +157,11 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
                 "样本边界是推断值；音视频交织的 mdat 无法拆分；不重建 edts/ctts，含 B 帧时显示顺序可能不符"));
             AddFirstStageActions(plan, request, diagnosis);
             if (request.mode == model::RepairMode::RecoverContent) {
-                plan.actions.push_back(MakeAction(model::RepairAction::S08_TolerantTranscode,
-                                                  "解码可读视频帧后重新编码为 H.264（恒定帧率），音频尽量按原码流复制",
-                                                  "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物",
-                                                  "重编码有代际画质损失；时间轴按推定帧率重写"));
+                plan.actions.push_back(
+                    MakeAction(model::RepairAction::S08_TolerantTranscode,
+                               "解码可读视频帧后重新编码为 H.264（恒定帧率），音频按目标容器的实测接受性复制或重编码",
+                               "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物",
+                               "重编码有代际画质损失；时间轴按推定帧率重写"));
             } else {
                 AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
                                "保码流模式不重编码；切换到救内容模式才启用");
@@ -261,11 +262,12 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
 
     AddFirstStageActions(plan, request, diagnosis);
     if (request.mode == model::RepairMode::RecoverContent) {
-        plan.actions.push_back(MakeAction(
-            model::RepairAction::S08_TolerantTranscode,
-            "解码可读视频帧后重新编码为 H.264（恒定帧率），音频尽量按原码流复制，并对产物做抽帧 PSNR 画质评估",
-            "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物；解码失败的帧会被记账",
-            "重编码存在代际画质损失；时间轴按推定帧率重写，可能与源不一致；被解码失败的帧内容无法恢复"));
+        plan.actions.push_back(
+            MakeAction(model::RepairAction::S08_TolerantTranscode,
+                       "解码可读视频帧后重新编码为 H.264（恒定帧率），音频按目标容器的实测接受性复制或重编码，"
+                       "并对产物做抽帧 PSNR 画质评估",
+                       "编码层已损坏但仍有可解码帧的视频可以重新生成可播放产物；解码失败的帧会被记账",
+                       "重编码存在代际画质损失；时间轴按推定帧率重写，可能与源不一致；被解码失败的帧内容无法恢复"));
     } else {
         AddUnavailable(plan, model::RepairAction::S08_TolerantTranscode, "容忍式转码（解码可读帧后重新编码）",
                        "保码流模式不重编码；切换到救内容模式才启用");

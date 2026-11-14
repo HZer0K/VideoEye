@@ -689,6 +689,10 @@ target_link_libraries(VideoEyeRepair
            FFmpeg::avcodec
            FFmpeg::avformat
            FFmpeg::avutil
+           # 切片 V：音频重编码链要用 swr_convert 把解码出的帧重采样到编码器
+           # 要求的采样率 / 声道 / 样本格式。挂在 PUBLIC 是因为 repair 的调用方
+           # 也会链到这个静态库，PRIVATE 会漏符号（实测 LNK2019 swr_init）。
+           FFmpeg::swresample
     PRIVATE VideoEyeMedia
             VideoEyeInfrastructure
             VideoEyeFfmpegIo

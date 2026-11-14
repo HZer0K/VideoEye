@@ -205,21 +205,46 @@ TEST(RepairTranscodeTracks, NoVideoTrackMeansNoPrimary) {
     EXPECT_EQ(plan.transcode_count, 0u);
 }
 
-// ---- 音频：容器接受性决定 copy / drop ----
+// ---- 音频：容器接受性决定 copy / transcode / drop ----
 
-TEST(RepairTranscodeTracks, AudioRejectedByContainerIsDroppedNotCopied) {
+// 切片 V 之后：容器拒绝且**一条重编码路都没有**时才 drop。这条用例守的是
+// 「拒绝 ≠ 只能丢轨」的另一半 —— 真的没路可走时也必须 drop，并且把封装器的
+// 原话和逐候选尝试一起带出来（不能说「没有可用编码器」了事）。
+TEST(RepairTranscodeTracks, AudioRejectedWithoutAnyTargetIsDroppedNotCopied) {
     std::vector<repair::TranscodeTrackProbe> probes = {Probe(0, "video", "h264"), Probe(1, "audio", "flac")};
     probes[1].container_fit = repair::TranscodeContainerFit::Rejected;
     probes[1].container_fit_detail = "封装器返回 Invalid argument";
+    probes[1].audio_reencode_note = "aac: 容器拒绝（Invalid argument）；ac3: 本构建没有该编码器";
     const repair::TranscodeTrackPlan plan = repair::PlanTranscodeTracks(probes);
 
     const RepairTranscodeTrackDecision* audio = FindDecision(plan, 1);
     ASSERT_NE(audio, nullptr);
-    EXPECT_EQ(audio->action, "drop") << "容器拒绝的轨不能照旧复制 → 整份产物写头失败";
-    EXPECT_EQ(audio->reason_code, "audio_drop_container_rejected");
-    EXPECT_NE(audio->reason.find("写头失败"), std::string::npos) << audio->reason;
+    EXPECT_EQ(audio->action, "drop") << "没有任何可用目标时不能硬转，只能剔除并报出";
+    EXPECT_EQ(audio->reason_code, "audio_drop_no_fitting_encoder");
     // 实测原因要带出来：读者需要知道这是封装器判的，不是我们的猜测。
     EXPECT_NE(audio->reason.find("封装器返回 Invalid argument"), std::string::npos) << audio->reason;
+    EXPECT_NE(audio->reason.find("ac3: 本构建没有该编码器"), std::string::npos)
+        << "每个候选被拒的原因都要跟着结论走：" << audio->reason;
+}
+
+// 决策层不能自己决定「有没有目标」—— 那是执行层实测出来的结果。同一条被拒的轨，
+// 有目标就 transcode，没目标就 drop，两者的理由码必须不同（否则报告分不清
+// 「我们取舍了」和「我们做不到」）。
+TEST(RepairTranscodeTracks, AudioRejectionSplitsByWhetherATargetWasMeasured) {
+    repair::TranscodeTrackProbe no_target = Probe(1, "audio", "flac");
+    no_target.container_fit = repair::TranscodeContainerFit::Rejected;
+    repair::TranscodeTrackProbe with_target = no_target;
+    with_target.audio_reencode_encoder = "aac";
+    with_target.audio_reencode_codec = "aac";
+    with_target.audio_reencode_settings = "48000 Hz / 2 声道 / fltp";
+
+    const repair::TranscodeTrackPlan dropped = repair::PlanTranscodeTracks({Probe(0, "video", "h264"), no_target});
+    const repair::TranscodeTrackPlan transcoded = repair::PlanTranscodeTracks({Probe(0, "video", "h264"), with_target});
+    ASSERT_EQ(dropped.decisions.size(), 2u);
+    ASSERT_EQ(transcoded.decisions.size(), 2u);
+    EXPECT_EQ(dropped.decisions[1].reason_code, "audio_drop_no_fitting_encoder");
+    EXPECT_EQ(transcoded.decisions[1].reason_code, "audio_reencode_container_rejected");
+    EXPECT_EQ(transcoded.decisions[1].action, "transcode");
 }
 
 TEST(RepairTranscodeTracks, AudioWithoutMeasurementIsCopiedAndSaysSo) {

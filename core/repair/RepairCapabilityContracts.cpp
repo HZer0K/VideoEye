@@ -110,7 +110,7 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     auto b = MakeBase("decodable_gop_transcode", kPartiallySupported);
     b.covered_scope = {
         "整轨容错重编码（S08）：从第一个可解码关键帧起、到 salvage_end_seconds 为止解码视频帧，"
-        "按 H.264 重编码，音频尽量按原码流复制",
+        "按 H.264 重编码；音频在目标容器接受原编码时按码流复制，拒绝时整轨重编码成实测能收的编码",
         "重编码前后逐项实测源侧保真度（像素格式 / 位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据 / "
         "动态分辨率），三份报告同源呈现",
         "抽帧 PSNR 画质评估（有参考样片时才给数值）",
@@ -118,7 +118,8 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
     b.not_covered_scope = {
         "GOP 级局部重编码：只重编损坏 GOP、其余段原样拷贝（当前一律整轨重编码）",
         "拼接边界的兼容性验证：重编段与原始段的参数集、参考帧链能否衔接",
-        "静音填补 / 重复帧填补：音轨只有码流复制与剔除两条路，补静音需要先把音频转码成目标容器能收的编码",
+        "静音填补 / 重复帧填补：音轨能复制 / 重编码 / 剔除，但没有「在时间轴空洞里补静音」这一步；"
+        "重编码只解决「编码不被容器接受」，不解决「这段声音本来就没有」",
         "视频黑帧填补要显式启用（RepairRequest::fill_video_gaps_with_black_frames），且只覆盖"
         "「相邻解码帧之间整帧缺失」这一种形态，不覆盖轨道起点之前 / 整段轨道缺失",
     };
@@ -150,7 +151,7 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
         "fidelity.transcode.encoder_used 记录的实际编码器评估，不能套用首选编码器的表现",
     };
     b.evidence = "S08_TolerantTranscode 已实现并可运行：RecoverContent 模式下解码可读视频帧、"
-                 "按 H.264 重编码、音频尽量按原码流复制，并做抽帧 PSNR 画质评估"
+                 "按 H.264 重编码、音频按容器实测结果复制或重编码，并做抽帧 PSNR 画质评估"
                  "（RepairTolerantTranscode / RepairExecutor）。阶段 6 切片 J 起，重编码前逐项实测源侧"
                  "像素格式 / 位深 / 色彩标记 / 旋转 / HDR / 动态分辨率，并同源写进三种报告格式。"
                  "重编码首选 libx264，但本项目锁定的 FFmpeg 是 LGPL 变体"

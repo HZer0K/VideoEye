@@ -55,6 +55,18 @@ struct TranscodeTrackProbe {
     // 实测的原始原因（拒绝时是封装器的原话，Unknown 时是为什么没测成）。
     // 报告里跟在理由后面，避免把「封装器原话」和我们的归纳混成一句。
     std::string container_fit_detail;
+
+    // ---- 切片 V：容器拒绝时的转码目标 ----
+    //
+    // 决策层是纯函数，不做实测；「能不能转码成什么」由执行层预先量好放进来：
+    // 编码器在本构建存在、能按源参数开起来、而且用它产出的编码参数能过目标
+    // 容器的试写头 —— 三条全过才有 encoder_name，否则为空且 note 写明每一条
+    // 候选被拒的原因。
+    bool audio_reencode_allowed = true;
+    std::string audio_reencode_encoder; // 空 = 没有可用候选 / 用户不允许
+    std::string audio_reencode_codec;
+    std::string audio_reencode_settings; // "48000 Hz / 2 声道 / fltp" 这类目标参数
+    std::string audio_reencode_note;
 };
 
 struct TranscodeTrackPlan {

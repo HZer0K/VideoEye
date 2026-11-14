@@ -4,12 +4,15 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
 
 #include "core/ffmpeg_io/FfmpegInterrupt.h"
+#include "core/repair/RepairAudioTranscode.h"
 #include "core/repair/RepairBlackFrameFill.h"
 #include "core/repair/RepairSampleScan.h"
 #include "core/repair/RepairTranscodeFidelity.h"
@@ -20,6 +23,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/audio_fifo.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -27,6 +31,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/rational.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 
@@ -39,6 +44,8 @@ using Clock = std::chrono::steady_clock;
 // 测试专用故障注入，默认全关（见 RepairTolerantTranscode.h）。
 std::atomic<int> g_inject_write_failure_nth{0};
 std::atomic<bool> g_inject_trailer_failure{false};
+// 切片 V：强制把某条音频轨的容器接受性判成拒绝（-1 = 关，见头文件说明）。
+std::atomic<int> g_inject_audio_container_rejected{-1};
 
 bool ShouldInjectWriteFailure(uint64_t attempt) {
     const int nth = g_inject_write_failure_nth.load(std::memory_order_relaxed);
@@ -143,6 +150,437 @@ public:
 
 private:
     std::vector<AVPacket*> packets_;
+};
+
+// ---- 切片 V：音频轨「解码 → 重采样 → 重编码」链 ----
+//
+// 只在目标容器拒绝原编码时启用，目的很单一：把这条音轨**留下来**，而不是丢掉。
+//
+// 三条硬约束（都对应一个报告字段）：
+//   * 时间轴：每帧位置由源 PTS 换算到编码器采样时基后**各自定位**，不按序号累加。
+//     源侧真有空洞时位置照旧（不留假内容），只把空洞次数记进 timeline_gaps 由报告
+//     写清 —— 补静音是另一个能力，这里绝不偷偷拉长音频。
+//   * 末帧：编码器要求整块（aac 1024 采样），不足的部分用静音补齐，补齐的采样数
+//     单独计数上报 —— 「补齐以便编码」和「填补内容」是两件事，不能混。
+//   * 任何失败都返回 false 并写明原因；是否降级由调用方决定。
+class AudioTranscodeChain {
+public:
+    using Sink = std::function<bool(AVPacket*)>;
+
+    AudioTranscodeChain() = default;
+    ~AudioTranscodeChain() {
+        av_frame_free(&encoded_frame_);
+        av_frame_free(&filtered_);
+        av_frame_free(&decoded_);
+        av_packet_free(&packet_);
+        if (fifo_ != nullptr)
+            av_audio_fifo_free(fifo_);
+        if (swr_ != nullptr)
+            swr_free(&swr_);
+        avcodec_free_context(&decoder_);
+        avcodec_free_context(&encoder_); // 由 AudioReencodeTarget 移交的所有权
+    }
+    AudioTranscodeChain(const AudioTranscodeChain&) = delete;
+    AudioTranscodeChain& operator=(const AudioTranscodeChain&) = delete;
+
+    // encoder 的所有权转移给本对象。source 是源侧编码参数（解码器初值）。
+    bool Init(AVCodecContext* encoder, const AVCodecParameters* source, double origin_seconds, int input_index,
+              std::string* error) {
+        encoder_ = encoder;
+        input_stream_index = input_index;
+        origin_seconds_ = origin_seconds;
+        if (encoder_ == nullptr || source == nullptr) {
+            *error = "缺少音频编码器或源参数";
+            return false;
+        }
+        source_time_base_ = encoder_->time_base; // 调用方随后用 SetSourceTimeBase 换成源流时基
+        const AVCodec* decoder_codec = avcodec_find_decoder(source->codec_id);
+        if (decoder_codec == nullptr) {
+            *error = "没有可用的音频解码器（" + std::string(avcodec_get_name(source->codec_id)) + "）";
+            return false;
+        }
+        decoder_ = avcodec_alloc_context3(decoder_codec);
+        if (decoder_ == nullptr || avcodec_parameters_to_context(decoder_, source) < 0) {
+            *error = "无法初始化音频解码器";
+            return false;
+        }
+        decoder_->thread_count = 0;
+        if (avcodec_open2(decoder_, decoder_codec, nullptr) < 0) {
+            *error = "无法打开音频解码器（编码参数可能已损坏）";
+            return false;
+        }
+        packet_ = av_packet_alloc();
+        decoded_ = av_frame_alloc();
+        filtered_ = av_frame_alloc();
+        encoded_frame_ = av_frame_alloc();
+        if (packet_ == nullptr || decoded_ == nullptr || filtered_ == nullptr || encoded_frame_ == nullptr) {
+            *error = "无法分配音频转码缓冲";
+            return false;
+        }
+        encoder_name = encoder_->codec->name != nullptr ? encoder_->codec->name : std::string();
+        source_codec = avcodec_get_name(source->codec_id);
+        return true;
+    }
+
+    void SetSourceTimeBase(AVRational time_base) {
+        source_time_base_ = time_base;
+    }
+
+    AVRational EncoderTimeBase() const {
+        return encoder_->time_base;
+    }
+
+    bool FeedPacket(const AVPacket* packet, const Sink& sink, std::string* error) {
+        for (;;) {
+            const int ret = avcodec_send_packet(decoder_, packet);
+            if (ret == AVERROR(EAGAIN)) {
+                if (!DrainDecoded(sink, error))
+                    return false;
+                continue;
+            }
+            if (ret < 0) {
+                // 单个包解不动不该整链失败：记一笔，继续吃后面的包。
+                ++dropped_packets;
+                return true;
+            }
+            return DrainDecoded(sink, error);
+        }
+    }
+
+    bool Flush(const Sink& sink, std::string* error) {
+        // 1) 解码器排空（送 nullptr），把剩下的帧全部喂进重采样。
+        avcodec_send_packet(decoder_, nullptr);
+        if (!DrainDecoded(sink, error))
+            return false;
+        // 2) 重采样器里可能还压着几个采样，必须冲出来，否则末段会被截掉。
+        if (swr_ != nullptr) {
+            for (;;) {
+                av_frame_unref(filtered_);
+                if (!PrepareFiltered(encoder_->frame_size > 0 ? encoder_->frame_size : 4096, error))
+                    return false;
+                const int converted = swr_convert(swr_, filtered_->data, filtered_->nb_samples, nullptr, 0);
+                if (converted <= 0)
+                    break;
+                filtered_->nb_samples = converted;
+                if (!WriteToFifo(filtered_, error))
+                    return false;
+            }
+        }
+        // 3) 编码器要求整块时补齐末帧 —— 补的是静音，单独计数，不混进「恢复内容」。
+        if (!FlushFifo(sink, error))
+            return false;
+        if (avcodec_send_frame(encoder_, nullptr) < 0) {
+            *error = "音频编码器排空失败";
+            return false;
+        }
+        return ReceivePackets(sink, error);
+    }
+
+    int input_stream_index = -1;
+    int output_stream_index = -1;
+    std::string encoder_name;
+    // 源编码名（初始化时固化）：结论层要用它写「原编码 → 目标编码」，
+    // 而那时输入上下文可能已经关闭。
+    std::string source_codec;
+    uint64_t decoded_frames = 0;
+    uint64_t encoded_packets = 0;
+    uint64_t dropped_packets = 0;
+    uint64_t timeline_gaps = 0;
+    int64_t tail_padding_samples = 0;
+    /// 首个输出包的源侧起点（秒，已按统一原点平移），报告用它核对音画偏差。
+    std::optional<double> first_output_seconds;
+
+private:
+    bool EnsureResampler(const AVFrame* frame, std::string* error) {
+        if (swr_ != nullptr)
+            return true;
+        AVChannelLayout in_layout{};
+        if (frame->ch_layout.nb_channels > 0) {
+            av_channel_layout_copy(&in_layout, &frame->ch_layout);
+        } else {
+            av_channel_layout_default(&in_layout,
+                                      decoder_->ch_layout.nb_channels > 0 ? decoder_->ch_layout.nb_channels : 2);
+        }
+        const int in_rate = frame->sample_rate > 0 ? frame->sample_rate : encoder_->sample_rate;
+        const int ret = swr_alloc_set_opts2(
+            &swr_, &encoder_->ch_layout, static_cast<AVSampleFormat>(encoder_->sample_fmt), encoder_->sample_rate,
+            &in_layout, static_cast<AVSampleFormat>(frame->format), in_rate, 0, nullptr);
+        av_channel_layout_uninit(&in_layout);
+        if (ret < 0 || swr_ == nullptr || swr_init(swr_) < 0) {
+            *error = "无法初始化音频重采样器";
+            return false;
+        }
+        return true;
+    }
+
+    bool PrepareFiltered(int nb_samples, std::string* error) {
+        filtered_->format = encoder_->sample_fmt;
+        filtered_->sample_rate = encoder_->sample_rate;
+        if (av_channel_layout_copy(&filtered_->ch_layout, &encoder_->ch_layout) < 0) {
+            *error = "无法设置重采样输出声道布局";
+            return false;
+        }
+        filtered_->nb_samples = nb_samples;
+        if (av_frame_get_buffer(filtered_, 0) < 0) {
+            *error = "无法分配重采样输出帧缓冲";
+            return false;
+        }
+        return true;
+    }
+
+    bool DrainDecoded(const Sink& sink, std::string* error) {
+        for (;;) {
+            const int ret = avcodec_receive_frame(decoder_, decoded_);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                return true;
+            if (ret < 0) {
+                *error = "音频解码失败: " + AvErrorText(ret);
+                av_frame_unref(decoded_);
+                return false;
+            }
+            ++decoded_frames;
+            const bool ok = ConsumeFrame(sink, error);
+            av_frame_unref(decoded_);
+            if (!ok)
+                return false;
+        }
+    }
+
+    bool ConsumeFrame(const Sink& sink, std::string* error) {
+        if (!EnsureResampler(decoded_, error))
+            return false;
+        if (decoded_->pts != AV_NOPTS_VALUE) {
+            const double seconds = std::max(0.0, static_cast<double>(decoded_->pts) * av_q2d(source_time_base_));
+            const double relative = std::max(0.0, seconds - origin_seconds_);
+            const int64_t want = std::llround(relative * encoder_->sample_rate);
+            if (!positioned_) {
+                next_pts_ = want;
+                positioned_ = true;
+            } else if (want > next_pts_ + (encoder_->frame_size > 0 ? encoder_->frame_size : 1)) {
+                // 源侧时间戳跳了一段：如实把位置放过去，不靠累加把缺口摊平
+                // （摊平 = 悄悄改变音频时长，正是「无事实给结论」的反面）。
+                ++timeline_gaps;
+                next_pts_ = want;
+            }
+        }
+        const int capacity = swr_get_out_samples(swr_, decoded_->nb_samples);
+        if (capacity <= 0)
+            return true;
+        av_frame_unref(filtered_);
+        if (!PrepareFiltered(capacity, error))
+            return false;
+        const int converted = swr_convert(swr_, filtered_->data, capacity,
+                                          const_cast<const uint8_t**>(decoded_->extended_data), decoded_->nb_samples);
+        if (converted < 0) {
+            *error = "音频重采样失败: " + AvErrorText(converted);
+            return false;
+        }
+        if (converted == 0)
+            return true;
+        filtered_->nb_samples = converted;
+        if (!WriteToFifo(filtered_, error))
+            return false;
+        return DrainFifo(sink, false, error);
+    }
+
+    bool WriteToFifo(AVFrame* frame, std::string* error) {
+        if (fifo_ == nullptr) {
+            fifo_ = av_audio_fifo_alloc(static_cast<AVSampleFormat>(encoder_->sample_fmt),
+                                        encoder_->ch_layout.nb_channels, 1);
+            if (fifo_ == nullptr) {
+                *error = "无法分配音频帧缓冲队列";
+                return false;
+            }
+        }
+        if (av_audio_fifo_write(fifo_, reinterpret_cast<void**>(frame->extended_data), frame->nb_samples) <
+            frame->nb_samples) {
+            *error = "音频帧写入缓冲队列失败";
+            return false;
+        }
+        return true;
+    }
+
+    // 把队列里够整块的采样编码出去。pad_last=true 时把不足一块的尾巴用静音补满。
+    bool DrainFifo(const Sink& sink, bool pad_last, std::string* error) {
+        if (fifo_ == nullptr)
+            return true;
+        const int frame_size = encoder_->frame_size;
+        for (;;) {
+            const int available = av_audio_fifo_size(fifo_);
+            if (frame_size <= 0) {
+                // 不定长编码器（flac 等）：有多少喂多少。
+                if (available <= 0)
+                    return true;
+                if (!EncodeOneBlock(available, sink, error))
+                    return false;
+                return true;
+            }
+            if (available < frame_size)
+                break;
+            if (!EncodeOneBlock(frame_size, sink, error))
+                return false;
+        }
+        if (!pad_last)
+            return true;
+        const int left = av_audio_fifo_size(fifo_);
+        if (left <= 0)
+            return true;
+        if (frame_size <= 0)
+            return true;
+        // 补静音到整块：这不是「填补内容」，只是编码器的块对齐要求。
+        av_frame_unref(encoded_frame_);
+        encoded_frame_->format = encoder_->sample_fmt;
+        encoded_frame_->sample_rate = encoder_->sample_rate;
+        if (av_channel_layout_copy(&encoded_frame_->ch_layout, &encoder_->ch_layout) < 0) {
+            *error = "无法设置音频编码帧声道布局";
+            return false;
+        }
+        encoded_frame_->nb_samples = frame_size;
+        encoded_frame_->pts = next_pts_;
+        if (av_frame_get_buffer(encoded_frame_, 0) < 0) {
+            *error = "无法分配音频编码帧缓冲";
+            return false;
+        }
+        if (av_samples_set_silence(encoded_frame_->data, 0, frame_size, encoder_->ch_layout.nb_channels,
+                                   static_cast<AVSampleFormat>(encoder_->sample_fmt)) < 0) {
+            *error = "无法填充末帧静音";
+            return false;
+        }
+        if (av_audio_fifo_read(fifo_, reinterpret_cast<void**>(encoded_frame_->data), left) < left) {
+            *error = "读取音频缓冲队列末段失败";
+            return false;
+        }
+        tail_padding_samples += frame_size - left;
+        next_pts_ += frame_size;
+        return SendFrame(encoded_frame_, sink, error);
+    }
+
+    bool FlushFifo(const Sink& sink, std::string* error) {
+        return DrainFifo(sink, true, error);
+    }
+
+    bool EncodeOneBlock(int nb_samples, const Sink& sink, std::string* error) {
+        av_frame_unref(encoded_frame_);
+        encoded_frame_->format = encoder_->sample_fmt;
+        encoded_frame_->sample_rate = encoder_->sample_rate;
+        if (av_channel_layout_copy(&encoded_frame_->ch_layout, &encoder_->ch_layout) < 0) {
+            *error = "无法设置音频编码帧声道布局";
+            return false;
+        }
+        encoded_frame_->nb_samples = nb_samples;
+        encoded_frame_->pts = next_pts_;
+        if (av_frame_get_buffer(encoded_frame_, 0) < 0) {
+            *error = "无法分配音频编码帧缓冲";
+            return false;
+        }
+        if (av_audio_fifo_read(fifo_, reinterpret_cast<void**>(encoded_frame_->data), nb_samples) < nb_samples) {
+            *error = "读取音频缓冲队列失败";
+            return false;
+        }
+        next_pts_ += nb_samples;
+        return SendFrame(encoded_frame_, sink, error);
+    }
+
+    bool SendFrame(AVFrame* frame, const Sink& sink, std::string* error) {
+        for (;;) {
+            const int ret = avcodec_send_frame(encoder_, frame);
+            if (ret == AVERROR(EAGAIN)) {
+                if (!ReceivePackets(sink, error))
+                    return false;
+                continue;
+            }
+            if (ret < 0) {
+                *error = "音频编码失败: " + AvErrorText(ret);
+                return false;
+            }
+            return ReceivePackets(sink, error);
+        }
+    }
+
+    bool ReceivePackets(const Sink& sink, std::string* error) {
+        for (;;) {
+            const int ret = avcodec_receive_packet(encoder_, packet_);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                return true;
+            if (ret < 0) {
+                *error = "读取音频编码器输出失败: " + AvErrorText(ret);
+                return false;
+            }
+            ++encoded_packets;
+            if (!sink(packet_)) {
+                av_packet_unref(packet_);
+                return false;
+            }
+            av_packet_unref(packet_);
+        }
+    }
+
+    AVCodecContext* decoder_ = nullptr;
+    AVCodecContext* encoder_ = nullptr;
+    SwrContext* swr_ = nullptr;
+    AVAudioFifo* fifo_ = nullptr;
+    AVFrame* decoded_ = nullptr;
+    AVFrame* filtered_ = nullptr;
+    AVFrame* encoded_frame_ = nullptr;
+    AVPacket* packet_ = nullptr;
+    AVRational source_time_base_{0, 1};
+    double origin_seconds_ = 0.0;
+    int64_t next_pts_ = 0;
+    bool positioned_ = false;
+};
+
+// 切片 V：解码链能不能起来，必须在**决策之前**问清楚。
+// 决策表一旦写进报告就不能再改口，而「能编码成 aac」不等于「源音频解得开」——
+// 编码器与解码器是两条独立的能力。这里只做一次开/关，开销可以忽略。
+bool CanOpenAudioDecoder(const AVCodecParameters* parameters, std::string* error) {
+    const AVCodec* codec = avcodec_find_decoder(parameters->codec_id);
+    if (codec == nullptr) {
+        *error = "没有可用的音频解码器（" + std::string(avcodec_get_name(parameters->codec_id)) + "）";
+        return false;
+    }
+    AVCodecContext* context = avcodec_alloc_context3(codec);
+    if (context == nullptr) {
+        *error = "无法分配音频解码器上下文";
+        return false;
+    }
+    bool ok = avcodec_parameters_to_context(context, parameters) >= 0 && avcodec_open2(context, codec, nullptr) >= 0;
+    if (!ok)
+        *error = "音频解码器打不开（编码参数可能已损坏）";
+    avcodec_free_context(&context);
+    return ok;
+}
+
+// 切片 V：容器拒绝的音频轨 → 实测出来的转码目标（含已打开的编码器上下文）。
+// S08 有十几个早退 return，用一个有析构的容器兜住，别指望每个出口都记得释放。
+class AudioReencodeTargets {
+public:
+    ~AudioReencodeTargets() {
+        for (auto& entry : by_input_)
+            avcodec_free_context(&entry.second.encoder);
+    }
+    AudioReencodeTargets(const AudioReencodeTargets&) = delete;
+    AudioReencodeTargets& operator=(const AudioReencodeTargets&) = delete;
+    AudioReencodeTargets() = default;
+
+    AudioReencodeTarget& For(int input_index) {
+        return by_input_[input_index];
+    }
+    AudioReencodeTarget* Find(int input_index) {
+        const auto it = by_input_.find(input_index);
+        return it == by_input_.end() ? nullptr : &it->second;
+    }
+    // 取走编码器上下文（所有权转移给音频转码链）。
+    AVCodecContext* Take(int input_index) {
+        const auto it = by_input_.find(input_index);
+        if (it == by_input_.end())
+            return nullptr;
+        AVCodecContext* encoder = it->second.encoder;
+        it->second.encoder = nullptr;
+        return encoder;
+    }
+
+private:
+    std::map<int, AudioReencodeTarget> by_input_;
 };
 
 AVRational SourceFrameRate(const AVStream* stream) {
@@ -441,6 +879,10 @@ void SetTranscodeTrailerFailureForTesting(bool enabled) {
     g_inject_trailer_failure.store(enabled, std::memory_order_relaxed);
 }
 
+void SetTranscodeAudioContainerRejectedForTesting(int input_stream_index) {
+    g_inject_audio_container_rejected.store(input_stream_index, std::memory_order_relaxed);
+}
+
 RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairRequest& request,
                                                         const model::RepairDiagnosis& diagnosis,
                                                         const model::RepairPlan& plan, const RepairOutputPaths& paths,
@@ -503,6 +945,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
 
     std::vector<TranscodeTrackProbe> probes;
     probes.reserve(in->nb_streams);
+    // 切片 V：被目标容器拒绝的音频轨，在这里实测出一条能落地的重编码目标。
+    // 编码器上下文随目标一起留着 —— 后面建输出流要用同一份 extradata。
+    AudioReencodeTargets audio_targets;
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         const AVStream* stream = in->streams[i];
         TranscodeTrackProbe probe;
@@ -515,6 +960,34 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         // 对 mpegts 这类没实现 query 的封装器返回垃圾值，按它判会误删轨。
         if (probe.kind == "audio" && !probe.discarded) {
             probe.container_fit = ProbeTrackFitsContainer(format_name, stream->codecpar, &probe.container_fit_detail);
+            if (g_inject_audio_container_rejected.load(std::memory_order_relaxed) == probe.input_stream_index) {
+                // 注入必须留下痕迹：万一哪次真跑进来，报告里能一眼看出这个结论不是实测的。
+                probe.container_fit = TranscodeContainerFit::Rejected;
+                probe.container_fit_detail = "被强制判为拒绝（测试注入 SetTranscodeAudioContainerRejectedForTesting）";
+            }
+            probe.audio_reencode_allowed = request.reencode_audio_to_fit_container;
+            if (probe.container_fit == TranscodeContainerFit::Rejected) {
+                if (!probe.audio_reencode_allowed) {
+                    probe.audio_reencode_note = "本次未允许重编码（请求选项 reencode_audio_to_fit_container=false）";
+                } else {
+                    AudioReencodeTarget target = SelectAudioReencodeTarget(format_name, stream->codecpar);
+                    probe.audio_reencode_note = AudioReencodeAttemptsText(target.attempts);
+                    std::string decoder_error;
+                    if (target.found && !CanOpenAudioDecoder(stream->codecpar, &decoder_error)) {
+                        // 编码目标测出来了，但源音频根本解不开 —— 决策必须落回 drop，
+                        // 不能写「将重编码」然后运行时才发现做不到。
+                        probe.audio_reencode_note += "；" + decoder_error;
+                        avcodec_free_context(&target.encoder);
+                        target.found = false;
+                    }
+                    if (target.found) {
+                        probe.audio_reencode_encoder = target.encoder_name;
+                        probe.audio_reencode_codec = target.codec_name;
+                        probe.audio_reencode_settings = AudioEncodeSettingsText(target.settings);
+                        audio_targets.For(probe.input_stream_index) = std::move(target);
+                    }
+                }
+            }
         }
         probes.push_back(std::move(probe));
     }
@@ -644,11 +1117,16 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
             break;
         }
         if (packet->stream_index != video_index) {
-            // 只缓存「决策 = 复制」的轨：被丢弃的轨（容器拒绝的音频 / 字幕 / 数据）
-            // 缓存起来既无用，还会把 pending 预算吃光，最后误报「音频前缀可能缺失」。
+            // 只缓存「决策 = 复制或重编码」的轨：被丢弃的轨（容器拒绝且转不了码的音频 /
+            // 字幕 / 数据）缓存起来既无用，还会把 pending 预算吃光，最后误报「前缀可能缺失」。
+            //
+            // ⚠️ 重编码轨**也必须**在这里缓存。切片 V 之前只有 copy 轨会进这个缓冲，
+            // 于是「首帧探测期间读到的音频包」对重编码轨是直接丢掉的 —— 实测后果是
+            // 产物音频从 0.58 s 才开始（正好等于探测消耗的时长），而整份产物仍报成功。
             const std::size_t index = static_cast<std::size_t>(std::max(packet->stream_index, 0));
-            const bool will_copy = index < track_action.size() && track_action[index] == "copy";
-            if (will_copy && !pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets)) {
+            const bool will_consume =
+                index < track_action.size() && (track_action[index] == "copy" || track_action[index] == "transcode");
+            if (will_consume && !pending_nonvideo.Push(packet, &pending_bytes, kMaxPendingBytes, kMaxPendingPackets)) {
                 pending_overflow = true;
             }
             av_packet_unref(packet);
@@ -832,26 +1310,49 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         }
     }
 
-    // 音频：按决策表决定复制哪些轨。drop 的轨（容器拒绝该编码 / 源侧已标记丢弃）
-    // 不再尝试复制 —— 旧实现一律复制，其中一条被拒就让整份产物写头失败。
+    // 音频：按决策表决定复制哪些轨、重编码哪些轨。drop 的轨（容器拒绝且没有
+    // 可用重编码目标 / 源侧已标记丢弃）不再尝试复制 —— 旧实现一律复制，其中
+    // 一条被拒就让整份产物写头失败。
     std::vector<int> audio_map(in->nb_streams, -1);
     for (unsigned i = 0; i < in->nb_streams; ++i) {
         const AVStream* src = in->streams[i];
         if (src->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
             continue;
-        if (i >= track_action.size() || track_action[i] != "copy")
+        const bool copy_track = i < track_action.size() && track_action[i] == "copy";
+        const bool reencode_track = i < track_action.size() && track_action[i] == "transcode";
+        if (!copy_track && !reencode_track)
             continue;
         AVStream* dst = avformat_new_stream(out, nullptr);
-        if (dst == nullptr || avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
-            outcome.omitted_items.push_back("音频流 #" + std::to_string(i) + " 无法复制编码参数，产物未保留");
+        if (dst == nullptr) {
+            outcome.omitted_items.push_back("音频流 #" + std::to_string(i) + " 无法建立输出流，产物未保留");
             continue;
         }
+        std::string output_codec;
+        if (copy_track) {
+            if (avcodec_parameters_copy(dst->codecpar, src->codecpar) < 0) {
+                outcome.omitted_items.push_back("音频流 #" + std::to_string(i) + " 无法复制编码参数，产物未保留");
+                continue;
+            }
+            dst->time_base = src->time_base;
+            dst->disposition = src->disposition;
+            output_codec = avcodec_get_name(src->codecpar->codec_id);
+        } else {
+            // 重编码轨的输出参数必须来自**已经开起来的编码器**：extradata 要与
+            // 真实码流一致，自己拼一份 AAC AudioSpecificConfig 就是编造。
+            const AudioReencodeTarget* target = audio_targets.Find(static_cast<int>(i));
+            if (target == nullptr || target->encoder == nullptr ||
+                avcodec_parameters_from_context(dst->codecpar, target->encoder) < 0) {
+                outcome.omitted_items.push_back("音频流 #" + std::to_string(i) +
+                                                " 无法取到重编码后的编码参数，产物未保留");
+                continue;
+            }
+            dst->time_base = target->encoder->time_base;
+            output_codec = target->codec_name;
+        }
         dst->codecpar->codec_tag = 0;
-        dst->time_base = src->time_base;
         av_dict_copy(&dst->metadata, src->metadata, 0);
-        dst->disposition = src->disposition;
         audio_map[i] = static_cast<int>(out->nb_streams) - 1;
-        stream_meta[audio_map[i]] = {"audio", avcodec_get_name(src->codecpar->codec_id)};
+        stream_meta[audio_map[i]] = {"audio", output_codec};
     }
 
     if (avio_open(&out->pb, paths.part_path.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -970,6 +1471,41 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     const int64_t video_pts_offset_frames =
         source_video_start_seconds ? std::llround((*source_video_start_seconds - origin_seconds) * fps_value) : 0;
     std::vector<int64_t> audio_origin_ticks(in->nb_streams, AV_NOPTS_VALUE);
+
+    // ---- 切片 V：为被容器拒绝、且实测出了目标的音频轨建转码链 ----
+    //
+    // 「编码器存在 / 参数能开 / 容器接受 / 解码器能开」四条都已经在决策之前实测过，
+    // 这里再失败基本只剩内存不足。此时**不能**留一条永远没有包的空音轨（那等于
+    // 让产物「看起来保留了音轨」），按硬错误中止并把原因写清。
+    std::map<int, std::unique_ptr<AudioTranscodeChain>> audio_chains;
+    for (unsigned i = 0; i < in->nb_streams; ++i) {
+        if (i >= track_action.size() || track_action[i] != "transcode" || audio_map[i] < 0)
+            continue;
+        AVCodecContext* audio_encoder = audio_targets.Take(static_cast<int>(i));
+        if (audio_encoder == nullptr)
+            continue;
+        auto chain = std::make_unique<AudioTranscodeChain>();
+        std::string chain_error;
+        if (!chain->Init(audio_encoder, in->streams[i]->codecpar, origin_seconds, static_cast<int>(i), &chain_error)) {
+            // 编码器上下文的所有权在 Init 的第一行就转移给链了（失败时由链的析构
+            // 释放）。这里**不能**再 free 一次 —— 那是对同一块内存二次释放。
+            outcome.error = "音频重编码链无法建立（流 #" + std::to_string(i) + "）：" + chain_error;
+            av_write_trailer(out);
+            avio_closep(&out->pb);
+            avformat_free_context(out);
+            av_packet_free(&encoded);
+            av_frame_free(&converted);
+            avcodec_free_context(&encoder);
+            av_packet_free(&packet);
+            av_frame_free(&frame);
+            avcodec_free_context(&decoder);
+            avformat_close_input(&in);
+            return outcome;
+        }
+        chain->SetSourceTimeBase(in->streams[i]->time_base);
+        chain->output_stream_index = audio_map[i];
+        audio_chains[static_cast<int>(i)] = std::move(chain);
+    }
 
     sws = sws_getContext(width, height, static_cast<AVPixelFormat>(first_frame->format), width, height, encoder_format,
                          SWS_BILINEAR, nullptr, nullptr, nullptr);
@@ -1331,9 +1867,79 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         return true;
     };
 
+    // ---- 切片 V：重编码音频的写包入口 ----
+    //
+    // 与 copy 路径共用同一套预算 / 故障注入 / 账本口径，差别只有两点：时间戳来自
+    // 编码器时基；账本里必须写明这条轨的字节**不是**源字节（重编码产物）。
+    auto MakeAudioSink = [&](AudioTranscodeChain* chain) -> AudioTranscodeChain::Sink {
+        return [&, chain](AVPacket* pkt) -> bool {
+            if (size_capped)
+                return true;
+            pkt->stream_index = chain->output_stream_index;
+            AVStream* dst = out->streams[chain->output_stream_index];
+            av_packet_rescale_ts(pkt, chain->EncoderTimeBase(), dst->time_base);
+            if (pkt->pts != AV_NOPTS_VALUE) {
+                // 夹到 0 的理由与 copy 路径一致：负 PTS 只可能来自编码器 priming。
+                const double seconds = std::max(0.0, static_cast<double>(pkt->pts) * av_q2d(dst->time_base));
+                if (!observed_audio_start_seconds || seconds < *observed_audio_start_seconds)
+                    observed_audio_start_seconds = seconds;
+                if (!chain->first_output_seconds)
+                    chain->first_output_seconds = seconds;
+            }
+            const int written = pkt->size;
+            ++write_attempts;
+            if (ShouldInjectWriteFailure(write_attempts)) {
+                write_failed = true;
+                write_error = "写入音频包失败（故障注入）";
+                return false;
+            }
+            if (av_interleaved_write_frame(out, pkt) < 0) {
+                write_failed = true;
+                write_error = "写入重编码音频包失败";
+                return false;
+            }
+            {
+                model::RecoveredSample sample;
+                sample.size = static_cast<uint64_t>(std::max(written, 0));
+                sample.track_id = 0;
+                sample.stream_index = chain->output_stream_index;
+                sample.config_id = "s08_reencoded_audio";
+                sample.decode_ordinal = sample_ledger.CountForTrack(chain->output_stream_index);
+                sample.timestamp_evidence = model::SampleTimestampEvidence::Inferred;
+                sample.inference_basis = "S08 音频重编码（原编码不被目标容器接受，编码器=" + chain->encoder_name +
+                                         "），PTS 按统一原点平移重建";
+                sample.confidence = model::SampleConfidence::Inferred;
+                sample_ledger.Add(sample);
+            }
+            bytes_written += static_cast<uint64_t>(std::max(written, 0));
+            if (max_output_bytes > 0 && bytes_written > max_output_bytes)
+                size_capped = true;
+            return true;
+        };
+    };
+    std::map<int, AudioTranscodeChain::Sink> audio_sinks;
+    for (auto& entry : audio_chains)
+        audio_sinks[entry.first] = MakeAudioSink(entry.second.get());
+
+    // 非视频包的分发：重编码轨进链，复制轨直接写。两条路的失败语义一致（写盘失败
+    // 会置 write_failed），所以调用点不需要区分。
+    auto feed_audio_packet = [&](AVPacket* pkt) -> bool {
+        const auto it = audio_chains.find(pkt->stream_index);
+        if (it == audio_chains.end())
+            return write_audio_packet(pkt);
+        AudioTranscodeChain* chain = it->second.get();
+        std::string chain_error;
+        if (!chain->FeedPacket(pkt, audio_sinks.at(pkt->stream_index), &chain_error)) {
+            write_failed = true;
+            write_error = chain_error;
+            return false;
+        }
+        return true;
+    };
+
     // 回放首帧探测期间缓存的音频包，之后才继续读 `in`。
     for (AVPacket* cached : pending_nonvideo.items()) {
-        if (!write_audio_packet(cached))
+        if (!feed_audio_packet(cached))
             break;
     }
     pending_nonvideo.Clear();
@@ -1372,7 +1978,7 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
                     }
                 }
             } else {
-                write_audio_packet(packet);
+                feed_audio_packet(packet);
             }
             av_packet_unref(packet);
             if (write_failed || resource_failed || size_capped)
@@ -1386,6 +1992,19 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         avcodec_send_frame(encoder, nullptr);
         if (!drain_encoder())
             write_failed = true;
+    }
+    // 切片 V：把重编码音频链排空。解码器、重采样器、编码器里各有一层缓冲，
+    // 少冲一层就会静默少掉末段采样 —— 那种「产物能播但结尾被切」最难看出来。
+    // 写失败 / 截断时不再写盘：产物已经不打算交付了。
+    if (!write_failed && !resource_failed && !size_capped) {
+        for (auto& entry : audio_chains) {
+            std::string chain_error;
+            if (!entry.second->Flush(audio_sinks.at(entry.first), &chain_error)) {
+                write_failed = true;
+                write_error = chain_error;
+                break;
+            }
+        }
     }
     // 逐帧实测的动态分辨率帧数并进同一个保真结论，写在所有返回路径之前：
     // 后面失败 / 取消 / 截断的分支也得带上这份实测，不能退回去用空表自证。
@@ -1618,7 +2237,28 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
 
     outcome.ok = true;
     outcome.video_reencoded = encoded_frames > 0;
-    outcome.audio_reencoded = false;
+    outcome.audio_reencoded = !audio_chains.empty();
+    // 逐轨写清「这条音轨到底做了什么」。少写一项都会变成「音轨被改过了但没人知道」：
+    // 原编码 → 目标编码、编解码帧数、源时间戳跳变、末帧补齐的采样数、解不动的包。
+    for (const auto& entry : audio_chains) {
+        const AudioTranscodeChain& chain = *entry.second;
+        std::string line = "音频流 #" + std::to_string(entry.first) + "：原编码 " + chain.source_codec + " → " +
+                           chain.encoder_name + "（解码 " + std::to_string(chain.decoded_frames) + " 帧 / 编码 " +
+                           std::to_string(chain.encoded_packets) + " 包）";
+        if (chain.timeline_gaps > 0) {
+            line += "；源时间戳有 " + std::to_string(chain.timeline_gaps) +
+                    " 处跳变，位置按源保留、未补静音（补静音是独立能力）";
+        }
+        if (chain.tail_padding_samples > 0) {
+            line += "；末帧不足一个编码块，静音补齐 " + std::to_string(chain.tail_padding_samples) +
+                    " 采样（编码器块对齐要求，不是内容填补）";
+        }
+        if (chain.decoded_frames == 0)
+            line += "；源侧没有解码出任何音频帧（这条输出流是空的，不能读成「音轨保住了」）";
+        if (chain.dropped_packets > 0)
+            line += "；" + std::to_string(chain.dropped_packets) + " 个源音频包解码失败已跳过";
+        outcome.transcode_note += "；" + line;
+    }
 
     // ---- 画质评估（独立解码输入与产物，按帧序号配对）----
     Emit(progress, 86, "抽帧 PSNR 画质评估");
@@ -1688,7 +2328,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
         const bool explicitly_requested = std::find(request.target_streams.begin(), request.target_streams.end(),
                                                     static_cast<int>(i)) != request.target_streams.end();
         audio_target.required = explicitly_requested || request.target_streams.empty();
-        audio_target.note = "S08 转码产物保留音频轨（码流复制，PTS 按首包归零）";
+        const bool reencoded = audio_chains.find(static_cast<int>(i)) != audio_chains.end();
+        audio_target.note = reencoded ? "S08 转码产物保留音频轨（原编码不被目标容器接受，已重编码）"
+                                      : "S08 转码产物保留音频轨（码流复制，PTS 按统一原点平移）";
         outcome.verification_targets.push_back(std::move(audio_target));
     }
 

@@ -386,6 +386,9 @@ JsonValue BuildTranscodeFidelity(const model::RepairTranscodeFidelity& transcode
             node.Set("action", JText(decision.action));
             node.Set("reason_code", JText(decision.reason_code));
             node.Set("reason", JText(decision.reason));
+            // 切片 V：只有重编码轨会填目标编码，其余为空字符串（不是缺字段 ——
+            // 缺字段会让消费方分不清「这台机器没这功能」和「这条轨本来就是复制」）。
+            node.Set("target_codec", JText(decision.target_codec));
             node.Set("text", JText(decision.text));
             decisions.PushBack(node);
         }

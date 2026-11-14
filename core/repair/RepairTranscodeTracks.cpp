@@ -215,9 +215,30 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
                                                       "音频轨：目标容器试写头接受该编码，按原码流复制（不重编码）"));
                 break;
             case TranscodeContainerFit::Rejected:
-                plan.decisions.push_back(MakeDecision(
-                    probe, "drop", "audio_drop_container_rejected",
-                    "音频轨：目标容器试写头拒绝该编码，产物未保留该轨（强行复制会让整份产物写头失败）" + detail));
+                // 切片 V：容器拒绝原编码不等于只能丢轨。能实测出一条「编码器存在 +
+                // 参数能开 + 容器接受」的路径就转码，否则才 drop，并把每条候选
+                // 被拒的原因一并报出 —— 「没有可用编码器」不能是空口断言。
+                if (!probe.audio_reencode_allowed) {
+                    plan.decisions.push_back(
+                        MakeDecision(probe, "drop", "audio_drop_reencode_disabled",
+                                     "音频轨：目标容器试写头拒绝该编码，且本次未允许重编码，产物未保留该轨" + detail));
+                } else if (!probe.audio_reencode_encoder.empty()) {
+                    plan.decisions.push_back(MakeDecision(probe, "transcode", "audio_reencode_container_rejected",
+                                                          "音频轨：目标容器试写头拒绝原编码" + detail +
+                                                              "，解码后重编码为 " + probe.audio_reencode_codec +
+                                                              "（编码器 " + probe.audio_reencode_encoder +
+                                                              "，目标参数 " + probe.audio_reencode_settings + "）"));
+                    plan.decisions.back().target_codec = probe.audio_reencode_codec;
+                } else {
+                    // 逐候选的尝试记录必须跟着结论走：空着也要说清「试过什么」——
+                    // 只写「没有可用编码器」等于把结论当证据。
+                    const std::string attempts = probe.audio_reencode_note.empty() ? std::string("未逐条记录候选尝试")
+                                                                                   : probe.audio_reencode_note;
+                    plan.decisions.push_back(MakeDecision(probe, "drop", "audio_drop_no_fitting_encoder",
+                                                          "音频轨：目标容器试写头拒绝该编码" + detail +
+                                                              "，且没有任何可用的重编码目标（" + attempts +
+                                                              "），产物未保留该轨"));
+                }
                 break;
             case TranscodeContainerFit::Unknown:
                 plan.decisions.push_back(MakeDecision(
@@ -280,7 +301,8 @@ TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& p
                         std::to_string(probes.size()) + " 条输入轨，未列出的轨不能当成已保留）";
     }
     plan.note = "容器接受性由内存试写头逐轨实测（只放该音频轨一条流），不是查表或按扩展名推断；"
-                "实测拒绝对应的轨会被明确列为未保留，不会让整份产物写头失败";
+                "实测拒绝的音频轨优先转码成实测能收的编码（转码目标同样要过试写头），转不了才列为未保留 —— "
+                "两种结果都在决策表里逐条写明，且都不会让整份产物写头失败";
     return plan;
 }
 
