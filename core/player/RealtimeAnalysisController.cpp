@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -35,6 +36,10 @@ constexpr double kSampleTimeEpsilon = 1e-6;
 // 包信息批量投递的阈值: 攒够条数或攒够时间就发一批（见 QueuePacketInfo）。
 constexpr std::size_t kPacketBatchSize = 256;
 constexpr auto kPacketBatchInterval = std::chrono::milliseconds(50);
+
+// 宏块分析投递节流: UI 面板约 8Hz 刷新, 10Hz 足够“跟手”，又能把逐帧的
+// 跨线程拷贝与排队合并掉（见 QueueMacroblockAnalysis）。
+constexpr auto kMacroblockEmitInterval = std::chrono::milliseconds(100);
 
 // 计算单帧 256-bin 灰度直方图 (供场景切换检测使用)。
 // 通过 sws_scale 将任意像素格式转为 GRAY8, 再逐字节计数; 不依赖 OpenCV。
@@ -94,6 +99,8 @@ void RealtimeAnalysisController::InstallHooks() {
     hooks.on_audio_frame = [this](const AudioFrameContext& ctx) { OnAudioFrame(ctx); };
     hooks.on_seek_done = [this](double target_ms, model::SeekMode mode) { OnSeekDone(target_ms, mode); };
     hooks.on_end_of_stream = [this]() { OnEndOfStream(); };
+    hooks.on_paused = [this]() { FlushPendingMacroblock(); };
+    hooks.on_refresh_frame = [this]() { RefreshMacroblockFromLastFrame(); };
     hooks.on_sync_sample = [this](double audio_ts, double video_ts, bool audio_anchor) {
         EmitSyncSample(audio_ts, video_ts, audio_anchor);
     };
@@ -171,8 +178,7 @@ void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualization
 // --- 媒体生命周期 ---
 
 void RealtimeAnalysisController::ResetForNewMedia() {
-    video_frame_index_ = 0;
-    macroblock_frame_index_ = 0;
+    decoded_video_frame_index_ = 0;
     scene_change_frame_index_ = 0;
     scene_change_analyzer_.Reset();
     visual_defect_frame_index_ = 0;
@@ -188,6 +194,8 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     packet_index_ = 0;
     // 换媒体时缓冲里剩下的包属于上一个文件，直接丢弃（下面会无条件清空 UI 列表）。
     pending_packet_batch_.clear();
+    // 合并窗口里的宏块分析同样属于上一个文件，丢弃且重置时间窗。
+    DiscardPendingMacroblock();
     timeline_packet_index_ = 0;
     analysis_event_index_ = 0;
     sync_sample_index_ = 0;
@@ -213,6 +221,8 @@ void RealtimeAnalysisController::ResetForNewMedia() {
 void RealtimeAnalysisController::FlushOnStop() {
     // 停止时把不足一批的包先发出去，否则尾部记录永远留在缓冲里。
     FlushPacketBatch();
+    // 同理，合并窗口里的最后一帧宏块分析也要发出去，避免停止后界面停在更早的一帧。
+    FlushPendingMacroblock();
     if (!analysis_.IsVisualDefectAnalysisEnabled())
         return;
     FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_ : 0.0);
@@ -380,6 +390,82 @@ void RealtimeAnalysisController::FlushPacketBatch() {
     pending_packet_batch_.clear();
 }
 
+// --- 宏块分析: 10Hz 合并投递 ---
+
+void RealtimeAnalysisController::QueueMacroblockAnalysis(model::MacroblockFrameAnalysis analysis) {
+    const auto now = std::chrono::steady_clock::now();
+    if (macroblock_last_emit_ == std::chrono::steady_clock::time_point{} ||
+        now - macroblock_last_emit_ >= kMacroblockEmitInterval) {
+        macroblock_last_emit_ = now;
+        // 窗口内积压的更旧一帧没有展示机会，直接丢弃，只发当前帧。
+        pending_macroblock_.reset();
+        emit bus_.MacroblockInfoReady(analysis);
+        return;
+    }
+    // 合并: 覆盖式保留最新一帧，等窗口到期或暂停/播完时补发。
+    pending_macroblock_ = std::move(analysis);
+}
+
+void RealtimeAnalysisController::FlushPendingMacroblock() {
+    if (!pending_macroblock_)
+        return;
+    // 补发后重新开窗，避免紧随其后的下一帧立刻又发一帧。
+    macroblock_last_emit_ = std::chrono::steady_clock::now();
+    emit bus_.MacroblockInfoReady(*pending_macroblock_);
+    pending_macroblock_.reset();
+}
+
+void RealtimeAnalysisController::DiscardPendingMacroblock() {
+    // 定位 / 换媒体: 旧位置的最后一帧不能补发到新画面上；同时清空时间窗，
+    // 让新位置的第一帧立即投递，而不是再等 100ms。
+    pending_macroblock_.reset();
+    macroblock_last_emit_ = std::chrono::steady_clock::time_point{};
+}
+
+bool RealtimeAnalysisController::AnalyzeMacroblockFrame(const AVFrame* frame, int frame_index, int64_t pts,
+                                                        double timestamp, int frame_type, int codec_id) {
+    if (!analysis_.IsMacroblockAnalysisEnabled() || !frame)
+        return false;
+    try {
+        auto mb_analysis = macroblock_analyzer_.AnalyzeFrame(frame, frame_index, pts, timestamp, frame_type, codec_id);
+        QueueMacroblockAnalysis(std::move(mb_analysis));
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("宏块分析失败: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void RealtimeAnalysisController::RefreshMacroblockFromLastFrame() {
+    if (!analysis_.IsMacroblockAnalysisEnabled())
+        return;
+    VideoDecoder* decoder = playback_.video_decoder();
+    const AVFrame* raw_frame = decoder ? decoder->GetLastRawFrame() : nullptr;
+    if (!raw_frame)
+        return;
+
+    // 帧的时间戳以 best_effort_timestamp 为准，缺失时退到 pts；两者都没有就报 0。
+    const int64_t pts =
+        (raw_frame->best_effort_timestamp != AV_NOPTS_VALUE) ? raw_frame->best_effort_timestamp : raw_frame->pts;
+    double timestamp = 0.0;
+    AVFormatContext* format_ctx = playback_.format_ctx();
+    const int video_index = playback_.video_stream_index();
+    if (pts != AV_NOPTS_VALUE && format_ctx && video_index >= 0 &&
+        video_index < static_cast<int>(format_ctx->nb_streams)) {
+        AVStream* vs = format_ctx->streams[video_index];
+        if (vs && vs->time_base.den != 0)
+            timestamp = static_cast<double>(pts) * av_q2d(vs->time_base);
+    }
+
+    // 补采的是"最后交付的那一帧"，帧号取计数器上一个值，不能再自增，否则会和帧表错位。
+    const int frame_index = decoded_video_frame_index_ > 0 ? decoded_video_frame_index_ - 1 : 0;
+    if (AnalyzeMacroblockFrame(raw_frame, frame_index, pts, timestamp, static_cast<int>(decoder->GetLastPictureType()),
+                               static_cast<int>(decoder->GetCodecId()))) {
+        // 暂停中没有后续帧把这个结果挤出合并窗口，必须立即补发。
+        FlushPendingMacroblock();
+    }
+}
+
 // --- 播放回调 (由 PlaybackSession 的解码线程调用) ---
 
 void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
@@ -483,10 +569,14 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
         return;
     }
 
+    // 逐媒体帧号: 每个交付帧都推进，不受功能开关影响（Seek 追赶阶段跳过的帧不计）。
+    // 帧表与运动矢量面板共用这个号，中途开启分析或 Seek 之后两边才不会各算各的。
+    const int frame_index = ctx.catching_up ? -1 : decoded_video_frame_index_++;
+
     // 帧类型分析 (精确帧定位的追赶阶段跳过, 见 ctx.catching_up)
     if (!ctx.catching_up && analysis_.IsFrameTypeAnalysisEnabled()) {
         double ts = frame_data.timestamp;
-        const int emitted_index = video_frame_index_;
+        const int emitted_index = frame_index;
         const bool is_key_frame = (packet && (packet->flags & AV_PKT_FLAG_KEY) != 0);
         if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx && ctx.video_stream_index >= 0) {
             AVStream* vs = format_ctx->streams[ctx.video_stream_index];
@@ -498,15 +588,15 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
                     ts = pts * av_q2d(vs->time_base);
             }
         }
-        emit bus_.VideoFrameInfoReady(video_frame_index_++, static_cast<int>(ctx.decoder->GetLastPictureType()),
-                                      is_key_frame, static_cast<qint64>(frame_data.pts), ts);
+        emit bus_.VideoFrameInfoReady(frame_index, static_cast<int>(ctx.decoder->GetLastPictureType()), is_key_frame,
+                                      static_cast<qint64>(frame_data.pts), ts);
         // 时间轴与同步诊断（decode 层 frame 时间：best_effort / repeat_pict）
         if (analysis_.IsTimelineAnalysisEnabled() && format_ctx && ctx.video_stream_index >= 0) {
             AVStream* vs = format_ctx->streams[ctx.video_stream_index];
             const double tb_ms = (vs && vs->time_base.den != 0) ? av_q2d(vs->time_base) * 1000.0 : 0.0;
             const AVFrame* raw = ctx.raw_frame;
             model::FrameTimingInfo timing;
-            timing.index = static_cast<int>(video_frame_index_ - 1);
+            timing.index = frame_index;
             timing.stream_index = ctx.video_stream_index;
             timing.pts_ms =
                 (frame_data.pts != AV_NOPTS_VALUE) ? static_cast<double>(frame_data.pts) * tb_ms : model::kNoTimestamp;
@@ -532,18 +622,10 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
     }
 
     // 宏块分析 (运动矢量 / 块统计)
-    if (!ctx.catching_up && analysis_.IsMacroblockAnalysisEnabled()) {
-        const AVFrame* raw_frame = ctx.raw_frame;
-        if (raw_frame) {
-            try {
-                auto mb_analysis = macroblock_analyzer_.AnalyzeFrame(
-                    raw_frame, macroblock_frame_index_++, static_cast<qint64>(frame_data.pts), frame_data.timestamp,
-                    static_cast<int>(ctx.decoder->GetLastPictureType()), static_cast<int>(ctx.decoder->GetCodecId()));
-                emit bus_.MacroblockInfoReady(mb_analysis);
-            } catch (const std::exception& e) {
-                LOG_ERROR("宏块分析失败: " + std::string(e.what()));
-            }
-        }
+    if (!ctx.catching_up && ctx.raw_frame) {
+        AnalyzeMacroblockFrame(ctx.raw_frame, frame_index, static_cast<qint64>(frame_data.pts), frame_data.timestamp,
+                               static_cast<int>(ctx.decoder->GetLastPictureType()),
+                               static_cast<int>(ctx.decoder->GetCodecId()));
     }
 
     // 场景切换检测: 逐帧计算灰度直方图, 与上一帧比较巴氏距离。
@@ -641,6 +723,8 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
     Q_UNUSED(mode);
     // 定位前先把缓冲里的包交给 UI：它们属于定位点之前的片段，不该被丢掉。
     FlushPacketBatch();
+    // 宏块分析不同的是"位置相关"：补发旧位置的最后一帧会画到新画面上，必须丢弃。
+    DiscardPendingMacroblock();
     // 统计语义是"自上次打开/定位起的当前片段": 定位成功后必须清零,
     // 否则向后定位会重复累计帧/字节, GOP / 关键帧计数也会失真。
     if (analysis_.IsAnalysisEnabled()) {
@@ -654,6 +738,8 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
 void RealtimeAnalysisController::OnEndOfStream() {
     // 播到结尾: 把不足一批的包先发完
     FlushPacketBatch();
+    // 播到结尾: 合并窗口里的最后一帧宏块分析补发出去，界面才能停在真正的最后一帧。
+    FlushPendingMacroblock();
     // 播到结尾: 统计节流是每 10 帧一次，尾部最多 9 帧 + 最后一个不足 1 秒的码率窗口
     // 否则永远不会出现在界面上 —— 这里结算并补发一次终态快照。
     if (analysis_.IsAnalysisEnabled()) {

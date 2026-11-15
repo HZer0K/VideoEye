@@ -184,6 +184,13 @@ void PlaybackSession::Pause() {
     }
 }
 
+void PlaybackSession::RequestFrameRefresh() {
+    // 只是把请求标记 + 唤醒解码线程；消费与"要不要分析"由暂停分支和 hook 决定。
+    std::lock_guard<std::mutex> lock(mutex_);
+    refresh_requested_.store(true);
+    cv_.notify_one();
+}
+
 void PlaybackSession::Stop(bool notify_state_change) {
     {
         // 状态迁移 + 唤醒进同一把锁: 解码线程要么在进阻塞前看到 new 状态,
@@ -524,11 +531,25 @@ void PlaybackSession::DecodeThread() {
             }
 
             if (state_.load() == model::PlayerState::Paused) {
+                // 暂停后不会再有帧回调，先让分析侧补发合并窗口里的最后一帧，
+                // 否则暂停画面上的运动矢量会停在最多 100ms 之前的位置。
+                if (hooks_.on_paused)
+                    hooks_.on_paused();
                 const auto pause_begin = SteadyClock::now();
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] {
-                    return state_.load() != model::PlayerState::Paused || should_stop_.load() || pending_seek_.load();
-                });
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [this] {
+                        return state_.load() != model::PlayerState::Paused || should_stop_.load() ||
+                               pending_seek_.load() || refresh_requested_.load();
+                    });
+                }
+                // 暂停中开启分析时 UI 会请求"补采最后一帧"（见 RequestFrameRefresh）。
+                // 只在仍然暂停且没在停止/定位时执行: 那两种情况下这帧已经过期了。
+                const bool refresh = refresh_requested_.exchange(false);
+                if (refresh && state_.load() == model::PlayerState::Paused && !should_stop_.load() &&
+                    !pending_seek_.load() && hooks_.on_refresh_frame) {
+                    hooks_.on_refresh_frame();
+                }
                 const auto pause_end = SteadyClock::now();
                 if (enable_pacing)
                     playback_clock.OnPaused(pause_end - pause_begin);

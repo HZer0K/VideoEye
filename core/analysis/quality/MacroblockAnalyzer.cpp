@@ -13,8 +13,30 @@ extern "C" {
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
 
 namespace videoeye {
+
+namespace {
+
+// 块去重键: B 帧的同一块会同时给出前向 / 后向两条记录，dst 与 block_w/h 完全相同，
+// 只有 source 不同。用 (中心 X, 中心 Y, 宽, 高) 作为块的身份。
+// 坐标是像素位置，16 位足够覆盖到 65535 (8K 也只有 7680)。
+uint64_t MakeBlockKey(const model::MotionVectorInfo& mv) {
+    return static_cast<uint64_t>(static_cast<uint16_t>(mv.block_x)) |
+           (static_cast<uint64_t>(static_cast<uint16_t>(mv.block_y)) << 16) |
+           (static_cast<uint64_t>(mv.block_w) << 32) | (static_cast<uint64_t>(mv.block_h) << 40);
+}
+
+struct BlockAggregate {
+    uint8_t w = 0;
+    uint8_t h = 0;
+    double magnitude = 0.0; // 同一块的前/后向记录取较大幅度
+};
+
+} // namespace
 
 MacroblockAnalyzer::MacroblockAnalyzer() {
     LOG_INFO("宏块分析器已初始化");
@@ -93,44 +115,94 @@ model::MacroblockStats MacroblockAnalyzer::ComputeStats(const std::vector<model:
                                                         int frame_width, int frame_height, int codec_id) {
 
     model::MacroblockStats stats;
-    stats.total_blocks = static_cast<int>(mvs.size());
 
     if (mvs.empty())
         return stats;
 
-    double sum_magnitude = 0.0;
+    const bool is_hevc = (codec_id == AV_CODEC_ID_HEVC);
+    const bool supports_intra_estimate = (codec_id == AV_CODEC_ID_H264 || is_hevc);
+    const int grid_block = is_hevc ? 64 : 16; // HEVC CTU 64x64, H.264/其余按 16x16 宏块
 
+    // 块尺寸按 codec 自适应铺一次网格: 这是"总块数"的唯一来源。
+    int grid_w = 0;
+    int grid_h = 0;
+    std::vector<uint8_t> covered; // 每个网格单元是否被至少一个 inter 块覆盖
+    if (frame_width > 0 && frame_height > 0) {
+        grid_w = (frame_width + grid_block - 1) / grid_block;
+        grid_h = (frame_height + grid_block - 1) / grid_block;
+        stats.total_blocks = grid_w * grid_h;
+        stats.block_counts_estimated = true;
+        if (supports_intra_estimate)
+            covered.assign(static_cast<std::size_t>(grid_w) * static_cast<std::size_t>(grid_h), 0);
+    }
+
+    // 去重: B 帧同一块的前向 / 后向两条记录只算一块。否则块大小分布与平均幅度都会翻倍。
+    std::unordered_map<uint64_t, BlockAggregate> blocks;
+    blocks.reserve(mvs.size());
+
+    int covered_cells = 0;
     for (const auto& mv : mvs) {
-        // 参考方向统计
+        // 参考方向仍按记录数统计: 一块双向前后各一条，是两条真实的参考记录。
         if (mv.source < 0) {
             stats.forward_count++;
         } else if (mv.source > 0) {
             stats.backward_count++;
         }
 
-        // 块大小分布 (统一覆盖 H.264 与 HEVC 全部 PU 尺寸)
-        AccumulateBlockSize(stats, mv.block_w, mv.block_h);
+        const auto [it, inserted] =
+            blocks.try_emplace(MakeBlockKey(mv), BlockAggregate{mv.block_w, mv.block_h, mv.motion_magnitude});
+        if (!inserted && mv.motion_magnitude > it->second.magnitude) {
+            it->second.magnitude = mv.motion_magnitude;
+        }
 
-        // 运动幅度统计
-        AccumulateMagnitude(stats, mv.motion_magnitude);
-
-        sum_magnitude += mv.motion_magnitude;
-        if (mv.motion_magnitude > stats.max_motion_magnitude) {
-            stats.max_motion_magnitude = mv.motion_magnitude;
+        // 网格覆盖: 把该块的像素范围映射到宏块/CTU 单元，用于 P/B 帧的帧内块估算。
+        if (!covered.empty()) {
+            const int left = std::max(0, mv.block_x - mv.block_w / 2);
+            const int right = std::min(frame_width - 1, mv.block_x + mv.block_w / 2 - 1);
+            const int top = std::max(0, mv.block_y - mv.block_h / 2);
+            const int bottom = std::min(frame_height - 1, mv.block_y + mv.block_h / 2 - 1);
+            if (right >= left && bottom >= top) {
+                const int x0 = left / grid_block;
+                const int x1 = right / grid_block;
+                const int y0 = top / grid_block;
+                const int y1 = bottom / grid_block;
+                for (int gy = y0; gy <= y1; ++gy) {
+                    for (int gx = x0; gx <= x1; ++gx) {
+                        const auto index = static_cast<std::size_t>(gy) * static_cast<std::size_t>(grid_w) + gx;
+                        if (covered[index] == 0) {
+                            covered[index] = 1;
+                            covered_cells++;
+                        }
+                    }
+                }
+            }
         }
     }
 
-    stats.avg_motion_magnitude = sum_magnitude / static_cast<double>(mvs.size());
+    stats.distinct_block_count = static_cast<int>(blocks.size());
 
-    // 块尺寸按 codec 自适应: HEVC CTU 64x64, 其余按 16x16 宏块
-    if (frame_width > 0 && frame_height > 0) {
-        bool is_hevc = (codec_id == AV_CODEC_ID_HEVC);
-        int block = is_hevc ? 64 : 16;
-        int mb_w = (frame_width + block - 1) / block;
-        int mb_h = (frame_height + block - 1) / block;
-        int total_mb = mb_w * mb_h;
-        stats.total_blocks = total_mb;
-        stats.block_counts_estimated = true;
+    double sum_magnitude = 0.0;
+    for (const auto& entry : blocks) {
+        const BlockAggregate& block = entry.second;
+        // 块大小分布 (统一覆盖 H.264 与 HEVC 全部 PU 尺寸)
+        AccumulateBlockSize(stats, block.w, block.h);
+
+        // 运动幅度统计 (按去重块)
+        AccumulateMagnitude(stats, block.magnitude);
+        sum_magnitude += block.magnitude;
+        if (block.magnitude > stats.max_motion_magnitude) {
+            stats.max_motion_magnitude = block.magnitude;
+        }
+    }
+
+    if (!blocks.empty())
+        stats.avg_motion_magnitude = sum_magnitude / static_cast<double>(blocks.size());
+
+    // P/B 帧帧内估算: 网格单元减去被 inter 块覆盖的单元。H.264 的 8x8/16x8 分区会落在
+    // 同一个 16x16 单元里，按单元去重后不会重复扣减，比"记录数对不上网格"可靠。
+    if (supports_intra_estimate && !covered.empty()) {
+        stats.intra_count = stats.total_blocks - covered_cells;
+        stats.intra_count_available = true;
     }
 
     return stats;

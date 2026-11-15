@@ -5,6 +5,7 @@
 #include <cmath>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/player/RealtimeAnalysisController.h"
@@ -12,6 +13,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
+#include <libavutil/motion_vector.h>
 #include <libavutil/pixfmt.h>
 }
 
@@ -44,6 +46,33 @@ public:
     static void FlushOnStop(RealtimeAnalysisController& controller) {
         controller.FlushOnStop();
     }
+
+    static void QueueMacroblock(RealtimeAnalysisController& controller, model::MacroblockFrameAnalysis analysis) {
+        controller.QueueMacroblockAnalysis(std::move(analysis));
+    }
+
+    static void FlushMacroblock(RealtimeAnalysisController& controller) {
+        controller.FlushPendingMacroblock();
+    }
+
+    static int PendingMacroblockFrame(const RealtimeAnalysisController& controller) {
+        return controller.pending_macroblock_ ? controller.pending_macroblock_->frame_index : -1;
+    }
+
+    static void SetMacroblockEnabled(RealtimeAnalysisController& controller, bool enabled) {
+        controller.analysis_.SetMacroblockAnalysisEnabled(enabled);
+    }
+
+    // 暂停补采走的就是这个方法（RefreshMacroblockFromLastFrame 从解码器取帧后调它）；
+    // 这里直接喂帧，绕过"必须真有解码器"的限制。帧号由调用方给，方法内部不再自增。
+    static bool AnalyzeMacroblock(RealtimeAnalysisController& controller, int frame_index, const AVFrame* frame,
+                                  int frame_type, int codec_id) {
+        return controller.AnalyzeMacroblockFrame(frame, frame_index, 0, 0.0, frame_type, codec_id);
+    }
+
+    static void RefreshMacroblock(RealtimeAnalysisController& controller) {
+        controller.RefreshMacroblockFromLastFrame();
+    }
 };
 
 namespace {
@@ -52,6 +81,21 @@ using videoeye::player::RealtimeAnalysisControllerTestAccess;
 
 void FreeFrame(AVFrame* frame) {
     av_frame_free(&frame);
+}
+
+// 给测试帧挂一条 16x16 的前向运动矢量，让宏块分析有可统计的数据。
+void AttachMotionVector(AVFrame* frame) {
+    AVFrameSideData* side_data = av_frame_new_side_data(frame, AV_FRAME_DATA_MOTION_VECTORS, sizeof(AVMotionVector));
+    ASSERT_NE(side_data, nullptr);
+    auto* mv = reinterpret_cast<AVMotionVector*>(side_data->data);
+    *mv = AVMotionVector{};
+    mv->dst_x = 8;
+    mv->dst_y = 8;
+    mv->w = 16;
+    mv->h = 16;
+    mv->source = -1;
+    mv->motion_scale = 4;
+    mv->motion_x = 8;
 }
 
 class RealtimeAnalysisControllerTest : public testing::Test {
@@ -239,6 +283,107 @@ TEST_F(RealtimeAnalysisControllerTest, PacketInfoIsBatchedAndFlushedOnStop) {
     RealtimeAnalysisControllerTestAccess::FlushOnStop(controller_);
     EXPECT_EQ(2, batches);
     EXPECT_EQ(1u, last_batch_size);
+}
+
+// 宏块分析按 10Hz 合并投递：窗口内只保留最新一帧，暂停 / 播完时补发，
+// 避免 1080p 逐帧跨线程拷贝数千条运动矢量。
+TEST_F(RealtimeAnalysisControllerTest, MacroblockAnalysisIsCoalescedTo10Hz) {
+    std::vector<int> emitted;
+    auto& bus = controller_.bus();
+    QObject::connect(
+        &bus, &videoeye::player::AnalysisBus::MacroblockInfoReady,
+        [&](const videoeye::model::MacroblockFrameAnalysis& analysis) { emitted.push_back(analysis.frame_index); });
+
+    auto make = [](int frame_index) {
+        videoeye::model::MacroblockFrameAnalysis analysis;
+        analysis.frame_index = frame_index;
+        return analysis;
+    };
+
+    // 第一帧立即投递（打开分析后不应等 100ms）
+    RealtimeAnalysisControllerTestAccess::QueueMacroblock(controller_, make(0));
+    ASSERT_EQ(std::vector<int>({0}), emitted);
+
+    // 窗口内的后续帧被合并，只保留最新一帧
+    for (int i = 1; i <= 5; ++i) {
+        RealtimeAnalysisControllerTestAccess::QueueMacroblock(controller_, make(i));
+    }
+    EXPECT_EQ(1u, emitted.size());
+    EXPECT_EQ(5, RealtimeAnalysisControllerTestAccess::PendingMacroblockFrame(controller_));
+
+    // 暂停 / 播完补发合并窗口里的最后一帧，而不是丢掉
+    RealtimeAnalysisControllerTestAccess::FlushMacroblock(controller_);
+    ASSERT_EQ(2u, emitted.size());
+    EXPECT_EQ(5, emitted.back());
+    EXPECT_EQ(-1, RealtimeAnalysisControllerTestAccess::PendingMacroblockFrame(controller_));
+}
+
+// 定位属于"位置相关"的边界：旧位置合并中的帧必须丢弃，且新位置第一帧立即投递。
+TEST_F(RealtimeAnalysisControllerTest, SeekDiscardsPendingMacroblockAndReopensWindow) {
+    std::vector<int> emitted;
+    auto& bus = controller_.bus();
+    QObject::connect(
+        &bus, &videoeye::player::AnalysisBus::MacroblockInfoReady,
+        [&](const videoeye::model::MacroblockFrameAnalysis& analysis) { emitted.push_back(analysis.frame_index); });
+
+    auto make = [](int frame_index) {
+        videoeye::model::MacroblockFrameAnalysis analysis;
+        analysis.frame_index = frame_index;
+        return analysis;
+    };
+
+    RealtimeAnalysisControllerTestAccess::QueueMacroblock(controller_, make(0));
+    RealtimeAnalysisControllerTestAccess::QueueMacroblock(controller_, make(1));
+    ASSERT_EQ(1u, emitted.size());
+    ASSERT_EQ(1, RealtimeAnalysisControllerTestAccess::PendingMacroblockFrame(controller_));
+
+    RealtimeAnalysisControllerTestAccess::Seek(controller_, 5000.0);
+    EXPECT_EQ(-1, RealtimeAnalysisControllerTestAccess::PendingMacroblockFrame(controller_));
+
+    // Seek 清空了时间窗，新位置第一帧应立即投递
+    RealtimeAnalysisControllerTestAccess::QueueMacroblock(controller_, make(2));
+    ASSERT_EQ(2u, emitted.size());
+    EXPECT_EQ(2, emitted.back());
+}
+
+// 暂停中补采的分析帧必须立刻投递（不能压在 10Hz 合并窗口里等下一帧）。
+// 同时验证开关关闭时不分析、不投递。
+TEST_F(RealtimeAnalysisControllerTest, MacroblockFrameAnalysisRespectsSwitchAndEmitsImmediately) {
+    int emitted = 0;
+    videoeye::model::MacroblockFrameAnalysis last;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::MacroblockInfoReady,
+                     [&](const videoeye::model::MacroblockFrameAnalysis& analysis) {
+                         ++emitted;
+                         last = analysis;
+                     });
+
+    // 开关关闭：直接返回 false，不发任何结果
+    EXPECT_FALSE(
+        RealtimeAnalysisControllerTestAccess::AnalyzeMacroblock(controller_, 7, frame_.get(), AV_PICTURE_TYPE_P, 27));
+    EXPECT_EQ(0, emitted);
+
+    // 开关打开：首帧窗口为空，应立即投递。帧号原样透传（与帧表共用一套编号，不再内部自增）。
+    RealtimeAnalysisControllerTestAccess::SetMacroblockEnabled(controller_, true);
+    AttachMotionVector(frame_.get());
+    EXPECT_TRUE(
+        RealtimeAnalysisControllerTestAccess::AnalyzeMacroblock(controller_, 7, frame_.get(), AV_PICTURE_TYPE_P, 27));
+    ASSERT_EQ(1, emitted);
+    EXPECT_EQ(7, last.frame_index);
+    EXPECT_EQ(1, last.stats.distinct_block_count);
+    EXPECT_TRUE(last.stats.intra_count_available);
+}
+
+// 没有打开媒体 / 没有解码器时，补采请求是安全的 no-op：不崩、不发空结果。
+TEST_F(RealtimeAnalysisControllerTest, RefreshMacroblockWithoutDecoderIsSafeNoOp) {
+    RealtimeAnalysisControllerTestAccess::SetMacroblockEnabled(controller_, true);
+    int emitted = 0;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::MacroblockInfoReady,
+                     [&](const videoeye::model::MacroblockFrameAnalysis&) { ++emitted; });
+
+    RealtimeAnalysisControllerTestAccess::RefreshMacroblock(controller_);
+    EXPECT_EQ(0, emitted);
 }
 
 } // namespace

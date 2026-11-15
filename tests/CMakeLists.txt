@@ -2550,6 +2550,16 @@ target_link_libraries(test_macroblock_analyzer PRIVATE VideoEyeAnalysis)
 add_test(NAME MacroblockAnalyzerTests COMMAND test_macroblock_analyzer)
 
 # =================================================
+# 测试：运动矢量叠加层坐标换算（块中心语义回归）
+#
+# 箭头起点 / 热力图矩形的偏移当年出过 bug（整体偏半个宏块），缩放下肉眼难发现。
+# 这里直接钉住换算结果：箭头从块中心出发、块矩形以中心展开半个块、超长截断、
+# motion_scale 缺失回退，以及非法帧尺寸返回零几何。
+# =================================================
+videoeye_add_test(test_motion_vector_geometry unit/test_motion_vector_geometry.cpp)
+add_test(NAME MotionVectorGeometryTests COMMAND test_motion_vector_geometry)
+
+# =================================================
 # 测试 66：流媒体包面板（P2 拆分后的子视图契约）
 #
 # 说明: StreamingPanel 这一页原先 700 余行、且没有任何测试。拆分后四块展示内容

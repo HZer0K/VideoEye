@@ -88,6 +88,12 @@ public:
         std::function<void(double target_ms, model::SeekMode mode)> on_seek_done;
         // 读到流末尾: 闭合还开着的缺陷段等收尾动作
         std::function<void()> on_end_of_stream;
+        // 解码线程观察到"已暂停"、即将阻塞等待唤醒: 把节流合并的分析结果补发出去。
+        // 暂停后不会再有帧回调，不在这里补发就只能等下次定位/停止。
+        std::function<void()> on_paused;
+        // 暂停中被 RequestFrameRefresh() 唤醒: 用解码器里缓存的最后一帧补一次分析。
+        // 用于"暂停时才开启分析"的场景 —— 不补采就必须等恢复播放面板才会有数据。
+        std::function<void()> on_refresh_frame;
         // 音视频时间戳对齐采样(audio_ts, video_ts, 以音频为锚)
         std::function<void(double, double, bool)> on_sync_sample;
     };
@@ -135,6 +141,10 @@ public:
     // StateChanged —— 宿主与接收者都已进入半析构，信号落到 UI 槽就是野指针访问。
     void Stop(bool notify_state_change = true);
     void Seek(int position_ms, model::SeekMode mode);
+
+    // 暂停中请求用"解码器缓存的最后一帧"补一次分析（见 Hooks::on_refresh_frame）。
+    // 只负责唤醒解码线程，分析语义仍由 hook 决定；播放中调用无意义（帧本来就在流动）。
+    void RequestFrameRefresh();
 
     // --- 状态 ---
     model::PlayerState state() const {
@@ -206,6 +216,8 @@ private:
     std::thread decode_thread_;
     std::mutex mutex_;
     std::condition_variable cv_;
+    // 暂停中"补采最后一帧"的请求；只在暂停等待循环里消费（见 RequestFrameRefresh）
+    std::atomic<bool> refresh_requested_{false};
 };
 
 } // namespace player

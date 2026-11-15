@@ -1,5 +1,6 @@
 #include "ui/main_window/VideoWidget.h"
 #include "infrastructure/logging/Logger.h"
+#include "ui/main_window/MotionVectorGeometry.h"
 #include <QFont>
 #include <QFontMetrics>
 #include <QPaintEvent>
@@ -7,7 +8,9 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QTimer>
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 
 namespace videoeye {
 namespace ui {
@@ -16,6 +19,10 @@ namespace {
 
 // 占位文字为中央播放圆盘让出的纵向距离（圆盘半径 36 + 文字半高 + 间隙）
 constexpr int kCenterPlayDodge = 56;
+
+// 叠加层一帧最多画多少条矢量。大分辨率一帧可能有几千条分区，10Hz 全量重绘会拖慢
+// 每帧绘制；按记录顺序等距抽样，空间分布基本保持不变。
+constexpr std::size_t kMaxOverlayVectors = 1500;
 
 } // namespace
 
@@ -205,8 +212,8 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
     if (fw <= 0 || fh <= 0)
         return;
 
-    const qreal sx = display_rect.width() / fw;
-    const qreal sy = display_rect.height() / fh;
+    const MvOverlayViewport viewport{display_rect.left(), display_rect.top(), display_rect.width(),
+                                     display_rect.height()};
 
     // 运动矢量幅度放大因子 (子像素运动在屏幕上几乎不可见)
     const qreal mv_amp = 3.0;
@@ -216,31 +223,23 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
     painter.save();
     painter.setClipRect(display_rect);
 
-    for (const auto& mv : mvs) {
-        double mv_scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
-        double px_mx = mv.motion_x / mv_scale;
-        double px_my = mv.motion_y / mv_scale;
-        double magnitude = std::sqrt(px_mx * px_mx + px_my * px_my);
+    const std::size_t stride = MvSampleStride(mvs.size(), kMaxOverlayVectors);
+    for (std::size_t i = 0; i < mvs.size(); i += stride) {
+        const auto& mv = mvs[i];
+        const double magnitude = MvPixelMagnitude(mv);
 
         // 跳过零运动矢量 (帧内预测块)
         if (magnitude < 0.1)
             continue;
 
-        qreal cx = display_rect.left() + (mv.block_x + mv.block_w / 2.0) * sx;
-        qreal cy = display_rect.top() + (mv.block_y + mv.block_h / 2.0) * sy;
-        qreal ex = cx + px_mx * sx * mv_amp;
-        qreal ey = cy + px_my * sy * mv_amp;
+        // dst_x/dst_y 是块中心（FFmpeg AVMotionVector 语义），箭头直接从中心出发。
+        const MvArrowGeometry geo = ComputeMvArrow(mv, viewport, fw, fh, mv_amp, 60.0);
+        const double cx = geo.start_x;
+        const double cy = geo.start_y;
+        const double ex = geo.end_x;
+        const double ey = geo.end_y;
 
-        // 限制箭头最大长度, 避免过长的箭头遮挡画面
-        qreal arrow_len = std::sqrt((ex - cx) * (ex - cx) + (ey - cy) * (ey - cy));
-        const qreal max_arrow = 60.0;
-        if (arrow_len > max_arrow) {
-            qreal ratio = max_arrow / arrow_len;
-            ex = cx + (ex - cx) * ratio;
-            ey = cy + (ey - cy) * ratio;
-            arrow_len = max_arrow;
-        }
-        if (arrow_len < min_arrow) {
+        if (geo.length < min_arrow) {
             // 幅度极小: 画一个小圆点
             QColor dot_color = (mv.source < 0) ? QColor(255, 107, 107, 120) : QColor(88, 166, 255, 120);
             painter.setPen(Qt::NoPen);
@@ -270,7 +269,7 @@ void VideoOverlayWidget::DrawMvArrows(QPainter& painter, const QRectF& display_r
 
         // 箭头头部
         double angle = std::atan2(ey - cy, ex - cx);
-        double head_len = std::min(5.0, arrow_len * 0.3);
+        double head_len = std::min(5.0, geo.length * 0.3);
         QPointF p1(ex - head_len * std::cos(angle - 0.5), ey - head_len * std::sin(angle - 0.5));
         QPointF p2(ex - head_len * std::cos(angle + 0.5), ey - head_len * std::sin(angle + 0.5));
         painter.drawLine(QPointF(ex, ey), p1);
@@ -287,41 +286,54 @@ void VideoOverlayWidget::DrawMvBlocks(QPainter& painter, const QRectF& display_r
     if (fw <= 0 || fh <= 0)
         return;
 
-    const qreal sx = display_rect.width() / fw;
-    const qreal sy = display_rect.height() / fh;
+    const MvOverlayViewport viewport{display_rect.left(), display_rect.top(), display_rect.width(),
+                                     display_rect.height()};
 
     painter.save();
     painter.setClipRect(display_rect);
 
-    for (const auto& mv : mvs) {
-        double mv_scale = (mv.motion_scale > 0) ? static_cast<double>(mv.motion_scale) : 1.0;
-        double px_mx = mv.motion_x / mv_scale;
-        double px_my = mv.motion_y / mv_scale;
-        double magnitude = std::sqrt(px_mx * px_mx + px_my * px_my);
+    const std::size_t stride = MvSampleStride(mvs.size(), kMaxOverlayVectors);
+    for (std::size_t i = 0; i < mvs.size(); i += stride) {
+        const auto& mv = mvs[i];
+        const double magnitude = MvPixelMagnitude(mv);
 
         // 跳过零运动矢量
         if (magnitude < 0.1)
             continue;
 
-        qreal bx = display_rect.left() + mv.block_x * sx;
-        qreal by = display_rect.top() + mv.block_y * sy;
-        qreal bw = mv.block_w * sx;
-        qreal bh = mv.block_h * sy;
+        // dst 是块中心，热力图矩形要以它为中心向四周展开半个块，否则整体偏移半块。
+        const MvBlockGeometry block = ComputeMvBlock(mv, viewport, fw, fh);
 
         QColor color = MvMagnitudeToColor(magnitude);
         color.setAlphaF(0.25 + 0.35 * std::min(1.0, magnitude / 16.0));
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
-        painter.drawRect(QRectF(bx, by, bw, bh));
+        painter.drawRect(QRectF(block.left, block.top, block.width, block.height));
     }
 
     painter.restore();
 }
 
 void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_rect) {
-    const int legend_w = 140;
+    QFont font("Inter", 8);
+    QFontMetrics fm(font);
+
+    const std::size_t total = mv_analysis_.motion_vectors.size();
+    const std::size_t stride = MvSampleStride(total, kMaxOverlayVectors);
+    QString mv_info = tr("MV: %1 条 | 均: %2 | 峰: %3")
+                          .arg(static_cast<qulonglong>(total))
+                          .arg(mv_analysis_.stats.avg_motion_magnitude, 0, 'f', 1)
+                          .arg(mv_analysis_.stats.max_motion_magnitude, 0, 'f', 1);
+    if (stride > 1) {
+        // 抽样必须显式标注：图例上的条数只统计已采集的矢量，画出来的箭头更少。
+        const std::size_t drawn = (total + stride - 1) / stride;
+        mv_info += tr(" | 抽样 %1/%2").arg(static_cast<qulonglong>(drawn)).arg(static_cast<qulonglong>(total));
+    }
+
     const int legend_h = 56;
     const int margin = 14;
+    // 宽度按文字实测：固定 140 连「MV: 2000 条 | 均: 2.0 | 峰: 9.0」都放不下，会溢出圆角框。
+    const int legend_w = std::max(140, fm.horizontalAdvance(mv_info) + 20);
     int lx = static_cast<int>(display_rect.left()) + margin;
     int ly = static_cast<int>(display_rect.bottom()) - legend_h - margin;
 
@@ -330,9 +342,7 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
     painter.setBrush(QColor(0, 0, 0, 160));
     painter.drawRoundedRect(QRect(lx, ly, legend_w, legend_h), 6, 6);
 
-    QFont font("Inter", 8);
     painter.setFont(font);
-    QFontMetrics fm(font);
 
     int y = ly + 8;
     int x = lx + 10;
@@ -350,10 +360,6 @@ void VideoOverlayWidget::DrawMvLegend(QPainter& painter, const QRectF& display_r
 
     // 幅度图例
     y += 18;
-    QString mv_info = tr("MV: %1 条 | 均: %2 | 峰: %3")
-                          .arg(static_cast<qulonglong>(mv_analysis_.motion_vectors.size()))
-                          .arg(mv_analysis_.stats.avg_motion_magnitude, 0, 'f', 1)
-                          .arg(mv_analysis_.stats.max_motion_magnitude, 0, 'f', 1);
     painter.setPen(QColor(180, 180, 180));
     painter.drawText(x, y + 10, mv_info);
 

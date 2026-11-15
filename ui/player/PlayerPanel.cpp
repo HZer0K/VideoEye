@@ -536,6 +536,10 @@ void PlayerPanel::OnSeek(int value) {
         return;
     last_seek_value_ = value;
     last_seek_time_ = now;
+    // 跳转后画面会换帧，但运动矢量只在播放期由解码线程回吐；不清掉旧数据的话，
+    // 暂停状态下会把上一位置的箭头继续画在新画面上。
+    if (video_widget_)
+        video_widget_->SetMotionVectors(videoeye::model::MacroblockFrameAnalysis{});
     // 按当前选择的定位方式 (关键帧 / 精确帧) 执行 seek
     player_->Seek(value, player_->GetSeekMode());
 }

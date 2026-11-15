@@ -3,7 +3,7 @@
 // 播放期的实时分析：逐包 / 逐帧的计数、判定、发信号，以及画面质量与视觉缺陷的采样编排。
 //
 // 为什么从 MediaPlayer 里拆出来: 这是 MediaPlayer 里"最容易长、又最不该长"的一块 ——
-// 六个 hook（包 / 视频帧 / 音频帧 / 定位完成 / 播完 / 同步采样）各自串着若干个
+// 七个 hook（包 / 视频帧 / 音频帧 / 定位完成 / 播完 / 暂停 / 同步采样）各自串着若干个
 // "开关判定 -> 计数 -> 填结构 -> 发信号"，再加 19 个逐帧计数器和 4 个分析器。
 // 它们和播放状态机没有任何关系，却和播放状态机住在同一个类里：每加一个实时分析维度，
 // 就要在 MediaPlayer 上同时改计数器、hook、Reset 与头文件。
@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "core/analysis/quality/MacroblockAnalyzer.h"
@@ -132,6 +133,20 @@ private:
     void QueuePacketInfo(const model::PacketInfo& packet_info);
     void FlushPacketBatch();
 
+    // --- 宏块分析: 10Hz 合并投递 ---
+    // 面板按 8Hz 刷新，而运动矢量是逐帧产出的（1080p 一帧可达数千条），逐帧跨线程
+    // 拷贝 + 排队纯属浪费：100ms 窗口内只保留最新一帧，窗口到期后投递。
+    // 暂停 / 播完时补发窗口内最后一帧（UI 需要与暂停画面一致的结果）；
+    // 定位 / 换媒体时丢弃（它们属于旧位置，不能补发到新画面上）。
+    void QueueMacroblockAnalysis(model::MacroblockFrameAnalysis analysis);
+    void FlushPendingMacroblock();
+    void DiscardPendingMacroblock();
+    // 分析一帧并投递（开关关闭 / 空帧时返回 false）。frame_index 用逐媒体帧号，与帧表一致。
+    bool AnalyzeMacroblockFrame(const AVFrame* frame, int frame_index, int64_t pts, double timestamp, int frame_type,
+                                int codec_id);
+    // 暂停中开启分析: 用解码器缓存的最后一帧补采一次，并立即投递（见 PlaybackSession::RequestFrameRefresh）。
+    void RefreshMacroblockFromLastFrame();
+
     // --- 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器 ---
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
     void ResetVisualDefectTimeline();
@@ -155,8 +170,9 @@ private:
     // 换媒体时由 ResetForNewMedia() 一次性清零 —— 逐个漏掉一个的代价是"索引从
     // 上一份媒体的值继续涨"，界面上表现为序号跳变、定位后统计重复累计。
     int analysis_frame_counter_ = 0;
-    int video_frame_index_ = 0;
-    int macroblock_frame_index_ = 0;
+    // 逐媒体帧号: 每个真正交付的帧都推进，与任何分析开关无关。
+    // 帧表与运动矢量面板共用它，中途开启分析或 Seek 之后两边的编号才不会各算各的。
+    int decoded_video_frame_index_ = 0;
     int scene_change_frame_index_ = 0;
     int visual_defect_frame_index_ = 0;
     double visual_defect_last_sample_ts_ = -1.0;
@@ -181,6 +197,10 @@ private:
     // 待投递的包缓冲（只在解码线程读写）
     std::vector<model::PacketInfo> pending_packet_batch_;
     std::chrono::steady_clock::time_point packet_batch_first_{};
+
+    // 宏块分析的 10Hz 合并状态（只在解码线程读写）
+    std::chrono::steady_clock::time_point macroblock_last_emit_{};
+    std::optional<model::MacroblockFrameAnalysis> pending_macroblock_;
 };
 
 } // namespace player

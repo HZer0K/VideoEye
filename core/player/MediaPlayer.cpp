@@ -522,6 +522,10 @@ void MediaPlayer::Impl::SetMacroblockAnalysisEnabled(bool enable) {
                 if (was_playing)
                     facade_->Play();
             }
+        } else if (playback_session_.state() == model::PlayerState::Paused) {
+            // 暂停中开启分析: 解码线程不会再产出帧回调，请求它用解码器缓存的最后一帧
+            // 补采一次（否则面板要等恢复播放才有数据）。
+            playback_session_.RequestFrameRefresh();
         }
     } else if (!enable && was_enabled) {
         LOG_INFO("宏块分析已禁用");

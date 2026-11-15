@@ -12,10 +12,12 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QTableWidget>
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "core/domain/model/MacroblockInfo.h"
 #include "ui/analysis_panel/MacroblockView.h"
@@ -58,6 +60,16 @@ QLabel* FindLabelContaining(MacroblockView* view, const QString& needle) {
     return nullptr;
 }
 
+// 运动强度曲线是唯一带「点击曲线可跳转」提示的标签，按提示文本定位，
+// 避免依赖文本（画完后文本会被 pixmap 顶掉）。
+QLabel* FindChartLabel(MacroblockView* view) {
+    for (QLabel* label : view->findChildren<QLabel*>()) {
+        if (label->toolTip().contains(QStringLiteral("点击曲线可跳转")))
+            return label;
+    }
+    return nullptr;
+}
+
 MotionVectorInfo MakeMv(int block_x, int block_y, int32_t motion_x, int32_t motion_y, uint16_t motion_scale,
                         int32_t source) {
     MotionVectorInfo mv;
@@ -68,6 +80,23 @@ MotionVectorInfo MakeMv(int block_x, int block_y, int32_t motion_x, int32_t moti
     mv.motion_scale = motion_scale;
     mv.source = source;
     return mv;
+}
+
+// 一条带运动矢量的 P 帧，时间戳与平均/最大幅度可控，供曲线测试使用。
+MacroblockFrameAnalysis MakeMvFrame(double timestamp, double avg_magnitude, double max_magnitude) {
+    MacroblockFrameAnalysis analysis;
+    analysis.codec_id = 27;  // AV_CODEC_ID_H264
+    analysis.frame_type = 2; // P 帧
+    analysis.frame_width = 640;
+    analysis.frame_height = 360;
+    analysis.timestamp = timestamp;
+    analysis.has_motion_vectors = true;
+    analysis.motion_vectors = {MakeMv(16, 16, 8, 8, 4, -1)};
+    analysis.stats.total_blocks = 90;
+    analysis.stats.distinct_block_count = 1;
+    analysis.stats.avg_motion_magnitude = avg_magnitude;
+    analysis.stats.max_motion_magnitude = max_magnitude;
+    return analysis;
 }
 
 } // namespace
@@ -97,6 +126,7 @@ TEST(MacroblockViewTests, FlushRendersMotionVectorRowsWithPixelScale) {
     analysis.motion_vectors = {forward, backward, neutral};
 
     analysis.stats.total_blocks = 3;
+    analysis.stats.distinct_block_count = 3;
     analysis.stats.forward_count = 1;
     analysis.stats.backward_count = 1;
     analysis.stats.intra_count = 1;
@@ -128,6 +158,7 @@ TEST(MacroblockViewTests, FlushRendersMotionVectorRowsWithPixelScale) {
     EXPECT_TRUE(text.contains(QStringLiteral("帧 #12")));
     EXPECT_TRUE(text.contains(QStringLiteral("[P]")));
     EXPECT_TRUE(text.contains(QStringLiteral("宏块总数: 3")));
+    EXPECT_TRUE(text.contains(QStringLiteral("去重块: 3")));
     EXPECT_TRUE(text.contains(QStringLiteral("前向: 1")));
     EXPECT_TRUE(text.contains(QStringLiteral("后向: 1")));
     EXPECT_TRUE(text.contains(QStringLiteral("帧内: 不可用")));
@@ -180,10 +211,10 @@ TEST(MacroblockViewTests, HevcUsesCtuTermAndLargeBlockSizes) {
     EXPECT_EQ(bs_table->item(6, 1)->text(), QStringLiteral("6"));
     EXPECT_EQ(bs_table->item(6, 2)->text(), QStringLiteral("60.0%"));
 
-    // I 帧预览：无运动矢量文案 + 帧内块数
+    // I 帧预览：无运动矢量文案 + 帧内 CTU 数
     QLabel* viz = FindLabelContaining(&view, QStringLiteral("I 帧"));
     ASSERT_TRUE(viz != nullptr);
-    EXPECT_TRUE(viz->text().contains(QStringLiteral("帧内块数: 10（估算）")));
+    EXPECT_TRUE(viz->text().contains(QStringLiteral("帧内CTU数: 10（估算）")));
 }
 
 TEST(MacroblockViewTests, PredictedFrameWithoutMotionVectorsIsNotLabeledIntra) {
@@ -191,6 +222,7 @@ TEST(MacroblockViewTests, PredictedFrameWithoutMotionVectorsIsNotLabeledIntra) {
     MacroblockView view;
     MacroblockFrameAnalysis analysis;
     analysis.frame_type = 2;
+    analysis.codec_id = 27; // H.264: 解码器本身支持导出 MV，只是这一帧没有
     analysis.frame_width = 1920;
     analysis.frame_height = 1080;
     view.SetAnalysis(analysis);
@@ -199,14 +231,77 @@ TEST(MacroblockViewTests, PredictedFrameWithoutMotionVectorsIsNotLabeledIntra) {
     ASSERT_NE(preview, nullptr);
     EXPECT_TRUE(preview->text().startsWith(QStringLiteral("P 帧")));
     EXPECT_FALSE(preview->text().contains(QStringLiteral("I 帧")));
-    EXPECT_TRUE(preview->text().contains(QStringLiteral("帧内块数: 不可用")));
+    EXPECT_TRUE(preview->text().contains(QStringLiteral("帧内宏块数: 不可用")));
 
     // 没有运动矢量时 ComputeStats 直接早退、网格从没铺过，total_blocks 还停在 0 ——
     // 这时候把 0 当"0 个块"显示就是撒谎，必须跟帧内块数一样报不可用。
     QLabel* summary = FindLabelContaining(&view, QStringLiteral("总数"));
     ASSERT_NE(summary, nullptr);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("宏块总数: 不可用")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("去重块: 不可用")));
     EXPECT_TRUE(summary->text().contains(QStringLiteral("帧内: 不可用")));
+}
+
+// HEVC / VP9 / AV1 的 FFmpeg 解码器不导出运动矢量。这是解码器能力边界，
+// 不能显示成"未提供运动矢量数据"（像是分析没生效），要直接说明原因。
+TEST(MacroblockViewTests, CodecWithoutMvExportExplainsDecoderCapability) {
+    EnsureApp();
+    MacroblockView view;
+    MacroblockFrameAnalysis analysis;
+    analysis.frame_type = 2;
+    analysis.codec_id = 173; // AV_CODEC_ID_HEVC
+    analysis.frame_width = 1920;
+    analysis.frame_height = 1080;
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+
+    QLabel* preview = FindLabelContaining(&view, QStringLiteral("HEVC"));
+    ASSERT_NE(preview, nullptr);
+    EXPECT_TRUE(preview->text().contains(QStringLiteral("解码器不导出运动矢量")));
+    EXPECT_FALSE(preview->text().contains(QStringLiteral("未提供运动矢量数据")));
+    EXPECT_TRUE(preview->text().contains(QStringLiteral("帧内CTU数: 不可用")));
+
+    // AV1 同样没有 MV side data，但块术语仍是宏块
+    MacroblockFrameAnalysis av1 = analysis;
+    av1.codec_id = 225; // AV_CODEC_ID_AV1
+    view.SetAnalysis(av1);
+    view.FlushPending();
+    QLabel* av1_preview = FindLabelContaining(&view, QStringLiteral("AV1"));
+    ASSERT_NE(av1_preview, nullptr);
+    EXPECT_TRUE(av1_preview->text().contains(QStringLiteral("解码器不导出运动矢量")));
+    EXPECT_TRUE(av1_preview->text().contains(QStringLiteral("帧内宏块数: 不可用")));
+}
+
+// 换文件 / 关闭分析时必须清空：否则上一份素材的表格和预览会被当成当前文件的结果。
+TEST(MacroblockViewTests, ResetClearsTableAndPreview) {
+    EnsureApp();
+    MacroblockView view;
+
+    MacroblockFrameAnalysis analysis;
+    analysis.frame_index = 7;
+    analysis.codec_id = 27;
+    analysis.frame_width = 640;
+    analysis.frame_height = 360;
+    analysis.has_motion_vectors = true;
+    analysis.stats.total_blocks = 40;
+    analysis.motion_vectors.push_back(MakeMv(16, 16, 16, 16, 8, -1));
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+
+    QTableWidget* mv_table = FindTableByFirstHeader(&view, QStringLiteral("序号"));
+    ASSERT_TRUE(mv_table != nullptr);
+    ASSERT_EQ(mv_table->rowCount(), 1);
+
+    view.Reset();
+
+    EXPECT_EQ(mv_table->rowCount(), 0);
+    QLabel* summary = FindLabelContaining(&view, QStringLiteral("分析帧"));
+    ASSERT_NE(summary, nullptr);
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("分析帧: --")));
+    EXPECT_FALSE(summary->text().contains(QStringLiteral("分析帧 #7")));
+    QLabel* viz = FindLabelContaining(&view, QStringLiteral("等待视频播放"));
+    ASSERT_NE(viz, nullptr);
+    EXPECT_TRUE(viz->pixmap().isNull());
 }
 
 // 「启用分析」勾选框与协调层的同步语义：
@@ -250,6 +345,52 @@ TEST(MacroblockViewTests, ToggleFollowsHooksWithoutFeedbackLoop) {
     EXPECT_TRUE(last_set_value);
 }
 
+// 表格选中行 -> 预览联动高亮：选中后预览应重绘（pixmap 变化），换帧后选中被清空。
+TEST(MacroblockViewTests, SelectingRowRedrawsPreviewHighlight) {
+    EnsureApp();
+    MacroblockView view;
+
+    MacroblockFrameAnalysis analysis;
+    analysis.codec_id = 27; // AV_CODEC_ID_H264
+    analysis.frame_width = 640;
+    analysis.frame_height = 360;
+    analysis.has_motion_vectors = true;
+    analysis.motion_vectors = {MakeMv(16, 16, 16, 16, 8, -1), MakeMv(80, 40, -16, 8, 4, 1)};
+    analysis.stats.total_blocks = 90;
+    analysis.stats.distinct_block_count = 2;
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+
+    QTableWidget* mv_table = FindTableByFirstHeader(&view, QStringLiteral("序号"));
+    ASSERT_TRUE(mv_table != nullptr);
+    ASSERT_EQ(mv_table->rowCount(), 2);
+
+    // 可视化预览是唯一持有 pixmap 的 QLabel
+    QLabel* viz = nullptr;
+    for (QLabel* label : view.findChildren<QLabel*>()) {
+        if (!label->pixmap().isNull()) {
+            viz = label;
+            break;
+        }
+    }
+    ASSERT_NE(viz, nullptr);
+    const qint64 base_key = viz->pixmap().cacheKey();
+
+    // 选中第 1 行：预览重绘出高亮（新 pixmap）
+    mv_table->selectRow(1);
+    EXPECT_EQ(mv_table->currentRow(), 1);
+    EXPECT_NE(base_key, viz->pixmap().cacheKey());
+
+    // 新一帧数据到达：旧选中索引已经指向另一个矢量，必须清空选中并退出高亮
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+    EXPECT_TRUE(mv_table->selectedItems().isEmpty());
+
+    // 复位后即便之前有选中也不影响
+    view.Reset();
+    EXPECT_TRUE(viz->pixmap().isNull());
+}
+
 // 无钩子时（组件脱离面板单独构造）同步不改变勾选框，也不崩。
 TEST(MacroblockViewTests, SyncToggleWithoutHooksKeepsCurrentState) {
     EnsureApp();
@@ -287,4 +428,157 @@ TEST(MacroblockViewTests, MotionVectorTableCapsAt500Rows) {
     ASSERT_EQ(mv_table->rowCount(), 500); // 行数上限
     EXPECT_EQ(mv_table->item(0, 0)->text(), QStringLiteral("0"));
     EXPECT_EQ(mv_table->item(499, 0)->text(), QStringLiteral("499")); // 保留的是前 500 条
+
+    // 截断必须显式告知，不能让用户把表格行数当成整帧的运动矢量条数。
+    QLabel* summary = FindLabelContaining(&view, QStringLiteral("列表仅显示前 500/520 条"));
+    ASSERT_NE(summary, nullptr);
+}
+
+// 运动强度曲线：两个带运动矢量的帧之后应画出曲线（持有 pixmap），
+// 单帧（I 帧被跳过）时仍是占位文案，Reset 后回到占位。
+TEST(MacroblockViewTests, MotionChartDrawsAfterTwoSamplesAndResetsToPlaceholder) {
+    EnsureApp();
+    MacroblockView view;
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    EXPECT_TRUE(chart->pixmap().isNull());
+    EXPECT_TRUE(chart->text().contains(QStringLiteral("运动强度曲线")));
+
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    EXPECT_TRUE(chart->pixmap().isNull()); // 单点无法成线
+
+    view.SetAnalysis(MakeMvFrame(1.1, 3.0, 9.0));
+    view.FlushPending();
+    EXPECT_FALSE(chart->pixmap().isNull());
+
+    view.Reset();
+    EXPECT_TRUE(chart->pixmap().isNull());
+    EXPECT_TRUE(chart->text().contains(QStringLiteral("运动强度曲线")));
+}
+
+// 曲线点击定位：把横轴像素位置换算成时间并发 SeekRequested。
+// 两个采样点跨度 < 1s 时横轴被撑到 1s（避免两点挤成一条垂线），
+// 因此 [1.0, 1.1] 的曲线范围是 [1.0, 2.0]。
+TEST(MacroblockViewTests, ClickingChartEmitsSeekWithinRange) {
+    EnsureApp();
+    MacroblockView view;
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    view.SetAnalysis(MakeMvFrame(1.1, 3.0, 9.0));
+    view.FlushPending();
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    ASSERT_FALSE(chart->pixmap().isNull());
+
+    std::vector<double> seeks;
+    QObject::connect(&view, &MacroblockView::SeekRequested, [&seeks](double seconds) { seeks.push_back(seconds); });
+
+    // 点击换算与绘制共用边距：左端 = t0，右端 = t1，图外不触发。
+    const int width = chart->pixmap().width();
+    const int left = 34;
+    const int right = width - 8;
+
+    auto click = [chart](double x) {
+        QMouseEvent event(QEvent::MouseButtonRelease, QPointF(x, 10.0), QPointF(x, 10.0), Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(chart, &event);
+    };
+
+    click(0.0);                  // 左端 = t0
+    click(width);                // 右端 = t1
+    click((left + right) / 2.0); // 绘图区中点
+    click(width + 20.0);         // 图外：不触发
+
+    ASSERT_EQ(seeks.size(), 3u);
+    EXPECT_NEAR(seeks[0], 1.0, 1e-6);
+    EXPECT_NEAR(seeks[1], 2.0, 1e-6);
+    EXPECT_NEAR(seeks[2], 1.5, 1e-6);
+}
+
+// 曲线宽度跟随标签实际宽度，而不是固定 360px：宽窗口下曲线应铺满，
+// 点击右侧空白区才能按真实横轴换算。
+TEST(MacroblockViewTests, MotionChartFollowsLabelWidth) {
+    EnsureApp();
+    MacroblockView view;
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    view.SetAnalysis(MakeMvFrame(1.1, 3.0, 9.0));
+    view.FlushPending();
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    ASSERT_FALSE(chart->pixmap().isNull());
+
+    chart->resize(700, 110);
+    view.SetAnalysis(MakeMvFrame(1.2, 3.5, 10.0));
+    view.FlushPending();
+
+    EXPECT_EQ(chart->pixmap().width(), chart->contentsRect().width());
+    EXPECT_GT(chart->pixmap().width(), 360);
+}
+
+// 时间戳跳变（Seek）后旧曲线不再对应当前位置：历史清空、重新累积。
+TEST(MacroblockViewTests, TimeJumpClearsMotionHistory) {
+    EnsureApp();
+    MacroblockView view;
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    view.SetAnalysis(MakeMvFrame(1.1, 3.0, 9.0));
+    view.FlushPending();
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    ASSERT_FALSE(chart->pixmap().isNull());
+
+    // 跳到 30s：历史清空，只有这一个新采样点 -> 回到占位
+    view.SetAnalysis(MakeMvFrame(30.0, 4.0, 12.0));
+    view.FlushPending();
+    EXPECT_TRUE(chart->pixmap().isNull());
+
+    // 继续在 30s 附近累积 -> 重新画出曲线
+    view.SetAnalysis(MakeMvFrame(30.1, 5.0, 15.0));
+    view.FlushPending();
+    EXPECT_FALSE(chart->pixmap().isNull());
+}
+
+// 2000 条运动矢量（超过预览上限 1200）：按顺序等距抽样绘制，不崩且仍有输出。
+TEST(MacroblockViewTests, LargeMotionVectorCountIsSubsampledInPreview) {
+    EnsureApp();
+    MacroblockView view;
+
+    MacroblockFrameAnalysis analysis;
+    analysis.codec_id = 27;
+    analysis.frame_width = 1920;
+    analysis.frame_height = 1080;
+    analysis.has_motion_vectors = true;
+    analysis.motion_vectors.resize(2000);
+    for (std::size_t i = 0; i < analysis.motion_vectors.size(); ++i) {
+        analysis.motion_vectors[i] =
+            MakeMv(static_cast<int>(i % 120) * 16, static_cast<int>(i / 120) * 16, 8, 8, 4, -1);
+    }
+    analysis.stats.total_blocks = 4000;
+    analysis.stats.distinct_block_count = 2000;
+    analysis.stats.avg_motion_magnitude = 2.0;
+    analysis.stats.max_motion_magnitude = 4.0;
+
+    view.SetAnalysis(analysis);
+    view.FlushPending();
+
+    // 表格仍只填前 500 行；预览必须持有 pixmap 且不崩溃
+    QTableWidget* mv_table = FindTableByFirstHeader(&view, QStringLiteral("序号"));
+    ASSERT_NE(mv_table, nullptr);
+    EXPECT_EQ(mv_table->rowCount(), 500);
+
+    QLabel* chart = FindChartLabel(&view);
+    bool found_viz = false;
+    for (QLabel* label : view.findChildren<QLabel*>()) {
+        if (!label->pixmap().isNull() && label != chart) {
+            found_viz = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found_viz);
 }

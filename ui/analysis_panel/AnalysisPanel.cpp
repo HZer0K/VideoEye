@@ -61,6 +61,10 @@ void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
     // 时间轴与 facade 都在诊断页里，由它自己清空（其中包含作废/取消上一文件的扫描）
     if (pages_.diagnostics)
         pages_.diagnostics->ResetForNewFile();
+    // 宏块页的数据只来自播放期回吐；不主动清空的话，关闭分析时旧文件的运动矢量
+    // 会一直留在页面上被当成新文件的结果。
+    if (pages_.macroblock)
+        pages_.macroblock->Reset();
     // 旧扫描被作废后，面板自己与共用页的扫描态也必须立刻收掉：
     // 否则旧任务迟迟不退出时，刚打开的新文件（尤其是不再起新扫描的裸图像 / PCM）
     // 会一直显示「分析中…」。
@@ -163,11 +167,16 @@ bool AnalysisPanel::IsFeatureEnabled(AnalysisFeature feature) const {
 }
 
 void AnalysisPanel::SetMacroblockAnalysisEnabled(bool enabled) {
+    const bool was_enabled = feature_enabled_[AnalysisFeature::Macroblock];
     feature_enabled_[AnalysisFeature::Macroblock] = enabled;
     // 同步宏块页勾选框（钩子读的是 feature_enabled_）。SyncToggleFromHooks 内部屏蔽
     // 信号，不会回调 set_enabled_，因此不会反过来又发一次 AnalysisFeatureToggled。
     if (pages_.macroblock)
         pages_.macroblock->SyncToggleFromHooks();
+    // 关闭分析后不再有新的运动矢量进来，页面上残留的上一帧数据必须清掉，
+    // 否则会被误读成"关闭开关后仍在分析"。
+    if (!enabled && was_enabled && pages_.macroblock)
+        pages_.macroblock->Reset();
 }
 
 void AnalysisPanel::EmitInitialFeatureStates() {
@@ -295,6 +304,9 @@ void AnalysisPanel::AppendPacketInfoBatch(const std::vector<model::PacketInfo>& 
 }
 
 void AnalysisPanel::UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis) {
+    // 关闭分析后可能还有排队中的旧帧数据送达，直接丢弃，避免刚清空的页面又被填回旧值。
+    if (!feature_enabled_[AnalysisFeature::Macroblock])
+        return;
     if (pages_.macroblock)
         pages_.macroblock->SetAnalysis(analysis);
 }
@@ -464,6 +476,10 @@ void AnalysisPanel::WireAnalysisPages() {
     });
     connect(pages_.visual_defect, &VisualDefectPage::OptionsChanged, this, &AnalysisPanel::VisualDefectOptionsChanged);
     connect(pages_.visual_defect, &VisualDefectPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
+
+    // ---- 宏块分析 ----
+    // 点击运动强度曲线 = 请求跳到该时间点，与其它页一样只转发意图。
+    connect(pages_.macroblock, &MacroblockView::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
     // ---- 码率与 GOP ----
     // 扫描请求统一由诊断页编排（页面才持有 facade 与进度条总控）；

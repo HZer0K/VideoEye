@@ -42,6 +42,14 @@ TEST(PlaybackSessionTest, SeekWithoutMediaIsNoop) {
     EXPECT_EQ(session.state(), PlayerState::Idle);
 }
 
+// 暂停补采请求在无媒体 / 无解码线程时只置标记，不能崩，也不能改变状态。
+TEST(PlaybackSessionTest, RequestFrameRefreshWithoutMediaIsSafe) {
+    PlaybackSession session;
+    session.RequestFrameRefresh();
+    EXPECT_EQ(session.state(), PlayerState::Idle);
+    EXPECT_TRUE(session.video_decoder() == nullptr);
+}
+
 TEST(PlaybackSessionTest, StopResetsPositionAndState) {
     PlaybackSession session;
     session.SetPosition(1234);

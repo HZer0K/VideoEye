@@ -128,7 +128,7 @@ void ControlBarWidget::SetupUI() {
     mv_overlay_button_ = new QPushButton(tr("MV"), this);
     mv_overlay_button_->setObjectName("MvOverlayButton");
     mv_overlay_button_->setCheckable(true);
-    mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码)"));
+    mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码；HEVC/AV1/VP9 解码器不导出运动矢量)"));
     mv_overlay_button_->setFixedSize(40, 28);
     mv_overlay_button_->setStyleSheet("QPushButton#MvOverlayButton {"
                                       "  background-color: #21262D; border: 1px solid #30363D;"
