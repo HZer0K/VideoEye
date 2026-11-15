@@ -12,6 +12,8 @@ void SceneChangeAnalyzer::Reset() {
     has_prev_ = false;
     detected_count_ = 0;
     last_score_ = 0.0;
+    last_detected_timestamp_ = 0.0;
+    has_detected_ = false;
 }
 
 // 巴氏距离分数: 0 = 两帧直方图完全相同, 1 = 完全不同。
@@ -39,18 +41,30 @@ static double BhattacharyyaScore(const std::vector<float>& a, const std::vector<
     return 1.0 - bc;
 }
 
+bool SceneChangeAnalyzer::TooSoonAfterLastDetection(double timestamp) const {
+    if (!has_detected_ || min_interval_ <= 0.0 || !std::isfinite(timestamp))
+        return false;
+    const double delta = timestamp - last_detected_timestamp_;
+    // 时间戳倒退说明已切到另一个片段，按新片段处理，不做间隔抑制。
+    if (delta < 0.0)
+        return false;
+    return delta < min_interval_;
+}
+
 std::optional<SceneChangeResult> SceneChangeAnalyzer::Feed(int frame_index, double timestamp,
                                                            const std::vector<float>& gray_hist) {
     std::optional<SceneChangeResult> result;
     if (has_prev_) {
         const double score = BhattacharyyaScore(prev_hist_, gray_hist);
         last_score_ = score;
-        if (score >= threshold_) {
+        if (score >= threshold_ && !TooSoonAfterLastDetection(timestamp)) {
             SceneChangeResult r;
             r.frame_index = frame_index;
             r.timestamp = timestamp;
             r.score = score;
             ++detected_count_;
+            last_detected_timestamp_ = timestamp;
+            has_detected_ = true;
             result = r;
         }
     }

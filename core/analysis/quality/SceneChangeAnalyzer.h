@@ -32,6 +32,16 @@ public:
         return threshold_;
     }
 
+    // 两次切换点之间的最小间隔 (秒)。同一次转场/闪白常会在相邻两三帧都越过阈值,
+    // 不去重就会把一次切换报成两条 —— 下游"场景切换处是否有关键帧"的统计也会翻倍。
+    // 0 表示不做抑制。
+    void SetMinInterval(double seconds) {
+        min_interval_ = seconds > 0.0 ? seconds : 0.0;
+    }
+    double GetMinInterval() const {
+        return min_interval_;
+    }
+
     // 喂入单帧灰度直方图 (任意量纲, 内部会归一化)。
     // 返回检测结果 (仅在检测到切换时); 首帧不会触发。
     std::optional<SceneChangeResult> Feed(int frame_index, double timestamp, const std::vector<float>& gray_hist);
@@ -44,11 +54,19 @@ public:
     }
 
 private:
+    // 距上一个切换点不足最小间隔时应丢弃本次检测（同一次转场的多帧命中）。
+    // 时间戳不可用（NaN）或倒退（新片段）时不抑制：那说明时间线已跳变，
+    // 继续比较本来就无意义，抑制只会把真实切换一起吞掉。
+    bool TooSoonAfterLastDetection(double timestamp) const;
+
     std::vector<float> prev_hist_;
     bool has_prev_ = false;
     double threshold_ = 0.45;
+    double min_interval_ = 0.1;
     int detected_count_ = 0;
     double last_score_ = 0.0;
+    double last_detected_timestamp_ = 0.0;
+    bool has_detected_ = false;
 };
 
 } // namespace videoeye

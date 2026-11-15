@@ -73,6 +73,23 @@ public:
     static void RefreshMacroblock(RealtimeAnalysisController& controller) {
         controller.RefreshMacroblockFromLastFrame();
     }
+
+    // 场景切换：绕过 OnVideoFrame（那里要求真解码器），直接走抽出来的单帧分析。
+    static bool FeedSceneChange(RealtimeAnalysisController& controller, const AVFrame* frame, int frame_index,
+                                double timestamp) {
+        model::FrameData frame_data;
+        frame_data.width = frame->width;
+        frame_data.height = frame->height;
+        frame_data.format = frame->format;
+        frame_data.data[0] = frame->data[0];
+        frame_data.linesize[0] = frame->linesize[0];
+        frame_data.timestamp = timestamp;
+        return controller.AnalyzeSceneChangeFrame(frame_data, frame_index);
+    }
+
+    static void SetSceneChangeEnabled(RealtimeAnalysisController& controller, bool enabled) {
+        controller.SetSceneChangeAnalysisEnabled(enabled);
+    }
 };
 
 namespace {
@@ -96,6 +113,24 @@ void AttachMotionVector(AVFrame* frame) {
     mv->source = -1;
     mv->motion_scale = 4;
     mv->motion_x = 8;
+}
+
+// 场景切换只看灰度分布：整帧填同一个灰度值即可构造"完全不同"的两帧。
+AVFrame* MakeGrayFrame(int value) {
+    AVFrame* frame = av_frame_alloc();
+    if (!frame)
+        return nullptr;
+    frame->format = AV_PIX_FMT_GRAY8;
+    frame->width = 64;
+    frame->height = 36;
+    if (av_frame_get_buffer(frame, 32) < 0) {
+        av_frame_free(&frame);
+        return nullptr;
+    }
+    for (int row = 0; row < frame->height; ++row) {
+        std::fill_n(frame->data[0] + row * frame->linesize[0], frame->width, static_cast<uint8_t>(value));
+    }
+    return frame;
 }
 
 class RealtimeAnalysisControllerTest : public testing::Test {
@@ -384,6 +419,59 @@ TEST_F(RealtimeAnalysisControllerTest, RefreshMacroblockWithoutDecoderIsSafeNoOp
 
     RealtimeAnalysisControllerTestAccess::RefreshMacroblock(controller_);
     EXPECT_EQ(0, emitted);
+}
+
+// 定位后必须丢弃场景切换的比较基准：否则落点首帧会与定位前最后一帧比较，
+// 报出一个"两块无关画面"的幽灵切换点（实测 score≈0.72）。
+TEST_F(RealtimeAnalysisControllerTest, SceneChangeSeekDiscardsBaselineSoNoPhantomCut) {
+    RealtimeAnalysisControllerTestAccess::SetSceneChangeEnabled(controller_, true);
+    std::unique_ptr<AVFrame, decltype(&FreeFrame)> black(MakeGrayFrame(0), FreeFrame);
+    std::unique_ptr<AVFrame, decltype(&FreeFrame)> white(MakeGrayFrame(255), FreeFrame);
+    ASSERT_NE(black, nullptr);
+    ASSERT_NE(white, nullptr);
+
+    int cuts = 0;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::SceneChangeReady,
+                     [&cuts](const videoeye::model::SceneChangeResult&) { ++cuts; });
+
+    EXPECT_FALSE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, black.get(), 0, 0.0)); // 只建基准
+    EXPECT_TRUE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, white.get(), 1, 0.04)); // 真实切点
+    ASSERT_EQ(cuts, 1);
+
+    RealtimeAnalysisControllerTestAccess::Seek(controller_, 30000.0);
+    EXPECT_FALSE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, black.get(), 2, 30.0));
+    EXPECT_EQ(cuts, 1); // 没有幽灵切点
+
+    // 定位后仍能正常检测后续切点
+    EXPECT_TRUE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, white.get(), 3, 30.04));
+    EXPECT_EQ(cuts, 2);
+}
+
+// 中途关闭再开启分析：上一段的比较基准必须丢弃，否则重新开启的首帧会误报。
+TEST_F(RealtimeAnalysisControllerTest, SceneChangeReenableDiscardsBaselineSoNoPhantomCut) {
+    RealtimeAnalysisControllerTestAccess::SetSceneChangeEnabled(controller_, true);
+    std::unique_ptr<AVFrame, decltype(&FreeFrame)> black(MakeGrayFrame(0), FreeFrame);
+    std::unique_ptr<AVFrame, decltype(&FreeFrame)> white(MakeGrayFrame(255), FreeFrame);
+    ASSERT_NE(black, nullptr);
+    ASSERT_NE(white, nullptr);
+
+    int cuts = 0;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::SceneChangeReady,
+                     [&cuts](const videoeye::model::SceneChangeResult&) { ++cuts; });
+
+    ASSERT_FALSE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, black.get(), 0, 0.0));
+    ASSERT_TRUE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, white.get(), 1, 0.04));
+    ASSERT_EQ(cuts, 1);
+
+    RealtimeAnalysisControllerTestAccess::SetSceneChangeEnabled(controller_, false);
+    RealtimeAnalysisControllerTestAccess::SetSceneChangeEnabled(controller_, true);
+    EXPECT_FALSE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, black.get(), 2, 60.0));
+    EXPECT_EQ(cuts, 1);
+
+    EXPECT_TRUE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, white.get(), 3, 60.04));
+    EXPECT_EQ(cuts, 2);
 }
 
 } // namespace

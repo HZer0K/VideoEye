@@ -2,11 +2,12 @@
 
 // 场景切换页（镜头边界检测）：播放时逐帧产出的切换点在这里累积成表格 + 强度柱状图。
 //
-// 从 AnalysisPanel 拆出来的独立页面组件。与面板的接缝只有四个：
+// 从 AnalysisPanel 拆出来的独立页面组件。与面板的接缝只有五个：
 //   - AppendResult()   播放回调喂检测结果（面板转发 MainWindow 的信号）
 //   - FlushPending()   面板的批量刷新定时器到点时调用，只补增量行
 //   - records()        「码率与 GOP」页画标记 / 关联关键帧时要读
 //   - FeatureToggled() 页内「启用分析」开关，由面板转成统一的 feature 信号
+//   - SeekRequested()  点击表格行请求定位到该切换点，面板只转发意图
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
 
 #include <QString>
@@ -59,6 +60,8 @@ public:
 signals:
     // 页内开关变化：面板负责写回 feature 表并对外发射 AnalysisFeatureToggled
     void FeatureToggled(bool enabled);
+    // 点击表格行：请求播放器定位到该切换点（面板转成 AnalysisPanel::SeekRequested）
+    void SeekRequested(double seconds);
 
 private:
     void SetupUi();
@@ -66,6 +69,8 @@ private:
     void UpdateChart();
     void UpdateSummary();
     void OnExportCsv();
+    // 表格只保留最近一段（见 AppendRow 的行上限），所以行号不等于 records_ 下标
+    std::size_t RecordIndexForRow(int row) const;
 
     bool feature_checked_ = false;
     QString source_path_;

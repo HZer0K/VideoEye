@@ -29,6 +29,7 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <map>
@@ -46,6 +47,7 @@
 // 的一堆 include 顺带带进来的，拆出来之后不能继续蹭。
 #include "core/domain/model/AnalysisEvent.h"
 #include "core/domain/model/AudioVisualizationFrame.h"
+#include "core/domain/model/FrameData.h"
 #include "core/domain/model/FrameTimingInfo.h" // PacketTiming / FrameTimingInfo / kNoTimestamp
 #include "core/domain/model/MacroblockInfo.h"
 #include "core/domain/model/PacketInfo.h"
@@ -95,6 +97,10 @@ public:
     videoeye::VisualDefectOptions GetVisualDefectOptions() const;
     // 播完 / 停止时把还开着的缺陷段闭合
     void FlushVisualDefectSegments(double end_timestamp_seconds);
+
+    // 场景切换检测开关。启用时要丢弃上一段留下的比较基准：否则关闭期间或
+    // 中途开启后的首帧会与很久以前的帧比较，报出一个幽灵切换点。
+    void SetSceneChangeAnalysisEnabled(bool enable);
 
     // 对外的实时分析信号总线（24 条，见 core/player/AnalysisBus.h）。
     // UI 经 MediaPlayer::analysis_bus() 拿它连信号；本类所有"该发信号了"的地方
@@ -147,10 +153,13 @@ private:
     // 暂停中开启分析: 用解码器缓存的最后一帧补采一次，并立即投递（见 PlaybackSession::RequestFrameRefresh）。
     void RefreshMacroblockFromLastFrame();
 
+    // --- 场景切换: 逐帧灰度直方图与上一帧比较（开关关闭 / 空帧时返回 false）---
+    // 单独拆出来是为了能在没有解码器的条件下验证"定位 / 重新开启分析会丢弃比较基准"。
+    bool AnalyzeSceneChangeFrame(const model::FrameData& frame_data, int frame_index);
+
     // --- 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器 ---
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
-    void ResetVisualDefectTimeline();
-    // 把分析器已产出的指标 / 缺陷转发成信号（在解码线程调用）
+    void ResetVisualDefectTimeline(); // 把分析器已产出的指标 / 缺陷转发成信号（在解码线程调用）
     void DrainVisualDefectResults();
     // 分析进度信号（内部做 1 秒节流，force=true 时立即发）
     void EmitVisualDefectStats(bool force);
@@ -161,6 +170,8 @@ private:
     // 逐帧分析器
     videoeye::MacroblockAnalyzer macroblock_analyzer_;
     videoeye::SceneChangeAnalyzer scene_change_analyzer_;
+    // UI 线程要求的"重新开启分析时丢弃比较基准"，由解码线程在下一帧消费。
+    std::atomic<bool> scene_change_reset_requested_{false};
     videoeye::VisualDefectAnalyzer visual_defect_analyzer_;
     AudioVisualizer audio_visualizer_;
 
@@ -173,7 +184,6 @@ private:
     // 逐媒体帧号: 每个真正交付的帧都推进，与任何分析开关无关。
     // 帧表与运动矢量面板共用它，中途开启分析或 Seek 之后两边的编号才不会各算各的。
     int decoded_video_frame_index_ = 0;
-    int scene_change_frame_index_ = 0;
     int visual_defect_frame_index_ = 0;
     double visual_defect_last_sample_ts_ = -1.0;
     // 统计信号节流: 有效画面区域要取中位数，每秒算一次就够

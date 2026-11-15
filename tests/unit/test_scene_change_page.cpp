@@ -12,6 +12,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QLabel>
+#include <QObject>
 #include <QTableWidget>
 
 #include <cstddef>
@@ -120,7 +121,7 @@ TEST(SceneChangePageTests, FlushAppendsIncrementalRowsIdempotently) {
     EXPECT_FALSE(page.HasPending());
     ASSERT_EQ(table->rowCount(), 1);
     EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("3"));
-    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("00:01:05")); // 65 s
+    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("00:01:05.000")); // 65 s，切换点保留毫秒
     EXPECT_EQ(table->item(0, 2)->text(), QStringLiteral("0.900"));
 
     // 同一批数据再刷一次：幂等，不许重复补行
@@ -131,7 +132,7 @@ TEST(SceneChangePageTests, FlushAppendsIncrementalRowsIdempotently) {
     page.FlushPending();
     ASSERT_EQ(table->rowCount(), 2); // 只补增量，不整表重建
     EXPECT_EQ(table->item(1, 0)->text(), QStringLiteral("7"));
-    EXPECT_EQ(table->item(1, 1)->text(), QStringLiteral("00:02:05")); // 125 s
+    EXPECT_EQ(table->item(1, 1)->text(), QStringLiteral("00:02:05.000")); // 125 s
 }
 
 // 汇总行聚合：个数 / 平均强度 / 最大强度，全部 3 位小数。
@@ -150,6 +151,50 @@ TEST(SceneChangePageTests, SummaryAggregatesCountAverageAndMax) {
     EXPECT_TRUE(text.contains(QStringLiteral("共检测到 3 个切换点")));
     EXPECT_TRUE(text.contains(QStringLiteral("0.600"))); // (0.9 + 0.4 + 0.5) / 3
     EXPECT_TRUE(text.contains(QStringLiteral("0.900")));
+}
+
+// 点击表格行 = 请求定位到该切换点：面板把它转成播放器的 SeekRequested。
+TEST(SceneChangePageTests, ClickingRowEmitsSeekRequestedWithTimestamp) {
+    EnsureApp();
+    SceneChangePage page(/*feature_checked=*/false);
+    QTableWidget* table = page.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+
+    double seeked = -1.0;
+    QObject::connect(&page, &SceneChangePage::SeekRequested, [&seeked](double seconds) { seeked = seconds; });
+
+    page.AppendResult(MakeRecord(3, 65.25, 0.9));
+    page.AppendResult(MakeRecord(9, 125.5, 0.4));
+    page.FlushPending();
+    ASSERT_EQ(table->rowCount(), 2);
+
+    ASSERT_TRUE(QMetaObject::invokeMethod(table, "cellClicked", Q_ARG(int, 1), Q_ARG(int, 0)));
+    EXPECT_DOUBLE_EQ(seeked, 125.5);
+}
+
+// 表格只保留最近一段（QTableWidget 行无限增长会拖慢长片），
+// 但行号必须仍映射到正确的记录 —— 映射错了点击定位就会跳到别的切点。
+TEST(SceneChangePageTests, TableKeepsRecentRowsAndStillMapsToRecord) {
+    EnsureApp();
+    SceneChangePage page(/*feature_checked=*/false);
+    QTableWidget* table = page.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+
+    constexpr int kRecords = 2005; // 略多于页面行上限
+    for (int i = 0; i < kRecords; ++i) {
+        page.AppendResult(MakeRecord(i, static_cast<double>(i), 0.5));
+    }
+    page.FlushPending();
+
+    EXPECT_EQ(page.records().size(), std::size_t{kRecords}); // 导出仍是全集
+    ASSERT_EQ(table->rowCount(), 2000);
+    EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("5")); // 最老的 5 条已被挤出表格
+    EXPECT_EQ(table->item(1999, 0)->text(), QStringLiteral("2004"));
+
+    double seeked = -1.0;
+    QObject::connect(&page, &SceneChangePage::SeekRequested, [&seeked](double seconds) { seeked = seconds; });
+    ASSERT_TRUE(QMetaObject::invokeMethod(table, "cellClicked", Q_ARG(int, 0), Q_ARG(int, 0)));
+    EXPECT_DOUBLE_EQ(seeked, 5.0); // 首行对应第一条仍在表里的记录
 }
 
 // Reset 必须同时归零同步游标：否则清空后新来的切换点永远补不进行。

@@ -468,6 +468,7 @@ void AnalysisPanel::WireAnalysisPages() {
         feature_enabled_[AnalysisFeature::SceneChange] = enabled;
         emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::SceneChange), enabled);
     });
+    connect(pages_.scene_change, &SceneChangePage::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
     // ---- 画面质量 / 视觉缺陷 ----
     connect(pages_.visual_defect, &VisualDefectPage::FeatureToggled, this, [this](bool enabled) {
@@ -647,6 +648,10 @@ void AnalysisPanel::FlushPendingUiUpdates() {
     }
     if (pages_.scene_change && pages_.scene_change->HasPending()) {
         pages_.scene_change->FlushPending();
+        // 「码率与 GOP」页的场景切换标记原先只在扫描结果分发时同步一次，
+        // 播放中新检测到的切点要等下次扫描才会出现在曲线与「关联场景切换」里。
+        if (pages_.bitrate_gop)
+            pages_.bitrate_gop->SetSceneChanges(pages_.scene_change->records());
     }
     if (pages_.visual_defect && pages_.visual_defect->HasPending()) {
         pages_.visual_defect->FlushPending();

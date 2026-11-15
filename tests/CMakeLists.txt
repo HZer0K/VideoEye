@@ -2550,6 +2550,18 @@ target_link_libraries(test_macroblock_analyzer PRIVATE VideoEyeAnalysis)
 add_test(NAME MacroblockAnalyzerTests COMMAND test_macroblock_analyzer)
 
 # =================================================
+# 测试：场景切换检测器（首帧基准 / Reset 丢基准 / 最小间隔抑制）
+#
+# 检测器写错都不会崩：首帧忘了只建基准 -> 每个文件开头多一个幽灵切点；
+# Reset 没丢基准 -> 定位落点首帧必然报切点；没有最小间隔 -> 同一次转场
+# 在相邻帧各报一次，下游"切换处是否有关键帧"的统计随之翻倍。
+# 这些只能靠断言钉住。
+# =================================================
+videoeye_add_test(test_scene_change_analyzer unit/test_scene_change_analyzer.cpp)
+target_link_libraries(test_scene_change_analyzer PRIVATE VideoEyeAnalysis)
+add_test(NAME SceneChangeAnalyzerTests COMMAND test_scene_change_analyzer)
+
+# =================================================
 # 测试：运动矢量叠加层坐标换算（块中心语义回归）
 #
 # 箭头起点 / 热力图矩形的偏移当年出过 bug（整体偏半个宏块），缩放下肉眼难发现。

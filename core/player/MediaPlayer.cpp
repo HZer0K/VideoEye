@@ -495,7 +495,7 @@ void MediaPlayer::Impl::SetContainerStructureEnabled(bool enable) {
 }
 
 void MediaPlayer::Impl::SetSceneChangeAnalysisEnabled(bool enable) {
-    analysis_session_.SetSceneChangeAnalysisEnabled(enable);
+    realtime_analysis_.SetSceneChangeAnalysisEnabled(enable);
 }
 
 void MediaPlayer::Impl::SetVisualDefectAnalysisEnabled(bool enable) {

@@ -179,7 +179,6 @@ void RealtimeAnalysisController::EmitAudioVisualization(const AudioVisualization
 
 void RealtimeAnalysisController::ResetForNewMedia() {
     decoded_video_frame_index_ = 0;
-    scene_change_frame_index_ = 0;
     scene_change_analyzer_.Reset();
     visual_defect_frame_index_ = 0;
     visual_defect_last_sample_ts_ = -1.0;
@@ -229,6 +228,40 @@ void RealtimeAnalysisController::FlushOnStop() {
 }
 
 // --- 画面质量 / 视觉缺陷 ---
+
+void RealtimeAnalysisController::SetSceneChangeAnalysisEnabled(bool enable) {
+    if (analysis_.IsSceneChangeAnalysisEnabled() == enable)
+        return;
+    analysis_.SetSceneChangeAnalysisEnabled(enable);
+    if (enable) {
+        // 关闭期间解码帧不再喂给检测器, prev_hist_ 还停在关闭前那一帧;
+        // 直接把上一段的基准拿来做比较会报出一个幽灵切换点。
+        // 重置动作交给解码线程消费(见 OnVideoFrame), 避免与 Feed 竞争。
+        scene_change_reset_requested_.store(true, std::memory_order_relaxed);
+    }
+    LOG_INFO(enable ? "场景切换检测已启用" : "场景切换检测已禁用");
+}
+
+bool RealtimeAnalysisController::AnalyzeSceneChangeFrame(const model::FrameData& frame_data, int frame_index) {
+    if (!analysis_.IsSceneChangeAnalysisEnabled())
+        return false;
+    try {
+        // 中途开启分析: 在解码线程上丢弃上一段留下的比较基准（由 UI 线程置位）。
+        if (scene_change_reset_requested_.exchange(false, std::memory_order_relaxed))
+            scene_change_analyzer_.Reset();
+        auto gray_hist = ComputeGrayHistogram(frame_data);
+        if (gray_hist.empty())
+            return false;
+        auto sc = scene_change_analyzer_.Feed(frame_index, frame_data.timestamp, gray_hist);
+        if (!sc)
+            return false;
+        emit bus_.SceneChangeReady(*sc);
+        return true;
+    } catch (const std::exception& e) {
+        LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
+        return false;
+    }
+}
 
 void RealtimeAnalysisController::SetVisualDefectAnalysisEnabled(bool enable) {
     if (analysis_.IsVisualDefectAnalysisEnabled() == enable)
@@ -629,17 +662,10 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
     }
 
     // 场景切换检测: 逐帧计算灰度直方图, 与上一帧比较巴氏距离。
-    if (!ctx.catching_up && analysis_.IsSceneChangeAnalysisEnabled()) {
-        try {
-            auto gray_hist = ComputeGrayHistogram(frame_data);
-            if (!gray_hist.empty()) {
-                auto sc = scene_change_analyzer_.Feed(scene_change_frame_index_++, frame_data.timestamp, gray_hist);
-                if (sc)
-                    emit bus_.SceneChangeReady(*sc);
-            }
-        } catch (const std::exception& e) {
-            LOG_ERROR("场景切换检测失败: " + std::string(e.what()));
-        }
+    // 帧号用逐媒体帧号, 与帧表/运动矢量面板同一口径 —— 用独立计数器时,
+    // 中途开启分析的帧序号会和帧表错开, 两边对不上。
+    if (!ctx.catching_up) {
+        AnalyzeSceneChangeFrame(frame_data, frame_index);
     }
 
     // 画面质量 / 视觉缺陷: 按采样档位抽取解码帧（降采样后投递分析器）
@@ -725,6 +751,9 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
     FlushPacketBatch();
     // 宏块分析不同的是"位置相关"：补发旧位置的最后一帧会画到新画面上，必须丢弃。
     DiscardPendingMacroblock();
+    // 场景切换同样"位置相关": 不重置比较基准的话, 定位落点首帧会与定位前最后一帧比较,
+    // 必然报出一个幽灵切换点（实测两块完全无关的画面 score≈0.72）。
+    scene_change_analyzer_.Reset();
     // 统计语义是"自上次打开/定位起的当前片段": 定位成功后必须清零,
     // 否则向后定位会重复累计帧/字节, GOP / 关键帧计数也会失真。
     if (analysis_.IsAnalysisEnabled()) {

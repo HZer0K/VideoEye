@@ -18,9 +18,27 @@
 #include "ui/theme/AppTheme.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace videoeye {
 namespace ui {
+
+namespace {
+
+// 表格只保留最近这么多个切换点: QTableWidget 每行三个 item，长片快切素材下
+// 无限增长会持续拖慢布局与滚动。records_ 不受限，CSV 导出始终是全集。
+constexpr int kMaxTableRows = 2000;
+
+// 切换点需要亚秒精度：截断到秒会让同一秒内的两个切点看起来完全一样。
+QString FormatCutTimestamp(double seconds) {
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        seconds = 0.0;
+    const int total_ms = static_cast<int>(seconds * 1000.0 + 0.5);
+    return theme::font::formatTime(total_ms) + QStringLiteral(".") +
+           QString("%1").arg(total_ms % 1000, 3, 10, QChar('0'));
+}
+
+} // namespace
 
 SceneChangePage::SceneChangePage(bool feature_checked, QWidget* parent)
     : QWidget(parent), feature_checked_(feature_checked) {
@@ -83,6 +101,12 @@ void SceneChangePage::SetupUi() {
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->setMinimumHeight(200);
+    table_->setToolTip(tr("点击任意行可定位到该切换点"));
+    connect(table_, &QTableWidget::cellClicked, this, [this](int row, int) {
+        const std::size_t index = RecordIndexForRow(row);
+        if (index < records_.size())
+            emit SeekRequested(records_[index].timestamp);
+    });
     layout->addWidget(table_);
 
     // 建好之后由 AnalysisPanel::AddPageWithScroll 收进外部 stack
@@ -107,11 +131,24 @@ void SceneChangePage::FlushPending() {
 }
 
 void SceneChangePage::AppendRow(const model::SceneChangeResult& result) {
+    if (table_->rowCount() >= kMaxTableRows)
+        table_->removeRow(0);
     const int row = table_->rowCount();
     table_->insertRow(row);
     SetTableItemText(table_, row, 0, QString::number(result.frame_index));
-    SetTableItemText(table_, row, 1, theme::font::formatTime(static_cast<int>(result.timestamp * 1000)));
+    SetTableItemText(table_, row, 1, FormatCutTimestamp(result.timestamp));
     SetTableItemText(table_, row, 2, QString::number(result.score, 'f', 3));
+}
+
+std::size_t SceneChangePage::RecordIndexForRow(int row) const {
+    const int rows = table_ ? table_->rowCount() : 0;
+    if (row < 0 || rows <= 0)
+        return records_.size();
+    // 行上限生效后，表里是 records_ 的末尾一段，行号不再从 0 对应。
+    const std::size_t first =
+        table_synced_count_ > static_cast<std::size_t>(rows) ? table_synced_count_ - static_cast<std::size_t>(rows) : 0;
+    const std::size_t index = first + static_cast<std::size_t>(row);
+    return index < records_.size() ? index : records_.size();
 }
 
 void SceneChangePage::UpdateChart() {
@@ -147,10 +184,13 @@ void SceneChangePage::UpdateSummary() {
         if (r.score > max_s)
             max_s = r.score;
     }
-    summary_label_->setText(tr("共检测到 %1 个切换点 | 平均强度 %2 | 最大强度 %3")
-                                .arg(n)
-                                .arg(QString::number(sum / n, 'f', 3))
-                                .arg(QString::number(max_s, 'f', 3)));
+    QString text = tr("共检测到 %1 个切换点 | 平均强度 %2 | 最大强度 %3")
+                       .arg(n)
+                       .arg(QString::number(sum / n, 'f', 3))
+                       .arg(QString::number(max_s, 'f', 3));
+    if (n > kMaxTableRows)
+        text += tr(" | 表格仅显示最近 %1 条，导出为全集").arg(kMaxTableRows);
+    summary_label_->setText(text);
 }
 
 void SceneChangePage::OnExportCsv() {
