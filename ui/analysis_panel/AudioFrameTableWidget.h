@@ -36,7 +36,7 @@ class AudioFrameTableWidget : public QWidget {
     Q_OBJECT
 
 public:
-    explicit AudioFrameTableWidget(QWidget* parent = nullptr);
+    explicit AudioFrameTableWidget(QWidget* parent = nullptr, std::size_t max_records = kDefaultMaxRecordCount);
     ~AudioFrameTableWidget() override;
 
     // === 数据进来（由 FramePacketView 转发）===
@@ -78,6 +78,12 @@ private:
     std::vector<AudioFrameRecord> pending_audio_frames_;
     bool audio_frame_table_dirty_ = false;
     bool audio_frame_summary_dirty_ = false;
+
+    // 汇总行的增量计数器：入队时累加，裁剪时按被删记录扣减，
+    // 不再每次刷新都全量扫描（十万条 × 每秒 8 次）。
+    std::size_t max_records_ = kDefaultMaxRecordCount;
+    long long total_samples_ = 0;
+    long long total_bytes_ = 0;
 };
 
 } // namespace ui

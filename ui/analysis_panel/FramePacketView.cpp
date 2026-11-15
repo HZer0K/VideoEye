@@ -16,6 +16,7 @@
 // 不传 include 目录"的一致）。
 #include <libavcodec/avcodec.h>
 
+#include <cmath>
 #include <limits>
 
 namespace videoeye {
@@ -45,6 +46,14 @@ void FramePacketView::SetupUi() {
     video_page_ = new VideoFrameTableWidget(this);
     // GOP 摘要是组件产出的派生数据，原样转发给面板（面板再转「流概览」区）。
     connect(video_page_, &VideoFrameTableWidget::GopSummariesChanged, this, &FramePacketView::GopSummariesChanged);
+    // GOP 行双击 → 切回「视频帧」子页并选中该段起始帧。切 tab 只有父页知道（子页拿不到
+    // 自己的 tab 序号），选中则交给子页按帧号定位（筛选生效时行号 ≠ 记录索引）。
+    connect(video_page_, &VideoFrameTableWidget::GopActivated, this, [this](int start_frame_index) {
+        if (sub_tabs_) {
+            sub_tabs_->setCurrentIndex(0);
+        }
+        video_page_->SelectFrameByIndex(start_frame_index);
+    });
 
     // ---- 子页 1: 包 ----
     // 已抽为独立组件 PacketTableWidget：记录缓存 / 筛选 / 脏标志 / 增量游标 / CSV 导出
@@ -135,19 +144,30 @@ void FramePacketView::AppendPacket(const model::PacketInfo& packet_info) {
     packet_page_->AppendPacket(packet_info);
 }
 
-// 在记录序列里找 PTS 最接近的那条，返回记录索引（找不到返回 records.size()）。
-// 模板而不是两份复制：帧表→包表与包表→帧表要的是同一个"最近邻"语义，
-// 差别只在"要不要先按流类型过滤"（包序列里混着音频包，必须只看视频包；
-// 帧序列没有这个维度）—— 所以过滤条件做成谓词参数，而不是往模板里塞
-// `records[i].stream_type` 那种"对另一种记录类型根本不存在"的字段。
+void FramePacketView::AppendPackets(const std::vector<model::PacketInfo>& packets) {
+    packet_page_->AppendPackets(packets);
+}
+
+// 在记录序列里找时间戳最接近的那条，返回记录索引（找不到返回 records.size()）。
+//
+// 一律用归一化后的 timestamp_seconds 比较，不能比原始 PTS：包序列混着音视频流，
+// 而 PTS 的单位是各流自己的 time_base（音频常见 1/48000、视频 1/90000），
+// 跨流相减没有意义，只会跳到"数值上碰巧接近"的错误行。
+// 缺失时间戳（NaN / AV_NOPTS_VALUE 派生的无效值）的记录不参与匹配。
+//
+// 过滤条件做成谓词参数：包序列里混着音频/字幕包，帧表→包表只需要视频包；
+// 帧序列没有这个维度。
 template <typename Record, typename Pred>
-std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts, Pred pred) {
+std::size_t NearestByTimestamp(const std::vector<Record>& records, double target_seconds, Pred pred) {
     std::size_t best = records.size();
-    qint64 best_diff = std::numeric_limits<qint64>::max();
+    double best_diff = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < records.size(); ++i) {
         if (!pred(records[i]))
             continue;
-        const qint64 diff = std::llabs(records[i].pts - target_pts);
+        const double ts = records[i].timestamp_seconds;
+        if (!std::isfinite(ts))
+            continue;
+        const double diff = std::fabs(ts - target_seconds);
         if (diff < best_diff) {
             best_diff = diff;
             best = i;
@@ -157,8 +177,8 @@ std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts, 
 }
 
 template <typename Record>
-std::size_t NearestByPts(const std::vector<Record>& records, qint64 target_pts) {
-    return NearestByPts(records, target_pts, [](const Record&) { return true; });
+std::size_t NearestByTimestamp(const std::vector<Record>& records, double target_seconds) {
+    return NearestByTimestamp(records, target_seconds, [](const Record&) { return true; });
 }
 
 // 把视图的当前行移到"记录索引 -> 行号"对应的那一行。
@@ -202,9 +222,12 @@ void FramePacketView::OnPacketTableSelectionChanged() {
     const PacketRecord* packet = packet_model->RecordAt(row);
     if (packet == nullptr)
         return;
-    const qint64 target_pts = packet->pts;
+    // 音频包的原始 PTS 与视频帧不同时基，统一按播放时间比较。
+    const double target_seconds = packet->timestamp_seconds;
+    if (!std::isfinite(target_seconds))
+        return;
 
-    const std::size_t best = NearestByPts(frame_model->records(), target_pts);
+    const std::size_t best = NearestByTimestamp(frame_model->records(), target_seconds);
     if (best >= frame_model->record_count())
         return;
 
@@ -246,11 +269,14 @@ void FramePacketView::OnVideoFrameTableSelectionChanged() {
     const VideoFrameRecord* frame = frame_model->RecordAt(row);
     if (frame == nullptr)
         return;
-    const qint64 target_pts = frame->pts;
+    const double target_seconds = frame->timestamp_seconds;
+    if (!std::isfinite(target_seconds))
+        return;
 
-    // 包记录含视频/音频包, 仅匹配视频包以保证 PTS 时基一致
-    const std::size_t best = NearestByPts(packet_model->records(), target_pts,
-                                          [](const PacketRecord& p) { return p.stream_type == AVMEDIA_TYPE_VIDEO; });
+    // 包记录含视频/音频/其他包, 只匹配视频包（帧表是视频帧，其他流的包没有帧级对应物）
+    const std::size_t best = NearestByTimestamp(packet_model->records(), target_seconds, [](const PacketRecord& p) {
+        return p.stream_type == AVMEDIA_TYPE_VIDEO;
+    });
     if (best >= packet_model->record_count())
         return;
 

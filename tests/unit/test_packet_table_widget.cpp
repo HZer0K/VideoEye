@@ -7,7 +7,7 @@
 // 的直接依据，错了同样只会静默显示旧数字。
 //
 // 具体盯五件事：
-//   1. 表结构：包表 7 列、列名、筛选下拉 4 项、开关默认未勾选。
+//   1. 表结构：包表 9 列、列名、筛选下拉 5 项、开关默认未勾选。
 //   2. 脏标志 + 增量刷新：Append 只入队置脏不落表，Flush 才按游标补差量。
 //   3. 单元格内容与汇总聚合：流列 "#索引 类型"、时间/PTS/DTS/时长/大小，汇总计数与聚合。
 //   4. 筛选：切「视频流」整表重建只留视频包；之后新数据仍按筛选增量追加；切回恢复全量。
@@ -22,6 +22,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
+#include <QScrollBar>
 #include <QTableView>
 #include <QTableWidget>
 
@@ -94,29 +95,32 @@ bool HasCell(QTableView* table, int row, int column) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 1. 表结构：7 列 + 列名 + 筛选下拉 4 项 + 开关默认未勾选
+// 1. 表结构：9 列 + 列名 + 筛选下拉 5 项 + 开关默认未勾选
 // ---------------------------------------------------------------------------
 
-TEST(PacketTableWidgetTests, SetupCreatesSevenColumnTableAndFilterOptions) {
+TEST(PacketTableWidgetTests, SetupCreatesNineColumnTableAndFilterOptions) {
     EnsureApp();
 
     PacketTableWidget widget;
     QTableView* table = widget.packetTable();
     ASSERT_TRUE(table != nullptr);
 
-    EXPECT_EQ(7, ColumnCount(table));
+    EXPECT_EQ(9, ColumnCount(table));
     EXPECT_EQ(QStringLiteral("流"), Header(table, 1));
     EXPECT_EQ(QStringLiteral("显示时间(PTS)"), Header(table, 3));
     EXPECT_EQ(QStringLiteral("包大小"), Header(table, 6));
+    EXPECT_EQ(QStringLiteral("标志"), Header(table, 7));
+    EXPECT_EQ(QStringLiteral("文件偏移"), Header(table, 8));
     EXPECT_EQ(0, RowCount(table));
 
     QComboBox* filter = widget.findChild<QComboBox*>();
     ASSERT_TRUE(filter != nullptr);
-    ASSERT_EQ(4, filter->count());
+    ASSERT_EQ(5, filter->count());
     EXPECT_EQ(QStringLiteral("全部流"), filter->itemText(0));
     EXPECT_EQ(QStringLiteral("视频流"), filter->itemText(1));
     EXPECT_EQ(QStringLiteral("音频流"), filter->itemText(2));
     EXPECT_EQ(QStringLiteral("其他流"), filter->itemText(3));
+    EXPECT_EQ(QStringLiteral("视频关键帧"), filter->itemText(4));
     EXPECT_EQ(0, filter->currentIndex());
 
     // 构造后未刷新的初始文案（短文案；刷过一次后变为完整文案）
@@ -159,6 +163,8 @@ TEST(PacketTableWidgetTests, AppendMarksPendingAndFlushFillsCells) {
     EXPECT_EQ(QStringLiteral("900"), Cell(table, 0, 4));     // 解码时间(DTS)
     EXPECT_EQ(QStringLiteral("40"), Cell(table, 0, 5));      // 时长
     EXPECT_EQ(QStringLiteral("1234"), Cell(table, 0, 6));    // 包大小
+    EXPECT_EQ(QStringLiteral("KEY"), Cell(table, 0, 7));     // 标志
+    EXPECT_EQ(QStringLiteral("1024"), Cell(table, 0, 8));    // 文件偏移
 
     EXPECT_EQ(QStringLiteral("总包数: 1 | 总字节数: 1.2 KB | 视频包: 1 | 音频包: 0 | 其他包: 0 | "
                              "平均包大小: 1234 B | 最大包大小: 1234 B | 最小包大小: 1234 B"),
@@ -280,4 +286,121 @@ TEST(PacketTableWidgetTests, ResetClearsTableAndSummary) {
     widget.FlushPending();
     EXPECT_FALSE(widget.HasPending());
     EXPECT_EQ(0, RowCount(table));
+}
+
+// ---------------------------------------------------------------------------
+// 6. 增量刷新不能把正在往回翻看的用户拽回底部
+// ---------------------------------------------------------------------------
+
+TEST(PacketTableWidgetTests, FlushKeepsUserScrollPositionWhenNotPinned) {
+    EnsureApp();
+
+    PacketTableWidget widget;
+    widget.resize(640, 200);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    QTableView* table = widget.packetTable();
+    ASSERT_TRUE(table != nullptr);
+
+    for (int i = 0; i < 120; ++i) {
+        widget.AppendPacket(MakePacket(i, 0, AVMEDIA_TYPE_VIDEO, i, i, 1, 1000, i * 0.04));
+    }
+    widget.FlushPending();
+    QCoreApplication::processEvents();
+
+    QScrollBar* bar = table->verticalScrollBar();
+    ASSERT_GT(bar->maximum(), 0) << "表格没有产生可滚动高度，测试前提不成立";
+    EXPECT_EQ(bar->value(), bar->maximum()) << "跟随模式下应停在最新一条";
+
+    // 用户上翻查看历史：后续入库不得改变滚动位置
+    bar->setValue(0);
+    for (int i = 120; i < 160; ++i) {
+        widget.AppendPacket(MakePacket(i, 0, AVMEDIA_TYPE_VIDEO, i, i, 1, 1000, i * 0.04));
+    }
+    widget.FlushPending();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(bar->value(), 0) << "用户上翻时不应被拽回底部";
+
+    // 用户自己滑回底部：恢复跟随
+    bar->setValue(bar->maximum());
+    widget.AppendPacket(MakePacket(160, 0, AVMEDIA_TYPE_VIDEO, 160, 160, 1, 1000, 6.4));
+    widget.FlushPending();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(bar->value(), bar->maximum());
+}
+
+// ---------------------------------------------------------------------------
+// 7. 「视频关键帧」筛选：只看带 AV_PKT_FLAG_KEY 的视频包，音频包不能混进来
+// ---------------------------------------------------------------------------
+
+TEST(PacketTableWidgetTests, KeyFrameFilterKeepsOnlyKeyVideoPackets) {
+    EnsureApp();
+
+    PacketTableWidget widget;
+    QTableView* table = widget.packetTable();
+    QComboBox* filter = widget.findChild<QComboBox*>();
+    ASSERT_TRUE(table != nullptr);
+    ASSERT_TRUE(filter != nullptr);
+
+    PacketInfo key_video = MakePacket(1, 0, AVMEDIA_TYPE_VIDEO, 1000, 900, 40, 1000, 0.5);
+    PacketInfo delta_video = MakePacket(2, 0, AVMEDIA_TYPE_VIDEO, 2000, 1900, 40, 800, 1.0);
+    delta_video.flags = 0;
+    PacketInfo key_audio = MakePacket(3, 1, AVMEDIA_TYPE_AUDIO, 3000, 2900, 20, 500, 1.5); // 带 KEY 但不是视频
+
+    widget.AppendPacket(key_video);
+    widget.AppendPacket(delta_video);
+    widget.AppendPacket(key_audio);
+    widget.FlushPending();
+
+    filter->setCurrentIndex(4); // 视频关键帧
+    ASSERT_EQ(1, RowCount(table));
+    EXPECT_EQ(QStringLiteral("#0 视频"), Cell(table, 0, 1));
+    EXPECT_EQ(QStringLiteral("KEY"), Cell(table, 0, 7));
+
+    // 增量路径同样只收关键帧视频包
+    widget.AppendPacket(key_audio);
+    widget.AppendPacket(delta_video);
+    widget.FlushPending();
+    EXPECT_EQ(1, RowCount(table));
+
+    widget.AppendPacket(key_video);
+    widget.FlushPending();
+    ASSERT_EQ(2, RowCount(table));
+    EXPECT_EQ(QStringLiteral("1"), Cell(table, 1, 0));
+}
+
+// ---------------------------------------------------------------------------
+// 8. 裁剪后汇总仍然正确（增量计数器扣减 + min/max 失效重算）
+//
+// 记录上限可注入，用 3 条记录把裁剪路径走一遍；否则要灌十万条才触发淘汰。
+// ---------------------------------------------------------------------------
+
+TEST(PacketTableWidgetTests, TrimKeepsSummaryConsistent) {
+    EnsureApp();
+
+    PacketTableWidget widget(nullptr, 3);
+    QTableView* table = widget.packetTable();
+    QLabel* summary = SummaryLabel(widget);
+    ASSERT_TRUE(table != nullptr);
+    ASSERT_TRUE(summary != nullptr);
+
+    // 第一批: 500(最大) / 100(最小) / 300
+    widget.AppendPacket(MakePacket(1, 0, AVMEDIA_TYPE_VIDEO, 0, 0, 1, 500, 0.0));
+    widget.AppendPacket(MakePacket(2, 0, AVMEDIA_TYPE_VIDEO, 1, 1, 1, 100, 0.1));
+    widget.AppendPacket(MakePacket(3, 0, AVMEDIA_TYPE_VIDEO, 2, 2, 1, 300, 0.2));
+    widget.FlushPending();
+    ASSERT_EQ(3, RowCount(table));
+
+    // 第二批把最早三条挤掉: 剩下 200 / 400(新最大) / 50(新最小)
+    widget.AppendPacket(MakePacket(4, 0, AVMEDIA_TYPE_VIDEO, 3, 3, 1, 200, 0.3));
+    widget.AppendPacket(MakePacket(5, 0, AVMEDIA_TYPE_VIDEO, 4, 4, 1, 400, 0.4));
+    widget.AppendPacket(MakePacket(6, 0, AVMEDIA_TYPE_VIDEO, 5, 5, 1, 50, 0.5));
+    widget.FlushPending();
+
+    ASSERT_EQ(3, RowCount(table));
+    EXPECT_EQ(QStringLiteral("4"), Cell(table, 0, 0)); // 头部三条已被淘汰
+    EXPECT_EQ(QStringLiteral("总包数: 3 | 总字节数: 650 B | 视频包: 3 | 音频包: 0 | 其他包: 0 | "
+                             "平均包大小: 216 B | 最大包大小: 400 B | 最小包大小: 50 B"),
+              summary->text());
 }

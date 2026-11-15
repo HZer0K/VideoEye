@@ -608,7 +608,7 @@ void MainWindow::SetupConnections() {
     });
 
     // 播放器信号连接 - 分析功能 (实时分析)。
-    // 连分析总线而不是门面本身: 这 23 条信号属于播放期分析，门面不再替它们背书，
+    // 连分析总线而不是门面本身: 这 24 条信号属于播放期分析，门面不再替它们背书，
     // 见 core/player/AnalysisBus.h。信号名与参数不变，接线语义也不变。
     player::AnalysisBus& bus = player_->analysis_bus();
     connect(&bus, &player::AnalysisBus::StreamStatsReady, analysis_panel_, &ui::AnalysisPanel::UpdateStreamStats);
@@ -617,7 +617,11 @@ void MainWindow::SetupConnections() {
     connect(&bus, &player::AnalysisBus::AudioFrameListReset, analysis_panel_, &ui::AnalysisPanel::ResetAudioFrameList);
     connect(&bus, &player::AnalysisBus::AudioFrameInfoReady, analysis_panel_, &ui::AnalysisPanel::AppendAudioFrameInfo);
     connect(&bus, &player::AnalysisBus::PacketListReset, analysis_panel_, &ui::AnalysisPanel::ResetPacketList);
-    connect(&bus, &player::AnalysisBus::PacketInfoReady, analysis_panel_, &ui::AnalysisPanel::AppendPacketInfo);
+    // 包记录改走批量信号（控制器按 256 条 / 50ms 攒批）：逐包一次跨线程排队在长视频
+    // 上要重复几十万次，UI 侧本来就是先把记录攒起来再按 120ms 刷表。
+    // PacketInfoReady 仍保留在总线上（契约不变），只是这里不再连它，避免重复入库。
+    connect(&bus, &player::AnalysisBus::PacketInfoBatchReady, analysis_panel_,
+            &ui::AnalysisPanel::AppendPacketInfoBatch);
     connect(&bus, &player::AnalysisBus::AnalysisEventListReset, analysis_panel_,
             &ui::AnalysisPanel::ResetAnalysisEventList);
     connect(&bus, &player::AnalysisBus::AnalysisEventReady, analysis_panel_, &ui::AnalysisPanel::AppendAnalysisEvent);

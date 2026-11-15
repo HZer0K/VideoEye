@@ -19,7 +19,6 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <chrono>
 #include <vector>
 
 namespace videoeye {
@@ -156,6 +155,25 @@ void StreamOverviewView::ResetCharts() {
         fps_series_->Clear();
     if (gop_series_)
         gop_series_->Clear();
+
+    // 指标区与统计快照一起归零。以前只清曲线：换文件后若分析开关是关的，
+    // 上一个文件的码率 / 分析时长 / 最大GOP 会一直挂在界面上。
+    latest_stats_ = model::StreamStats{};
+    has_pending_stats_ = false;
+    gop_summaries_.clear();
+    gop_dirty_ = false;
+    ResetStatsUi();
+}
+
+void StreamOverviewView::ResetStatsUi() {
+    if (!stats_table_)
+        return;
+    const QString zero_bitrate = QStringLiteral("0 Kbps");
+    for (int column = 0; column < 3; ++column) {
+        SetTableItemText(stats_table_, 0, column, zero_bitrate);
+    }
+    SetTableItemText(stats_table_, 0, 3, QStringLiteral("0.0 s"));
+    SetTableItemText(stats_table_, 0, 4, QStringLiteral("0"));
 }
 
 void StreamOverviewView::FlushPending() {
@@ -166,7 +184,17 @@ void StreamOverviewView::FlushPending() {
     if (gop_dirty_) {
         gop_dirty_ = false;
         UpdateGopChart();
+        UpdateMaxGopItem();
     }
+}
+
+void StreamOverviewView::UpdateMaxGopItem() {
+    int ui_max_gop = 0;
+    for (const auto& g : gop_summaries_) {
+        if (g.total_frames > ui_max_gop)
+            ui_max_gop = g.total_frames;
+    }
+    SetTableItemText(stats_table_, 0, 4, QString::number(ui_max_gop));
 }
 
 void StreamOverviewView::RefreshStatsUi() {
@@ -179,17 +207,13 @@ void StreamOverviewView::RefreshStatsUi() {
     SetTableItemText(stats_table_, 0, 1, QString::number(stats.avg_bitrate_bps / 1000) + " Kbps");
     SetTableItemText(stats_table_, 0, 2, QString::number(stats.peak_bitrate_bps / 1000) + " Kbps");
 
-    const auto duration =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - stats.start_time);
-    SetTableItemText(stats_table_, 0, 3, QString::number(duration.count()) + " s");
-    // 最大 GOP 统一取 GopSummary 的口径 (解码帧 pict_type),
+    // 用分析器自己的累计时长，而不是 "now - start_time"：后者在暂停时照样走字，
+    // 与"已分析片段"的语义不符，且和导出的 Stats 快照对不上。
+    SetTableItemText(stats_table_, 0, 3, QString::number(stats.duration_seconds, 'f', 1) + " s");
+
+    // 最大 GOP 统一取 GopSummary 的口径 (解码帧 pict_type)，
     // 与「码流分析」页的 GOP 摘要表保持一致。
-    int ui_max_gop = 0;
-    for (const auto& g : gop_summaries_) {
-        if (g.total_frames > ui_max_gop)
-            ui_max_gop = g.total_frames;
-    }
-    SetTableItemText(stats_table_, 0, 4, QString::number(ui_max_gop));
+    UpdateMaxGopItem();
 
     // 收集历史数据供图表与导出报告共用
     const qreal bitrate_kbps = stats.current_bitrate_bps / 1000.0;
@@ -311,18 +335,26 @@ void StreamOverviewView::OnExportReport() {
         bitrate_history.push_back(static_cast<int>(v * 1000)); // Kbps → bps
     }
 
+    // 报告与「流概览」区同口径：最大 GOP 取 GopSummary（解码帧 pict_type 推导），
+    // 不用 stats.max_gop_size（packet flags 的轻量近似，两者会不一致）。
+    reporting::StreamReportExtras extras;
+    extras.gop_count = static_cast<int>(gop_summaries_.size());
+    for (const auto& gop : gop_summaries_) {
+        extras.max_gop_frames = std::max(extras.max_gop_frames, gop.total_frames);
+    }
+
     if (ext == "html") {
         success = reporting::StreamStatsExporter::ExportHTMLReport(fname, latest_stats_, fps_history, bitrate_history,
-                                                                   source);
+                                                                   source, extras);
     } else if (ext == "json") {
-        success = reporting::StreamStatsExporter::ExportJSON(fname, latest_stats_, source);
+        success = reporting::StreamStatsExporter::ExportJSON(fname, latest_stats_, source, extras);
     } else if (ext == "txt") {
-        success = reporting::StreamStatsExporter::ExportTextReport(fname, latest_stats_, source);
+        success = reporting::StreamStatsExporter::ExportTextReport(fname, latest_stats_, source, extras);
     } else {
         // 未知扩展名，默认生成 HTML
         filename += ".html";
         success = reporting::StreamStatsExporter::ExportHTMLReport(filename.toStdString(), latest_stats_, fps_history,
-                                                                   bitrate_history, source);
+                                                                   bitrate_history, source, extras);
     }
 
     if (success) {

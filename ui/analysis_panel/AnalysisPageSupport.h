@@ -16,7 +16,9 @@
 #include <QMessageBox>
 #include <QPointF>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QString>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTextStream>
 #include <QVector>
@@ -45,6 +47,26 @@ inline void SetTableItemText(QTableWidget* table, int row, int column, const QSt
         table->setItem(row, column, item);
     }
     item->setText(text);
+}
+
+// 明细表"跟随最新一条"的滚动策略。
+//
+// 播放期每次 FlushPending 都无条件 scrollToBottom 会把正在往回翻看的用户
+// 每 120ms 拽回底部，明细表实际不可读。正确语义是：只有用户本来就停在底部
+// （跟随模式）时才继续跟随；一旦往上翻就交出控制权，等用户自己滑回底部。
+inline bool IsTablePinnedToBottom(const QTableView* table) {
+    if (!table)
+        return true;
+    const QScrollBar* bar = table->verticalScrollBar();
+    if (!bar)
+        return true;
+    // 允许 2px 误差：不同行高/DPI 下 value==maximum 不一定严格成立。
+    return bar->value() >= bar->maximum() - 2;
+}
+
+inline void FollowTableBottom(QTableView* table, bool was_pinned) {
+    if (table && was_pinned)
+        table->scrollToBottom();
 }
 
 // 指标值 + 单位 -> 展示串（异常表 / 汇总行都在用）

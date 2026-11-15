@@ -16,6 +16,7 @@
 // include 目录"的一致）。
 #include <libavcodec/avcodec.h>
 
+#include <algorithm>
 #include <climits>
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
@@ -26,10 +27,11 @@ namespace ui {
 namespace {
 // 记录上限统一取 10 万（见 RecordTableModel.h）。以前本页是 1 万 —— 一小时视频的包
 // 数远不止一万（每帧至少一个视频包），1 万意味着只留得下开头几十秒的包。
-constexpr std::size_t kMaxPacketRecords = kDefaultMaxRecordCount;
+// 现在由构造函数参数决定，默认仍取 kDefaultMaxRecordCount。
 } // namespace
 
-PacketTableWidget::PacketTableWidget(QWidget* parent) : QWidget(parent) {
+PacketTableWidget::PacketTableWidget(QWidget* parent, std::size_t max_records)
+    : QWidget(parent), max_records_(max_records) {
     SetupUi();
 }
 
@@ -47,7 +49,7 @@ void PacketTableWidget::SetupUi() {
 
     p_toolbar->addWidget(new QLabel(tr("筛选:"), this));
     packet_filter_combo_ = new QComboBox(this);
-    packet_filter_combo_->addItems({tr("全部流"), tr("视频流"), tr("音频流"), tr("其他流")});
+    packet_filter_combo_->addItems({tr("全部流"), tr("视频流"), tr("音频流"), tr("其他流"), tr("视频关键帧")});
     packet_filter_combo_->setCurrentIndex(0);
     p_toolbar->addWidget(packet_filter_combo_);
 
@@ -73,6 +75,10 @@ void PacketTableWidget::SetupUi() {
     columns.push_back(Spec{tr("解码时间(DTS)"), [](const PacketRecord& r) { return QString::number(r.dts); }, {}});
     columns.push_back(Spec{tr("时长"), [](const PacketRecord& r) { return QString::number(r.duration); }, {}});
     columns.push_back(Spec{tr("包大小"), [](const PacketRecord& r) { return QString::number(r.size); }, {}});
+    // 标志与文件偏移：采集侧早已带着这两个字段，之前只写进 CSV、界面上却没有 ——
+    // 关键帧 / 损坏 / 丢弃标记与"包在文件里的位置"正是排查封装问题最直接的线索。
+    columns.push_back(Spec{tr("标志"), [this](const PacketRecord& r) { return PacketFlagsToString(r.flags); }, {}});
+    columns.push_back(Spec{tr("文件偏移"), [](const PacketRecord& r) { return QString::number(r.pos); }, {}});
     packet_model_ = new RecordTableModel<PacketRecord>(std::move(columns), this);
 
     packet_table_ = new QTableView(p_table_group);
@@ -93,6 +99,8 @@ void PacketTableWidget::SetupUi() {
     packet_table_->setColumnWidth(4, 110); // 解码时间(DTS)
     packet_table_->setColumnWidth(5, 80);  // 时长
     packet_table_->setColumnWidth(6, 90);  // 包大小
+    packet_table_->setColumnWidth(7, 120); // 标志
+    packet_table_->setColumnWidth(8, 100); // 文件偏移
     packet_table_->setMinimumWidth(650);
     packet_table_->setMinimumHeight(120);
     p_table_layout->addWidget(packet_table_);
@@ -100,7 +108,7 @@ void PacketTableWidget::SetupUi() {
 
     // 筛选是本子页内部的事（只依赖自己的记录缓存），就地连回。
     connect(packet_filter_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
-        packet_filter_mode_ = idx - 1; // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2)
+        packet_filter_mode_ = idx - 1; // 0->全部(-1), 1->视频(0), 2->音频(1), 3->其他(2), 4->视频关键帧(3)
         ApplyFilter();
     });
 }
@@ -126,6 +134,7 @@ void PacketTableWidget::FlushPending() {
 
 void PacketTableWidget::ResetPackets() {
     pending_packets_.clear();
+    summary_ = SummaryCounters{};
     packet_table_dirty_ = false;
     packet_summary_dirty_ = true;
     if (packet_model_) {
@@ -135,6 +144,19 @@ void PacketTableWidget::ResetPackets() {
 }
 
 void PacketTableWidget::AppendPacket(const model::PacketInfo& packet_info) {
+    QueueRecord(packet_info);
+}
+
+void PacketTableWidget::AppendPackets(const std::vector<model::PacketInfo>& packets) {
+    if (!packet_model_ || packets.empty()) {
+        return;
+    }
+    for (const auto& packet_info : packets) {
+        QueueRecord(packet_info);
+    }
+}
+
+void PacketTableWidget::QueueRecord(const model::PacketInfo& packet_info) {
     if (!packet_model_) {
         return;
     }
@@ -150,6 +172,25 @@ void PacketTableWidget::AppendPacket(const model::PacketInfo& packet_info) {
     record.flags = packet_info.flags;
     record.pos = static_cast<qint64>(packet_info.pos);
     record.timestamp_seconds = packet_info.timestamp_seconds;
+
+    // 汇总在这里增量累加：记录一旦入队，最终都会进模型（除非中途 Reset，
+    // 而 Reset 会把计数器一起清零）。裁剪时再按被删记录扣减。
+    summary_.total++;
+    if (record.stream_type == AVMEDIA_TYPE_VIDEO) {
+        summary_.video++;
+    } else if (record.stream_type == AVMEDIA_TYPE_AUDIO) {
+        summary_.audio++;
+    } else {
+        summary_.other++;
+    }
+    summary_.total_bytes += record.size;
+    if (summary_.total == 1) {
+        summary_.max_size = record.size;
+        summary_.min_size = record.size;
+    } else {
+        summary_.max_size = std::max(summary_.max_size, record.size);
+        summary_.min_size = std::min(summary_.min_size, record.size);
+    }
 
     // 只入队 + 置脏，FlushPending 时一次性交给模型（一次 rowsInserted 通知一批）
     pending_packets_.push_back(record);
@@ -202,6 +243,8 @@ bool PacketTableWidget::PacketMatchesFilter(const PacketRecord& record) const {
         return record.stream_type == AVMEDIA_TYPE_AUDIO;
     case 2:
         return record.stream_type != AVMEDIA_TYPE_VIDEO && record.stream_type != AVMEDIA_TYPE_AUDIO;
+    case 3:
+        return record.stream_type == AVMEDIA_TYPE_VIDEO && (record.flags & AV_PKT_FLAG_KEY) != 0;
     default:
         return true; // -1 = 全部
     }
@@ -229,6 +272,8 @@ void PacketTableWidget::ApplyFilter() {
             return r.stream_type == AVMEDIA_TYPE_AUDIO;
         case 2:
             return r.stream_type != AVMEDIA_TYPE_VIDEO && r.stream_type != AVMEDIA_TYPE_AUDIO;
+        case 3:
+            return r.stream_type == AVMEDIA_TYPE_VIDEO && (r.flags & AV_PKT_FLAG_KEY) != 0;
         default:
             return true;
         }
@@ -240,31 +285,9 @@ void PacketTableWidget::UpdatePacketSummary() {
         return;
     }
 
-    const auto& records = packet_model_->records();
-    int video_packets = 0;
-    int audio_packets = 0;
-    int other_packets = 0;
-    long long total_bytes = 0;
-    long long sum_size = 0;
-    int max_size = 0;
-    int min_size = INT32_MAX;
-    for (const auto& record : records) {
-        if (record.stream_type == AVMEDIA_TYPE_VIDEO) {
-            video_packets++;
-        } else if (record.stream_type == AVMEDIA_TYPE_AUDIO) {
-            audio_packets++;
-        } else {
-            other_packets++;
-        }
-        total_bytes += record.size;
-        sum_size += record.size;
-        if (record.size > max_size) {
-            max_size = record.size;
-        }
-        if (record.size < min_size) {
-            min_size = record.size;
-        }
-    }
+    // 汇总只读增量计数器，不再每次落盘都扫一遍全部记录（十万条 × 每秒 8 次）。
+    const auto& s = summary_;
+    const std::size_t total = s.total;
 
     auto format_bytes = [](long long bytes) -> QString {
         if (bytes >= 1024LL * 1024 * 1024) {
@@ -277,18 +300,62 @@ void PacketTableWidget::UpdatePacketSummary() {
         return QString::number(bytes) + " B";
     };
 
-    const int avg_size = records.empty() ? 0 : static_cast<int>(sum_size / records.size());
+    const int avg_size = total == 0 ? 0 : static_cast<int>(s.total_bytes / static_cast<long long>(total));
+    const int min_size = total == 0 ? 0 : s.min_size;
+    const int max_size = total == 0 ? 0 : s.max_size;
 
     packet_summary_label_->setText(tr("总包数: %1 | 总字节数: %2 | 视频包: %3 | 音频包: %4 | 其他包: %5 | 平均包大小: "
                                       "%6 B | 最大包大小: %7 B | 最小包大小: %8 B")
-                                       .arg(records.size())
-                                       .arg(format_bytes(total_bytes))
-                                       .arg(video_packets)
-                                       .arg(audio_packets)
-                                       .arg(other_packets)
+                                       .arg(total)
+                                       .arg(format_bytes(s.total_bytes))
+                                       .arg(s.video)
+                                       .arg(s.audio)
+                                       .arg(s.other)
                                        .arg(avg_size)
                                        .arg(max_size)
-                                       .arg(records.empty() ? 0 : min_size));
+                                       .arg(min_size));
+}
+
+void PacketTableWidget::SubtractSummaryFor(const std::vector<PacketRecord>& records, std::size_t count) {
+    const std::size_t n = std::min(count, records.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& record = records[i];
+        if (summary_.total > 0) {
+            summary_.total--;
+        }
+        if (record.stream_type == AVMEDIA_TYPE_VIDEO) {
+            if (summary_.video > 0)
+                summary_.video--;
+        } else if (record.stream_type == AVMEDIA_TYPE_AUDIO) {
+            if (summary_.audio > 0)
+                summary_.audio--;
+        } else if (summary_.other > 0) {
+            summary_.other--;
+        }
+        // 极值记录被删掉后，计数器上的 min/max 可能已经失效（也可能只是同值记录之一），
+        // 这里只置脏，等裁剪结束后统一重算一次。
+        if (record.size == summary_.max_size || record.size == summary_.min_size) {
+            size_extremes_dirty_ = true;
+        }
+        summary_.total_bytes -= record.size;
+    }
+}
+
+void PacketTableWidget::RecomputeSizeExtremes() {
+    const auto& records = packet_model_->records();
+    if (records.empty()) {
+        summary_.max_size = 0;
+        summary_.min_size = 0;
+        return;
+    }
+    int max_size = records.front().size;
+    int min_size = records.front().size;
+    for (const auto& record : records) {
+        max_size = std::max(max_size, record.size);
+        min_size = std::min(min_size, record.size);
+    }
+    summary_.max_size = max_size;
+    summary_.min_size = min_size;
 }
 
 void PacketTableWidget::OnExportPacketCsv() {
@@ -318,19 +385,27 @@ void PacketTableWidget::FlushPendingPacketTableUpdates() {
         return;
     }
 
+    const bool pinned_to_bottom = IsTablePinnedToBottom(packet_table_);
+
     if (!pending_packets_.empty()) {
         packet_model_->AppendRecords(std::move(pending_packets_));
         pending_packets_.clear();
     }
 
     const std::size_t count = packet_model_->record_count();
-    if (count > kMaxPacketRecords) {
-        packet_model_->TrimFront(count - kMaxPacketRecords);
+    if (count > max_records_) {
+        const std::size_t remove = count - max_records_;
+        // 先按将被删掉的记录扣减汇总，再真正裁剪。
+        SubtractSummaryFor(packet_model_->records(), remove);
+        packet_model_->TrimFront(remove);
+        if (size_extremes_dirty_) {
+            RecomputeSizeExtremes();
+            size_extremes_dirty_ = false;
+        }
+        packet_summary_dirty_ = true;
     }
 
-    if (packet_model_->rowCount() > 0) {
-        packet_table_->scrollToBottom();
-    }
+    FollowTableBottom(packet_table_, pinned_to_bottom);
 }
 
 } // namespace ui

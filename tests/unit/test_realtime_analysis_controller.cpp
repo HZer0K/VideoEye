@@ -5,10 +5,12 @@
 #include <cmath>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #include "core/player/RealtimeAnalysisController.h"
 
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/pixfmt.h>
 }
@@ -29,6 +31,18 @@ public:
 
     static model::VisualDefectReport Snapshot(const RealtimeAnalysisController& controller) {
         return controller.visual_defect_analyzer_.Snapshot();
+    }
+
+    // 直接喂一个包：包批量投递是解码线程上的回调，这里绕过 PlaybackSession 只测攒批逻辑。
+    static void FeedPacket(RealtimeAnalysisController& controller, const AVPacket& packet) {
+        PacketContext ctx;
+        ctx.packet = &packet;
+        ctx.timestamp_seconds = 0.0;
+        controller.OnPacket(ctx);
+    }
+
+    static void FlushOnStop(RealtimeAnalysisController& controller) {
+        controller.FlushOnStop();
     }
 };
 
@@ -159,6 +173,72 @@ TEST_F(RealtimeAnalysisControllerTest, ForwardJumpResetsTimeline) {
     ASSERT_EQ(report.samples.size(), 2u);
     EXPECT_DOUBLE_EQ(report.samples.back().timestamp_seconds, 65.0);
     EXPECT_TRUE(std::isnan(report.samples.back().frame_diff));
+}
+
+// 换媒体时"清空 UI 列表"无条件发：开关只管收不收新数据，不管清空。
+// 否则"A 文件采集过 -> 关开关 -> 换 B -> 再开开关"会把 B 的数据接在 A 的旧行后面。
+TEST_F(RealtimeAnalysisControllerTest, ResetForNewMediaClearsListsRegardlessOfFeatureSwitches) {
+    int video_resets = 0;
+    int audio_resets = 0;
+    int packet_resets = 0;
+    int event_resets = 0;
+    int sync_resets = 0;
+    int timeline_resets = 0;
+    int visual_defect_resets = 0;
+
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::VideoFrameListReset, [&] { ++video_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::AudioFrameListReset, [&] { ++audio_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::PacketListReset, [&] { ++packet_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::AnalysisEventListReset, [&] { ++event_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::SyncSampleListReset, [&] { ++sync_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::TimelineEventListReset, [&] { ++timeline_resets; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::VisualDefectReset, [&] { ++visual_defect_resets; });
+
+    // 默认只有 VisualDefectAnalysis 打开，其余五个开关均为关闭状态
+    controller_.ResetForNewMedia();
+
+    EXPECT_EQ(video_resets, 1);
+    EXPECT_EQ(audio_resets, 1);
+    EXPECT_EQ(packet_resets, 1);
+    EXPECT_EQ(event_resets, 1);
+    EXPECT_EQ(sync_resets, 1);
+    EXPECT_EQ(timeline_resets, 1);
+    EXPECT_EQ(visual_defect_resets, 1);
+}
+
+// 包信息按批投递：攒满 256 条立即发一批；不足一批的尾部在停止时强制 flush，
+// 不能一直留在缓冲里（否则界面上最后几十个包永远不出现）。
+TEST_F(RealtimeAnalysisControllerTest, PacketInfoIsBatchedAndFlushedOnStop) {
+    analysis_.SetPacketAnalysisEnabled(true);
+
+    int batches = 0;
+    int singles = 0;
+    std::size_t last_batch_size = 0;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::PacketInfoReady,
+                     [&](const videoeye::model::PacketInfo&) { ++singles; });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::PacketInfoBatchReady,
+                     [&](const std::vector<videoeye::model::PacketInfo>& packets) {
+                         ++batches;
+                         last_batch_size = packets.size();
+                     });
+
+    AVPacket packet{};
+    for (int i = 0; i < 256; ++i) {
+        RealtimeAnalysisControllerTestAccess::FeedPacket(controller_, packet);
+    }
+    // 单条契约信号保留（逐包一条），批量信号在攒满 256 条时发一批
+    EXPECT_EQ(256, singles);
+    EXPECT_EQ(1, batches);
+    EXPECT_EQ(256u, last_batch_size);
+
+    // 尾部不足一批：停止时强制发出去
+    RealtimeAnalysisControllerTestAccess::FeedPacket(controller_, packet);
+    EXPECT_EQ(1, batches);
+    RealtimeAnalysisControllerTestAccess::FlushOnStop(controller_);
+    EXPECT_EQ(2, batches);
+    EXPECT_EQ(1u, last_batch_size);
 }
 
 } // namespace

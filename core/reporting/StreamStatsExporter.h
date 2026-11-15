@@ -19,6 +19,17 @@
 namespace videoeye {
 namespace reporting {
 
+// 报告里的补充信息 —— StreamStats 装不下的那部分。
+//
+// GOP 段数是 UI 从解码帧 pict_type 推导出来的派生数据（GopSummary），
+// StreamStats.max_gop_size 则来自 packet flags 的轻量近似。两边同时存在时
+// 报告必须与「流概览」区用同一个口径（GopSummary），否则同一份素材的报告
+// 与界面会给出两个「最大 GOP」。
+struct StreamReportExtras {
+    int gop_count = 0;      // GOP 段数（0 = 没有 GOP 数据）
+    int max_gop_frames = 0; // 最大 GOP（帧）；0 时报告回退到 stats.max_gop_size
+};
+
 class StreamStatsExporter {
 public:
     StreamStatsExporter() = default;
@@ -26,19 +37,19 @@ public:
 
     // 导出为文本报告
     static bool ExportTextReport(const std::string& filename, const model::StreamStats& stats,
-                                 const std::string& video_file = "");
+                                 const std::string& video_file = "", const StreamReportExtras& extras = {});
 
     // 导出为 CSV 格式（用于 Excel）
     static bool ExportCSV(const std::string& filename, const std::vector<model::StreamStats>& stats_history);
 
     // 导出为 JSON 格式
     static bool ExportJSON(const std::string& filename, const model::StreamStats& stats,
-                           const std::string& video_file = "");
+                           const std::string& video_file = "", const StreamReportExtras& extras = {});
 
     // 导出为 HTML 报告（带图表）
     static bool ExportHTMLReport(const std::string& filename, const model::StreamStats& stats,
                                  const std::vector<double>& fps_history, const std::vector<int>& bitrate_history,
-                                 const std::string& video_file = "");
+                                 const std::string& video_file = "", const StreamReportExtras& extras = {});
 
     // 生成报告摘要
     static std::string GenerateSummary(const model::StreamStats& stats);

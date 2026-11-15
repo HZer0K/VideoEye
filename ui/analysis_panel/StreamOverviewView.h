@@ -57,7 +57,9 @@ public:
     // FramePacketView 产出 GOP 摘要后由面板喂进来：填「最大GOP大小」+ 重画 GOP 分布曲线
     void SetGopSummaries(const std::vector<GopSummary>& summaries);
 
-    // 换文件时配合「视频帧列表」一起清空曲线（原先由面板的 ResetVideoFrameList 触发）
+    // 换文件时配合「视频帧列表」一起清空曲线与 5 个指标（原先由面板的
+    // ResetVideoFrameList 触发）。含最近一次统计快照：否则关闭分析换文件后，
+    // 界面会继续显示上一个文件的码率/时长/GOP。
     void ResetCharts();
 
     // 追加一项导出动作。页头「导出」菜单由本视图持有（它在外部 stack 页的最顶部），
@@ -73,6 +75,11 @@ public:
 private:
     void SetupUi();
     void RefreshStatsUi();
+    void ResetStatsUi();
+    // 「最大GOP大小」只依赖 GopSummary。GOP 更新与统计快照是两条独立通道，
+    // 不能只在 RefreshStatsUi 里刷 —— 否则只开视频帧、或换文件后清空 GOP 时，
+    // 该指标会停在上一次的值。
+    void UpdateMaxGopItem();
     void UpdateBitrateChart();
     void UpdateFpsChart();
     void UpdateGopChart();

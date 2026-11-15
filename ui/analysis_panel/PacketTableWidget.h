@@ -43,12 +43,17 @@ class PacketTableWidget : public QWidget {
     Q_OBJECT
 
 public:
-    explicit PacketTableWidget(QWidget* parent = nullptr);
+    // max_records: 记录上限。默认 10 万；单测用它把裁剪路径压到几十条，
+    // 不必为了验证"裁剪后汇总仍正确"而灌十万条记录。
+    explicit PacketTableWidget(QWidget* parent = nullptr, std::size_t max_records = kDefaultMaxRecordCount);
     ~PacketTableWidget() override;
 
     // === 数据进来（由 FramePacketView 转发）===
     void ResetPackets();
     void AppendPacket(const model::PacketInfo& packet_info);
+    // 批量入口：控制器按批投递包信息（见 AnalysisBus::PacketInfoBatchReady），
+    // 一次循环入队，只置脏一次。
+    void AppendPackets(const std::vector<model::PacketInfo>& packets);
 
     // === 增量刷新（由面板节拍驱动）===
     bool HasPending() const;
@@ -81,12 +86,36 @@ private:
 
     void FlushPendingPacketTableUpdates();
 
+    // 把一条包记录转成表行并入队（AppendPacket / AppendPackets 共用），
+    // 同时增量累加汇总计数。
+    void QueueRecord(const model::PacketInfo& packet_info);
+    // 裁剪前按被删除的记录扣减汇总；min/max 被删掉时由调用方触发全量重算。
+    void SubtractSummaryFor(const std::vector<PacketRecord>& records, std::size_t count);
+    void RecomputeSizeExtremes();
+
+    // 汇总行的增量计数器（包记录只增不减，除了裁剪时从头部扣减）。
+    // 以前每次 Flush 都全量扫描十万条记录，120ms 一拍就是每秒百万级遍历。
+    struct SummaryCounters {
+        std::size_t total = 0;
+        std::size_t video = 0;
+        std::size_t audio = 0;
+        std::size_t other = 0;
+        long long total_bytes = 0;
+        int max_size = 0;
+        int min_size = 0; // 0 表示尚无记录
+    };
+
     QLabel* packet_summary_label_ = nullptr;
     QComboBox* packet_filter_combo_ = nullptr;
     QTableView* packet_table_ = nullptr;
     RecordTableModel<PacketRecord>* packet_model_ = nullptr;
 
-    int packet_filter_mode_ = -1; // -1=全部, 0=视频流, 1=音频流, 2=其他流
+    int packet_filter_mode_ = -1; // -1=全部, 0=视频流, 1=音频流, 2=其他流, 3=视频关键帧
+
+    std::size_t max_records_ = kDefaultMaxRecordCount;
+    SummaryCounters summary_;
+    // 裁剪删掉了当前极值所在记录时置位，Flush 末尾再全量重算一次 min/max。
+    bool size_extremes_dirty_ = false;
 
     // 播放期回调只入队 + 置脏，FlushPending 时一次性交给模型
     std::vector<PacketRecord> pending_packets_;

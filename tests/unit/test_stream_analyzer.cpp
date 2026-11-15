@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <thread>
+
 #include "core/analysis/stream/StreamAnalyzer.h"
 
 extern "C" {
@@ -155,6 +158,38 @@ TEST(StreamAnalyzerTest, ResetClearsStats) {
     EXPECT_EQ(stats.key_frame_count, 0);
     EXPECT_EQ(stats.current_gop_size, 0);
     EXPECT_EQ(stats.total_video_frames, 0);
+}
+
+// 播到结尾时最后不足 1 秒的码率窗口必须结算，否则峰值会遗漏尾部.
+TEST(StreamAnalyzerTest, FinalizePendingWindowSettlesTailBitrate) {
+    AVFormatContextGuard format;
+    ASSERT_NE(format.get(), nullptr);
+    AVStream* video = avformat_new_stream(format.get(), nullptr);
+    ASSERT_NE(video, nullptr);
+    ASSERT_NE(video->codecpar, nullptr);
+    video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+
+    videoeye::StreamAnalyzer analyzer;
+    analyzer.Start();
+
+    AVPacket* packet = av_packet_alloc();
+    ASSERT_NE(packet, nullptr);
+    packet->stream_index = static_cast<int>(video->index);
+    packet->size = 1200;
+    packet->flags = AV_PKT_FLAG_KEY;
+    analyzer.AnalyzePacket(packet, format.get());
+    av_packet_free(&packet);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    analyzer.FinalizePendingWindow();
+
+    const auto stats = analyzer.GetStats();
+    EXPECT_GT(stats.current_bitrate_bps, 0);
+    EXPECT_GE(stats.peak_bitrate_bps, stats.current_bitrate_bps);
+
+    // 窗口已结算，重复调用不会再次累加/改变当前值
+    analyzer.FinalizePendingWindow();
+    EXPECT_EQ(analyzer.GetStats().current_bitrate_bps, stats.current_bitrate_bps);
 }
 
 } // namespace

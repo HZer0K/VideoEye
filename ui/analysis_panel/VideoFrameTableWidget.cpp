@@ -13,6 +13,8 @@
 #include <QTextStream>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 // 帧类型常量（AV_PICTURE_TYPE_*）。原先由被移除的 core/analysis 头文件间接带入；
 // 现在 UI 直接依赖 FFmpeg 公共常量，显式 include（与"静态库 PRIVATE 不传 include
 // 目录"的一致）。
@@ -22,14 +24,12 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-// 记录上限统一取 10 万（见 RecordTableModel.h）：1 小时 25fps ≈ 9 万帧，
-// 以前本页是 5 万，长视频的后半段会被静默丢掉。
-constexpr std::size_t kMaxFrameRecords = kDefaultMaxRecordCount;
 // GOP 段数远少于帧数（典型几百~几千），上限取 5000。
 constexpr std::size_t kMaxGopSummaries = 5000;
 } // namespace
 
-VideoFrameTableWidget::VideoFrameTableWidget(QWidget* parent) : QWidget(parent) {
+VideoFrameTableWidget::VideoFrameTableWidget(QWidget* parent, std::size_t max_records)
+    : QWidget(parent), max_records_(max_records) {
     SetupUi();
 }
 
@@ -49,7 +49,7 @@ void VideoFrameTableWidget::SetupUi() {
     QHBoxLayout* v_toolbar = new QHBoxLayout();
     v_toolbar->addWidget(new QLabel(tr("筛选:"), video_sub_));
     frame_filter_combo_ = new QComboBox(video_sub_);
-    frame_filter_combo_->addItems({tr("全部帧"), tr("仅 I 帧")});
+    frame_filter_combo_->addItems({tr("全部帧"), tr("仅 I 帧"), tr("仅非 I 帧")});
     v_toolbar->addWidget(frame_filter_combo_);
 
     frame_summary_label_ = new QLabel(tr("总帧数: 0 | 显示: 0 | GOP: 0"), video_sub_);
@@ -124,12 +124,41 @@ void VideoFrameTableWidget::SetupUi() {
     g_layout->addWidget(g_table_group);
 
     connect(frame_filter_combo_, &QComboBox::currentIndexChanged, this, [this](int) { OnFrameFilterChanged(); });
+    // GOP 行双击 → 请求跳到该段起始帧；切 tab 与选中由 FramePacketView 完成（它持有两侧）。
+    connect(gop_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row < 0 || static_cast<std::size_t>(row) >= gop_summaries_.size()) {
+            return;
+        }
+        emit GopActivated(gop_summaries_[static_cast<std::size_t>(row)].start_frame);
+    });
     // 帧表的 itemSelectionChanged 不在这里连：帧表 ↔ 包表按 PTS 互跳要同时碰两张表，
     // 连线留在 FramePacketView（它持有两侧）。
 }
 
 const std::vector<VideoFrameRecord>& VideoFrameTableWidget::FrameRecords() const {
     return frame_model_->records();
+}
+
+bool VideoFrameTableWidget::SelectFrameByIndex(int frame_index) {
+    if (!frame_model_ || !frame_table_) {
+        return false;
+    }
+    const auto& records = frame_model_->records();
+    // 记录按帧号递增入队，可以用二分定位；筛选生效时行号 ≠ 记录索引，
+    // 所以先找回记录索引，再交给模型换成可见行号。
+    const auto it = std::lower_bound(records.begin(), records.end(), frame_index,
+                                     [](const VideoFrameRecord& record, int value) { return record.index < value; });
+    if (it == records.end() || it->index != frame_index) {
+        return false; // 该帧已被裁剪或本就没采到
+    }
+    const std::size_t record_index = static_cast<std::size_t>(std::distance(records.begin(), it));
+    const int row = frame_model_->RowOfRecord(record_index);
+    if (row < 0) {
+        return false; // 当前筛选把它藏起来了
+    }
+    frame_table_->selectRow(row);
+    frame_table_->scrollTo(frame_model_->index(row, 0));
+    return true;
 }
 
 bool VideoFrameTableWidget::HasPending() const {
@@ -160,6 +189,8 @@ void VideoFrameTableWidget::ResetVideoFrames() {
     last_gop_position_ = 0;
     gop_summaries_.clear();
     gop_table_synced_count_ = 0;
+    key_count_ = 0;
+    visible_count_ = 0;
     frame_table_dirty_ = false;
     // 清空 GOP 摘要后仍要走一次刷新：FlushPending 会据此发出 GopSummariesChanged()，
     // 让「流概览」区的最大 GOP 指标与分布曲线一并归零（两份缓存必须一起失效）。
@@ -186,6 +217,14 @@ void VideoFrameTableWidget::AppendVideoFrame(int index, int frame_type, bool is_
     record.is_key_frame = is_key_frame;
     record.pts = pts;
     record.timestamp_seconds = timestamp_seconds;
+
+    // 汇总计数在这里增量累加（记录最终都会进模型；Reset 会一并清零）。
+    if (is_key_frame) {
+        ++key_count_;
+    }
+    if (MatchesFrameFilter(record)) {
+        ++visible_count_;
+    }
 
     // 只入队 + 置脏：GOP 归属（gop_index / gop_position）与 GOP 摘要是**派生结果**，
     // 放到 FlushPending 里连同批量提交一起算 —— 每帧都回头翻一遍记录缓存没必要，
@@ -216,13 +255,15 @@ bool VideoFrameTableWidget::MatchesFrameFilter(const VideoFrameRecord& record) c
     switch (frame_filter_combo_->currentIndex()) {
     case 1:
         return record.frame_type == AV_PICTURE_TYPE_I;
+    case 2:
+        return record.frame_type != AV_PICTURE_TYPE_I;
     default:
         return true;
     }
 }
 
 bool VideoFrameTableWidget::MatchesFrameFilterIsActive() const {
-    return frame_filter_combo_ != nullptr && frame_filter_combo_->currentIndex() == 1;
+    return frame_filter_combo_ != nullptr && frame_filter_combo_->currentIndex() != 0;
 }
 
 // 一条新帧落定后更新 GOP 摘要。
@@ -278,7 +319,16 @@ void VideoFrameTableWidget::ApplyFrameFilter() {
     }
     // 捕获筛选模式的值而不是 this：谓词会被模型长期持有，捕获 this 的话
     // 每次判定都要解引用一个可能已经析构的组件。
-    frame_model_->SetFilter([](const VideoFrameRecord& r) { return r.frame_type == AV_PICTURE_TYPE_I; });
+    const int mode = frame_filter_combo_ ? frame_filter_combo_->currentIndex() : 0;
+    frame_model_->SetFilter([mode](const VideoFrameRecord& r) {
+        if (mode == 1) {
+            return r.frame_type == AV_PICTURE_TYPE_I;
+        }
+        if (mode == 2) {
+            return r.frame_type != AV_PICTURE_TYPE_I;
+        }
+        return true;
+    });
 }
 
 void VideoFrameTableWidget::UpdateFrameSummary() {
@@ -286,27 +336,32 @@ void VideoFrameTableWidget::UpdateFrameSummary() {
         return;
     }
 
-    const auto& records = frame_model_->records();
-    int visible_count = 0;
-    int key_count = 0;
-    for (const auto& record : records) {
-        if (MatchesFrameFilter(record)) {
-            visible_count++;
-        }
-        if (record.is_key_frame) {
-            key_count++;
-        }
-    }
-
+    // 汇总只读增量计数器，不再每次刷新都扫一遍全部帧记录。
     frame_summary_label_->setText(tr("总帧数: %1 | 显示: %2 | 关键帧: %3 | GOP: %4")
-                                      .arg(records.size())
-                                      .arg(visible_count)
-                                      .arg(key_count)
+                                      .arg(frame_model_->record_count())
+                                      .arg(visible_count_)
+                                      .arg(key_count_)
                                       .arg(gop_summaries_.size()));
 }
 
 void VideoFrameTableWidget::OnFrameFilterChanged() {
     ApplyFrameFilter();
+    // 筛选条件变了：可见行数按新条件重算一次（仅在用户操作时发生，不必增量）。
+    // pending 里的帧还没进模型，但同样要按新条件计入，否则下次 Flush 前显示的
+    // 「显示」会少一截。
+    visible_count_ = 0;
+    if (frame_model_) {
+        for (const auto& record : frame_model_->records()) {
+            if (MatchesFrameFilter(record)) {
+                ++visible_count_;
+            }
+        }
+    }
+    for (const auto& record : pending_frames_) {
+        if (MatchesFrameFilter(record)) {
+            ++visible_count_;
+        }
+    }
     UpdateFrameSummary();
 }
 
@@ -314,6 +369,9 @@ void VideoFrameTableWidget::FlushPendingFrameTableUpdates() {
     if (!frame_model_ || !frame_table_) {
         return;
     }
+
+    // 用户正在往回翻看时不要每 120ms 把他拽回底部；只有本来就跟随底部才继续跟随。
+    const bool pinned_to_bottom = IsTablePinnedToBottom(frame_table_);
 
     if (!pending_frames_.empty()) {
         // 派生 GOP 归属：只依赖"上一条帧落在哪个 GOP 的第几位"，
@@ -340,8 +398,20 @@ void VideoFrameTableWidget::FlushPendingFrameTableUpdates() {
     }
 
     const std::size_t count = frame_model_->record_count();
-    if (count > kMaxFrameRecords) {
-        frame_model_->TrimFront(count - kMaxFrameRecords);
+    if (count > max_records_) {
+        const std::size_t remove = count - max_records_;
+        // 先按将被删掉的记录扣减汇总计数，再真正裁剪。
+        const auto& records = frame_model_->records();
+        const std::size_t n = std::min(remove, records.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            if (records[i].is_key_frame && key_count_ > 0) {
+                --key_count_;
+            }
+            if (MatchesFrameFilter(records[i]) && visible_count_ > 0) {
+                --visible_count_;
+            }
+        }
+        frame_model_->TrimFront(remove);
         // 帧记录被裁剪时同步清理 GOP 数据：GOP 是从帧记录推导的派生结果，
         // 帧都没了却留着 GOP 段，界面上就会出现"GOP 5 的帧一条都找不到"。
         gop_summaries_.clear();
@@ -349,11 +419,10 @@ void VideoFrameTableWidget::FlushPendingFrameTableUpdates() {
         if (gop_table_)
             gop_table_->setRowCount(0);
         gop_table_dirty_ = true;
+        frame_summary_dirty_ = true;
     }
 
-    if (frame_model_->rowCount() > 0) {
-        frame_table_->scrollToBottom();
-    }
+    FollowTableBottom(frame_table_, pinned_to_bottom);
 }
 
 void VideoFrameTableWidget::FlushPendingGopTableUpdates() {

@@ -16,11 +16,6 @@ namespace videoeye {
 namespace ui {
 
 namespace {
-// 记录上限统一取 10 万（见 RecordTableModel.h）。
-// 以前本页是 3 万 —— 一小时视频的音频帧就有十几万，3 万意味着后半段被悄悄丢掉，
-// 而界面上只说"总音频帧数: 30000"，看不出是被截的。
-constexpr std::size_t kMaxAudioFrameRecords = kDefaultMaxRecordCount;
-
 std::vector<RecordTableModel<AudioFrameRecord>::ColumnSpec> AudioFrameColumns() {
     using Spec = RecordTableModel<AudioFrameRecord>::ColumnSpec;
     return {
@@ -37,7 +32,8 @@ std::vector<RecordTableModel<AudioFrameRecord>::ColumnSpec> AudioFrameColumns() 
 }
 } // namespace
 
-AudioFrameTableWidget::AudioFrameTableWidget(QWidget* parent) : QWidget(parent) {
+AudioFrameTableWidget::AudioFrameTableWidget(QWidget* parent, std::size_t max_records)
+    : QWidget(parent), max_records_(max_records) {
     SetupUi();
 }
 
@@ -90,6 +86,8 @@ const std::vector<AudioFrameRecord>& AudioFrameTableWidget::AudioFrameRecords() 
 
 void AudioFrameTableWidget::ResetAudioFrames() {
     pending_audio_frames_.clear();
+    total_samples_ = 0;
+    total_bytes_ = 0;
     audio_frame_table_dirty_ = false;
     audio_frame_summary_dirty_ = true;
     if (audio_frame_model_) {
@@ -112,6 +110,10 @@ void AudioFrameTableWidget::AppendAudioFrame(int index, qint64 pts, double times
     record.sample_rate = sample_rate;
     record.channels = channels;
     record.byte_count = byte_count;
+
+    // 汇总计数增量累加（Reset 会一并清零，裁剪时按被删记录扣减）。
+    total_samples_ += sample_count;
+    total_bytes_ += byte_count;
 
     // 只入队 + 置脏：真正交给模型在 FlushPending，一次 rowsInserted 通知一批。
     pending_audio_frames_.push_back(record);
@@ -140,21 +142,16 @@ void AudioFrameTableWidget::UpdateAudioFrameSummary() {
     }
 
     const auto& records = audio_frame_model_->records();
-    long long total_samples = 0;
-    long long total_bytes = 0;
-    for (const auto& record : records) {
-        total_samples += record.sample_count;
-        total_bytes += record.byte_count;
-    }
-
     audio_frame_summary_label_->setText(
-        tr("总音频帧数: %1 | 总样本数: %2 | 总字节数: %3").arg(records.size()).arg(total_samples).arg(total_bytes));
+        tr("总音频帧数: %1 | 总样本数: %2 | 总字节数: %3").arg(records.size()).arg(total_samples_).arg(total_bytes_));
 }
 
 void AudioFrameTableWidget::FlushPendingAudioFrameTableUpdates() {
     if (!audio_frame_model_ || !audio_frame_table_) {
         return;
     }
+
+    const bool pinned_to_bottom = IsTablePinnedToBottom(audio_frame_table_);
 
     if (!pending_audio_frames_.empty()) {
         audio_frame_model_->AppendRecords(std::move(pending_audio_frames_));
@@ -164,13 +161,20 @@ void AudioFrameTableWidget::FlushPendingAudioFrameTableUpdates() {
     // 超限淘汰最早的：模型自己维护记录，裁剪走 beginRemoveRows，
     // 不再是"整表重建"（旧实现的 TrimRecords + setRowCount(0)）。
     const std::size_t count = audio_frame_model_->record_count();
-    if (count > kMaxAudioFrameRecords) {
-        audio_frame_model_->TrimFront(count - kMaxAudioFrameRecords);
+    if (count > max_records_) {
+        const std::size_t remove = count - max_records_;
+        // 先按将被删掉的记录扣减汇总计数，再真正裁剪。
+        const auto& records = audio_frame_model_->records();
+        const std::size_t n = remove < records.size() ? remove : records.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            total_samples_ -= records[i].sample_count;
+            total_bytes_ -= records[i].byte_count;
+        }
+        audio_frame_model_->TrimFront(remove);
+        audio_frame_summary_dirty_ = true;
     }
 
-    if (audio_frame_model_->rowCount() > 0) {
-        audio_frame_table_->scrollToBottom();
-    }
+    FollowTableBottom(audio_frame_table_, pinned_to_bottom);
 }
 
 void AudioFrameTableWidget::OnExportAudioFrameCsv() {

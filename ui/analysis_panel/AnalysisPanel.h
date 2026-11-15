@@ -180,6 +180,9 @@ public slots:
                               int channels, int byte_count);
     void ResetPacketList();
     void AppendPacketInfo(const model::PacketInfo& packet_info);
+    // 批量包信息（AnalysisBus::PacketInfoBatchReady）：过滤语义与单条一致，
+    // 但不是逐条调用单条槽，避免一次批里反复查开关。
+    void AppendPacketInfoBatch(const std::vector<model::PacketInfo>& packets);
     void ResetAnalysisEventList();
     void AppendAnalysisEvent(const model::AnalysisEvent& event_info);
     void ResetSyncSampleList();

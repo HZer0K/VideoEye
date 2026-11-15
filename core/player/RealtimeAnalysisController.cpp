@@ -32,6 +32,10 @@ constexpr double kMinBackwardJumpSeconds = 1e-3;
 // 采样点的比较容差: 只吸收浮点误差，不放宽采样节奏。
 constexpr double kSampleTimeEpsilon = 1e-6;
 
+// 包信息批量投递的阈值: 攒够条数或攒够时间就发一批（见 QueuePacketInfo）。
+constexpr std::size_t kPacketBatchSize = 256;
+constexpr auto kPacketBatchInterval = std::chrono::milliseconds(50);
+
 // 计算单帧 256-bin 灰度直方图 (供场景切换检测使用)。
 // 通过 sws_scale 将任意像素格式转为 GRAY8, 再逐字节计数; 不依赖 OpenCV。
 // 返回空 vector 表示转换失败 (调用方应跳过该帧)。
@@ -182,6 +186,8 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     }
     audio_frame_index_ = 0;
     packet_index_ = 0;
+    // 换媒体时缓冲里剩下的包属于上一个文件，直接丢弃（下面会无条件清空 UI 列表）。
+    pending_packet_batch_.clear();
     timeline_packet_index_ = 0;
     analysis_event_index_ = 0;
     sync_sample_index_ = 0;
@@ -192,22 +198,21 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     missing_packet_ts_reported_.clear();
     missing_audio_pts_reported_.clear();
 
+    // 清空信号无条件发：UI 的"清空列表"不受采集开关约束。以前按开关发，
+    // 会留下"A 文件开着采集 -> 关掉开关 -> 换 B 文件 -> 再开开关"的脏数据：
+    // B 的记录接在 A 的旧行后面。开关只管要不要收新数据。
     emit bus_.VideoFrameListReset();
-    if (analysis_.IsAudioFrameAnalysisEnabled())
-        emit bus_.AudioFrameListReset();
-    if (analysis_.IsPacketAnalysisEnabled())
-        emit bus_.PacketListReset();
-    if (analysis_.IsEventAnalysisEnabled())
-        emit bus_.AnalysisEventListReset();
-    if (analysis_.IsSyncAnalysisEnabled())
-        emit bus_.SyncSampleListReset();
-    if (analysis_.IsTimelineAnalysisEnabled())
-        emit bus_.TimelineEventListReset();
-    if (analysis_.IsVisualDefectAnalysisEnabled())
-        emit bus_.VisualDefectReset();
+    emit bus_.AudioFrameListReset();
+    emit bus_.PacketListReset();
+    emit bus_.AnalysisEventListReset();
+    emit bus_.SyncSampleListReset();
+    emit bus_.TimelineEventListReset();
+    emit bus_.VisualDefectReset();
 }
 
 void RealtimeAnalysisController::FlushOnStop() {
+    // 停止时把不足一批的包先发出去，否则尾部记录永远留在缓冲里。
+    FlushPacketBatch();
     if (!analysis_.IsVisualDefectAnalysisEnabled())
         return;
     FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_ : 0.0);
@@ -352,6 +357,29 @@ void RealtimeAnalysisController::EmitVisualDefectStats(bool force) {
                                      visual_defect_analyzer_.EffectiveArea());
 }
 
+// --- 包信息批量投递 (解码线程) ---
+
+void RealtimeAnalysisController::QueuePacketInfo(const model::PacketInfo& packet_info) {
+    if (pending_packet_batch_.empty()) {
+        packet_batch_first_ = std::chrono::steady_clock::now();
+    }
+    pending_packet_batch_.push_back(packet_info);
+    const bool full = pending_packet_batch_.size() >= kPacketBatchSize;
+    const bool aged = std::chrono::steady_clock::now() - packet_batch_first_ >= kPacketBatchInterval;
+    if (full || aged) {
+        FlushPacketBatch();
+    }
+}
+
+void RealtimeAnalysisController::FlushPacketBatch() {
+    if (pending_packet_batch_.empty()) {
+        return;
+    }
+    // 按值发出（信号参数是 const 引用，但跨线程排队会做一次值拷贝，这里先发再清空）。
+    emit bus_.PacketInfoBatchReady(pending_packet_batch_);
+    pending_packet_batch_.clear();
+}
+
 // --- 播放回调 (由 PlaybackSession 的解码线程调用) ---
 
 void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
@@ -379,6 +407,8 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
         packet_info.pos = packet->pos;
         packet_info.timestamp_seconds = packet_ts_sec;
         emit bus_.PacketInfoReady(packet_info);
+        // UI 现在连的是批量信号；单条信号保留以维持既有契约。
+        QueuePacketInfo(packet_info);
     }
 
     // 时间轴与同步诊断（demux 层 packet 时间）
@@ -609,6 +639,8 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
 void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mode) {
     Q_UNUSED(target_ms);
     Q_UNUSED(mode);
+    // 定位前先把缓冲里的包交给 UI：它们属于定位点之前的片段，不该被丢掉。
+    FlushPacketBatch();
     // 统计语义是"自上次打开/定位起的当前片段": 定位成功后必须清零,
     // 否则向后定位会重复累计帧/字节, GOP / 关键帧计数也会失真。
     if (analysis_.IsAnalysisEnabled()) {
@@ -620,6 +652,14 @@ void RealtimeAnalysisController::OnSeekDone(double target_ms, model::SeekMode mo
 }
 
 void RealtimeAnalysisController::OnEndOfStream() {
+    // 播到结尾: 把不足一批的包先发完
+    FlushPacketBatch();
+    // 播到结尾: 统计节流是每 10 帧一次，尾部最多 9 帧 + 最后一个不足 1 秒的码率窗口
+    // 否则永远不会出现在界面上 —— 这里结算并补发一次终态快照。
+    if (analysis_.IsAnalysisEnabled()) {
+        analysis_.stream_analyzer().FinalizePendingWindow();
+        emit bus_.StreamStatsReady(analysis_.stream_analyzer().GetStats());
+    }
     // 播到结尾: 把还开着的缺陷段闭合，否则最后一条缺陷要等下次播放才出现
     if (analysis_.IsVisualDefectAnalysisEnabled()) {
         FlushVisualDefectSegments(visual_defect_last_sample_ts_ > 0.0 ? visual_defect_last_sample_ts_

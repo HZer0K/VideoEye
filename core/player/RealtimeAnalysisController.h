@@ -15,9 +15,9 @@
 //   * 媒体生命周期（打开 / 定位 / 停止 / 导出 / 容器检查）—— MediaPlayer。
 //
 // 本类是 QObject: 信号必须跨线程排到 UI 线程，而"该不该发、计数到几"这些状态只有本类
-// 知道。对外的 23 条信号不在本类身上，而在 AnalysisBus 上（见 core/player/AnalysisBus.h）：
+// 知道。对外的 24 条信号不在本类身上，而在 AnalysisBus 上（见 core/player/AnalysisBus.h）：
 // 名字与参数与拆分前一个字节不差，但 UI 连的是 player->analysis_bus() 而不是门面，
-// MediaPlayer 因此不必再做 23 条"同名转发"连接。
+// MediaPlayer 因此不必再做 24 条"同名转发"连接。
 //
 // 线程模型（沿用拆分前，不要改）: 下面所有 OnXxx() 都在**解码线程**上被调用，
 // 与 PlaybackSession 的 hook 语义一致；信号由 Qt 自动排队到 UI 线程。
@@ -30,7 +30,9 @@
 #include <QString>
 
 #include <chrono>
+#include <cstddef>
 #include <map>
+#include <vector>
 
 #include "core/analysis/quality/MacroblockAnalyzer.h"
 #include "core/analysis/quality/SceneChangeAnalyzer.h"
@@ -74,8 +76,9 @@ public:
     // 并发出清空 UI 列表的信号（六条 ListReset + VisualDefectReset）。
     //
     // 为什么整体放在这里而不是留在 MediaPlayer: 计数器和分析器现在都在本类，
-    // 让调用方逐项重置等于把本类的内部状态摊开在别人家；而"哪些列表要清"又取决于
-    // 哪些开关开着，这件事同样只有本类知道。
+    // 让调用方逐项重置等于把本类的内部状态摊开在别人家。清空信号无条件发 ——
+    // UI 的"清空"不归采集开关管（开关只决定要不要收新数据），按开关发会让
+    // 关闭采集后换文件时旧列表残留。
     void ResetForNewMedia();
 
     // 停止播放: 把还开着的视觉缺陷段闭合，否则最后一条缺陷要等下一次播放才显示。
@@ -92,7 +95,7 @@ public:
     // 播完 / 停止时把还开着的缺陷段闭合
     void FlushVisualDefectSegments(double end_timestamp_seconds);
 
-    // 对外的实时分析信号总线（23 条，见 core/player/AnalysisBus.h）。
+    // 对外的实时分析信号总线（24 条，见 core/player/AnalysisBus.h）。
     // UI 经 MediaPlayer::analysis_bus() 拿它连信号；本类所有"该发信号了"的地方
     // 直接 emit bus_.Xxx()。
     AnalysisBus& bus() {
@@ -121,6 +124,13 @@ private:
                            const QString& detail = QString());
     void EmitAudioVisualization(const AudioVisualizationResult& vis_result, int sample_rate, int channels,
                                 double timestamp_seconds, double level);
+
+    // --- 包信息批量投递 ---
+    // 包记录比帧更多（每帧常对应多个包），逐条跨线程排队在长视频里是实打实的开销。
+    // 攒够 256 条或距首条已过 50ms 就发一批；seek / 停止 / 播完 / 换媒体时强制 flush，
+    // 否则最后不足一批的包会一直留在缓冲里。
+    void QueuePacketInfo(const model::PacketInfo& packet_info);
+    void FlushPacketBatch();
 
     // --- 画面质量 / 视觉缺陷: 按采样档位抽取解码帧 -> 降采样 -> 投递分析器 ---
     void FeedVisualDefectFrame(const AVFrame* frame, double timestamp_seconds, bool audio_silent);
@@ -167,6 +177,10 @@ private:
     std::map<int, double> last_packet_ts_by_stream_;
     std::map<int, bool> missing_packet_ts_reported_;
     std::map<int, bool> missing_audio_pts_reported_;
+
+    // 待投递的包缓冲（只在解码线程读写）
+    std::vector<model::PacketInfo> pending_packet_batch_;
+    std::chrono::steady_clock::time_point packet_batch_first_{};
 };
 
 } // namespace player

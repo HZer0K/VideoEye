@@ -23,17 +23,24 @@
 #include <QCheckBox>
 #include <QString>
 #include <QTabWidget>
+#include <QTableView>
+#include <QTableWidget>
 #include <QWidget>
 
 #include <libavcodec/avcodec.h>
 
 #include <functional>
+#include <limits>
 #include <utility>
 #include <vector>
 
+#include "core/domain/model/PacketInfo.h"
+#include "core/domain/model/StreamStats.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/PacketTableWidget.h"
 #include "ui/analysis_panel/StreamOverviewView.h"
+#include "ui/analysis_panel/VideoFrameTableWidget.h"
 
 using videoeye::ui::FramePacketView;
 using videoeye::ui::GopSummary;
@@ -258,4 +265,128 @@ TEST(StreamViewsToggleTests, MacroblockToggleFollowsInjectedFeatureState) {
     ASSERT_EQ(rec.calls.size(), 1u);
     EXPECT_EQ(rec.calls[0].first, 0);
     EXPECT_TRUE(rec.calls[0].second);
+}
+
+// ---------------------------------------------------------------------------
+// 流概览指标：换文件必须归零；最大 GOP 只依赖 GopSummary 通道
+// ---------------------------------------------------------------------------
+
+TEST(StreamViewsToggleTests, StreamOverviewResetsMetricsOnFileSwitch) {
+    EnsureApp();
+    StreamOverviewView view;
+    QTableWidget* table = view.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+
+    videoeye::model::StreamStats stats;
+    stats.current_bitrate_bps = 5'000'000;
+    stats.avg_bitrate_bps = 4'000'000;
+    stats.peak_bitrate_bps = 8'000'000;
+    stats.duration_seconds = 12.5;
+    view.SetStreamStats(stats);
+    view.FlushPending();
+
+    EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("5000 Kbps"));
+    EXPECT_EQ(table->item(0, 1)->text(), QStringLiteral("4000 Kbps"));
+    EXPECT_EQ(table->item(0, 2)->text(), QStringLiteral("8000 Kbps"));
+    EXPECT_EQ(table->item(0, 3)->text(), QStringLiteral("12.5 s"));
+
+    std::vector<GopSummary> sums(1);
+    sums[0].total_frames = 60;
+    view.SetGopSummaries(sums);
+    view.FlushPending();
+    EXPECT_EQ(table->item(0, 4)->text(), QStringLiteral("60"));
+
+    // 换文件（面板调用 ResetCharts）：5 个指标一起归零，不能残留上一个文件。
+    // 尤其是关闭分析换文件时，旧值会一直挂在界面上。
+    view.ResetCharts();
+    EXPECT_EQ(table->item(0, 0)->text(), QStringLiteral("0 Kbps"));
+    EXPECT_EQ(table->item(0, 3)->text(), QStringLiteral("0.0 s"));
+    EXPECT_EQ(table->item(0, 4)->text(), QStringLiteral("0"));
+    EXPECT_FALSE(view.HasPending());
+}
+
+TEST(StreamViewsToggleTests, MaxGopRefreshesWhenOnlyGopSummariesChange) {
+    EnsureApp();
+    StreamOverviewView view;
+    QTableWidget* table = view.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+
+    // 没有新的 StreamStats，只收到 GOP 摘要：最大 GOP 也必须刷新。
+    // 以前它只在 RefreshStatsUi 里更新，只开视频帧采集时会一直停在 0。
+    std::vector<GopSummary> sums(1);
+    sums[0].total_frames = 45;
+    view.SetGopSummaries(sums);
+    ASSERT_TRUE(view.HasPending());
+    view.FlushPending();
+    EXPECT_EQ(table->item(0, 4)->text(), QStringLiteral("45"));
+
+    view.SetGopSummaries({});
+    view.FlushPending();
+    EXPECT_EQ(table->item(0, 4)->text(), QStringLiteral("0"));
+}
+
+// ---------------------------------------------------------------------------
+// 帧表 ↔ 包表互跳：按播放时间戳，而不是原始 PTS
+// ---------------------------------------------------------------------------
+
+TEST(StreamViewsToggleTests, FramePacketJumpUsesTimestampNotRawPts) {
+    EnsureApp();
+    FramePacketView view;
+
+    auto* video = view.findChild<videoeye::ui::VideoFrameTableWidget*>();
+    auto* packets = view.findChild<videoeye::ui::PacketTableWidget*>();
+    ASSERT_TRUE(video != nullptr);
+    ASSERT_TRUE(packets != nullptr);
+
+    // 帧的原始 PTS 用视频时基（1/90000）；包的原始 PTS 用另一套时基。
+    view.AppendVideoFrame(0, AV_PICTURE_TYPE_I, true, 0, 0.0);
+    view.AppendVideoFrame(1, AV_PICTURE_TYPE_P, false, 90000, 1.0);
+    view.AppendVideoFrame(2, AV_PICTURE_TYPE_P, false, 180000, 2.0);
+
+    videoeye::model::PacketInfo audio;
+    audio.index = 0;
+    audio.stream_index = 1;
+    audio.stream_type = AVMEDIA_TYPE_AUDIO;
+    // 原始 PTS 数值接近视频帧 0（旧实现会跳到 0.0s 那一行），播放时间是 0.9s。
+    audio.pts = 40000;
+    audio.size = 128;
+    audio.timestamp_seconds = 0.9;
+    view.AppendPacket(audio);
+
+    view.FlushPending();
+    ASSERT_EQ(video->frameTable()->model()->rowCount(), 3);
+    ASSERT_EQ(packets->packetTable()->model()->rowCount(), 1);
+
+    packets->packetTable()->setCurrentIndex(packets->packetTable()->model()->index(0, 0));
+    EXPECT_EQ(video->frameTable()->currentIndex().row(), 1)
+        << "应按 0.9s 选到 1.0s 的帧，而不是按原始 PTS 选到 0.0s 的帧";
+}
+
+TEST(StreamViewsToggleTests, FramePacketJumpSkipsRecordsWithoutTimestamp) {
+    EnsureApp();
+    FramePacketView view;
+
+    auto* video = view.findChild<videoeye::ui::VideoFrameTableWidget*>();
+    auto* packets = view.findChild<videoeye::ui::PacketTableWidget*>();
+    ASSERT_TRUE(video != nullptr);
+    ASSERT_TRUE(packets != nullptr);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    view.AppendVideoFrame(0, AV_PICTURE_TYPE_I, true, 0, 0.0);
+    // 缺失时间戳的帧：旧实现拿 AV_NOPTS_VALUE 参与 llabs，有符号溢出后会被选中。
+    view.AppendVideoFrame(1, AV_PICTURE_TYPE_P, false, AV_NOPTS_VALUE, nan);
+    view.AppendVideoFrame(2, AV_PICTURE_TYPE_P, false, 180000, 2.0);
+
+    videoeye::model::PacketInfo packet;
+    packet.index = 0;
+    packet.stream_index = 0;
+    packet.stream_type = AVMEDIA_TYPE_VIDEO;
+    packet.pts = 180000;
+    packet.size = 128;
+    packet.timestamp_seconds = 2.0;
+    view.AppendPacket(packet);
+
+    view.FlushPending();
+    packets->packetTable()->setCurrentIndex(packets->packetTable()->model()->index(0, 0));
+    EXPECT_EQ(video->frameTable()->currentIndex().row(), 2);
 }

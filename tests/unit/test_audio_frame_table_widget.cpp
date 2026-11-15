@@ -208,3 +208,27 @@ TEST(AudioFrameTableWidgetTests, RecordsLiveInModelAndMatchRowCount) {
     // 无筛选时可见行数 == 记录数
     EXPECT_EQ(2, widget.audioFrameModel()->rowCount());
 }
+
+// ---------------------------------------------------------------------------
+// 6. 裁剪后汇总仍然正确（增量计数器按被删记录扣减）
+//    记录上限可注入，用 2 条记录把淘汰路径走一遍。
+// ---------------------------------------------------------------------------
+
+TEST(AudioFrameTableWidgetTests, TrimKeepsSummaryConsistent) {
+    EnsureApp();
+
+    AudioFrameTableWidget widget(nullptr, 2);
+    QTableView* table = AudioTable(widget);
+    QLabel* summary = SummaryLabel(widget);
+    ASSERT_TRUE(table != nullptr);
+    ASSERT_TRUE(summary != nullptr);
+
+    widget.AppendAudioFrame(1, 1000, 0.5, 1024, 48000, 2, 4096);
+    widget.AppendAudioFrame(2, 2000, 1.0, 512, 48000, 2, 2048);
+    widget.AppendAudioFrame(3, 3000, 1.5, 256, 44100, 1, 512);
+    widget.FlushPending();
+
+    ASSERT_EQ(2, RowCount(table));
+    EXPECT_EQ(QStringLiteral("2"), Cell(table, 0, 0)); // 头部一帧已被淘汰
+    EXPECT_EQ(QStringLiteral("总音频帧数: 2 | 总样本数: 768 | 总字节数: 2560"), summary->text());
+}

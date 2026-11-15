@@ -1,6 +1,6 @@
 #pragma once
 
-// 实时分析信号的对外契约：23 条（换媒体清空 6 + 分析结果 13 + 画面质量 4）。
+// 实时分析信号的对外契约：24 条（换媒体清空 6 + 分析结果 14 + 画面质量 4）。
 //
 // 为什么从 MediaPlayer 门面上摘下来（与 ExportBus / ContainerBus 同理）:
 //   * 这是门面上最大的一块：一半以上的信号属于"播放期实时分析"，跟播放机械无关，
@@ -17,6 +17,8 @@
 
 #include <QObject>
 #include <QString>
+
+#include <vector>
 
 #include "core/analysis/stream/StreamAnalyzer.h" // videoeye::StreamStats
 #include "core/domain/model/AnalysisEvent.h"
@@ -54,6 +56,11 @@ signals:
     void AudioFrameInfoReady(int index, qint64 pts, double timestamp_seconds, int sample_count, int sample_rate,
                              int channels, int byte_count);
     void PacketInfoReady(const model::PacketInfo& packet_info);
+    // 批量包信息：解码线程按批（约 256 条或 50ms，见 RealtimeAnalysisController）
+    // 一次性投递给 UI。逐包一信号在长视频里要跨线程排队几十万次，而 UI 也只是
+    // 先把记录攒进缓冲、再按 120ms 节拍刷表 —— 中间这层逐条投递纯属开销。
+    // PacketInfoReady 保留不变（契约），批量信号供明细表批量入库。
+    void PacketInfoBatchReady(const std::vector<model::PacketInfo>& packets);
     void AnalysisEventReady(const model::AnalysisEvent& event_info);
     void SyncSampleReady(const model::SyncSample& sample);
     // 时间轴与同步诊断（demux 层 packet 时间 / decode 层 frame 时间）

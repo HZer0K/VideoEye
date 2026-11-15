@@ -53,7 +53,7 @@ class VideoFrameTableWidget : public QWidget {
     Q_OBJECT
 
 public:
-    explicit VideoFrameTableWidget(QWidget* parent = nullptr);
+    explicit VideoFrameTableWidget(QWidget* parent = nullptr, std::size_t max_records = kDefaultMaxRecordCount);
     ~VideoFrameTableWidget() override;
 
     // 两个子页 widget：由 FramePacketView 按原顺序 addTab 到它自己的 QTabWidget 上
@@ -83,6 +83,11 @@ public:
         return frame_model_;
     }
 
+    // GOP 行双击 → 选中对应的起始帧（父页负责把 tab 切回「视频帧」）。
+    // 定位按帧号（record.index）而不是行号：筛选生效时行号 ≠ 记录索引。
+    // 返回 false 表示该帧已被裁剪掉或不在模型里。
+    bool SelectFrameByIndex(int frame_index);
+
     bool HasPending() const;
     void FlushPending();
 
@@ -98,6 +103,9 @@ signals:
     // 在刷新 GOP 表之后统一发出，避免每个 GOP 边界都拷一次大向量。
     void GopSummariesChanged();
 
+    // GOP 摘要行被双击：请求跳到该 GOP 的起始帧（参数是帧号，不是行号）。
+    void GopActivated(int start_frame_index);
+
 private slots:
     void OnFrameFilterChanged();
 
@@ -105,7 +113,7 @@ private:
     void SetupUi();
     QString FrameTypeToString(int frame_type) const;
     bool MatchesFrameFilter(const VideoFrameRecord& record) const;
-    // 筛选下拉是否处于"只看 I 帧"（用于决定给模型挂不挂筛选谓词）
+    // 筛选下拉是否处于"只看 I 帧 / 只看非 I 帧"（用于决定给模型挂不挂筛选谓词）
     bool MatchesFrameFilterIsActive() const;
 
     void ApplyFrameFilter();
@@ -127,6 +135,12 @@ private:
 
     // 帧记录的唯一所有者是模型；播放期回调先攒在这里，FlushPending 时批量交进去。
     std::vector<VideoFrameRecord> pending_frames_;
+
+    // 汇总行的增量计数器：以前每次刷新都全量扫描记录（十万帧 × 每秒 8 次），
+    // 现在入队时累加、裁剪时按被删记录扣减，筛选变化时重算一次 visible_count_。
+    std::size_t max_records_ = kDefaultMaxRecordCount;
+    int key_count_ = 0;
+    int visible_count_ = 0;
 
     // GOP 派生的游标状态。以前是从 frame_records_.back() 读上一条 —— 记录搬进模型
     // 之后，pending 里的新帧还没进模型、模型里的又不一定是当前最后一条，

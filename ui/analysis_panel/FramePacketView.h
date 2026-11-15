@@ -9,7 +9,7 @@
 //     是帧表↔包表互跳 setCurrentIndex(0/1) 的依据，不能因搬家而变
 //   - 采集开关：本页不再有自己的开关。整页（含上方流概览）由页头那一个聚合
 //     「启用分析」统一控制，逐项过滤仍在 AnalysisPanel 按 feature 做
-//   - 跨表联动：帧表 ↔ 包表按 PTS 互跳要同时碰两张表，协调留在本页
+//   - 跨表联动：帧表 ↔ 包表按播放时间戳互跳（原始 PTS 跨流不同时基，不能直接比较）
 //   - 转发：数据 Reset*/Append*、刷新 HasPending()/FlushPending()（面板 120ms 节拍
 //     驱动，避免逐行 insertRow 在主线程上触发 O(n²) 卡顿）、GopSummariesChanged
 //
@@ -81,11 +81,13 @@ public slots:
 
     void ResetPackets();
     void AppendPacket(const model::PacketInfo& packet_info);
+    // 批量包信息（控制器按 256 条 / 50ms 攒批投递），一次转给包子页。
+    void AppendPackets(const std::vector<model::PacketInfo>& packets);
 
 private:
     void SetupUi();
 
-    // 包表选中 → 帧表按 PTS 跳转；帧表选中 → 包表按 PTS 跳转
+    // 包表选中 → 帧表按播放时间戳跳转；帧表选中 → 包表按播放时间戳跳转
     void OnPacketTableSelectionChanged();
     void OnVideoFrameTableSelectionChanged();
 

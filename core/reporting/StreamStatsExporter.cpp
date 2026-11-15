@@ -14,13 +14,16 @@ namespace videoeye {
 namespace reporting {
 
 bool StreamStatsExporter::ExportTextReport(const std::string& filename, const model::StreamStats& stats,
-                                           const std::string& video_file) {
+                                           const std::string& video_file, const StreamReportExtras& extras) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建报告文件: " + filename);
         return false;
     }
+
+    // 与「流概览」区同口径：有 GOP 摘要就用它，没有（未采视频帧）才退回 packet flags 的近似值。
+    const int max_gop = extras.max_gop_frames > 0 ? extras.max_gop_frames : stats.max_gop_size;
 
     file << "========================================" << std::endl;
     file << "  VideoEye 视频分析报告" << std::endl;
@@ -53,8 +56,18 @@ bool StreamStatsExporter::ExportTextReport(const std::string& filename, const mo
 
     file << "--- GOP 分析 ---" << std::endl;
     file << "GOP 大小: " << stats.current_gop_size << " 帧" << std::endl;
-    file << "最大 GOP: " << stats.max_gop_size << " 帧" << std::endl;
+    file << "最大 GOP: " << max_gop << " 帧" << std::endl;
+    if (extras.gop_count > 0) {
+        file << "GOP 段数: " << extras.gop_count << std::endl;
+    }
     file << "关键帧数: " << stats.key_frame_count << std::endl;
+    file << std::endl;
+
+    file << "--- 帧统计 ---" << std::endl;
+    file << "解码视频帧: " << stats.total_video_frames << std::endl;
+    file << "I 帧: " << stats.i_frame_count << " | P 帧: " << stats.p_frame_count << " | B 帧: " << stats.b_frame_count
+         << " | 其他: " << stats.other_frame_count << std::endl;
+    file << "音频帧: " << stats.total_audio_frames << std::endl;
     file << std::endl;
 
     file << "--- 包大小统计 ---" << std::endl;
@@ -103,13 +116,15 @@ bool StreamStatsExporter::ExportCSV(const std::string& filename, const std::vect
 }
 
 bool StreamStatsExporter::ExportJSON(const std::string& filename, const model::StreamStats& stats,
-                                     const std::string& video_file) {
+                                     const std::string& video_file, const StreamReportExtras& extras) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建JSON文件: " + filename);
         return false;
     }
+
+    const int max_gop = extras.max_gop_frames > 0 ? extras.max_gop_frames : stats.max_gop_size;
 
     file << "{" << std::endl;
     file << "  \"video_file\": \"" << EscapeJSON(video_file) << "\"," << std::endl;
@@ -124,8 +139,15 @@ bool StreamStatsExporter::ExportJSON(const std::string& filename, const model::S
     file << "    \"avg_bitrate_bps\": " << stats.avg_bitrate_bps << "," << std::endl;
     file << "    \"peak_bitrate_bps\": " << stats.peak_bitrate_bps << "," << std::endl;
     file << "    \"gop_size\": " << stats.current_gop_size << "," << std::endl;
-    file << "    \"max_gop_size\": " << stats.max_gop_size << "," << std::endl;
+    file << "    \"max_gop_size\": " << max_gop << "," << std::endl;
+    file << "    \"gop_count\": " << extras.gop_count << "," << std::endl;
     file << "    \"key_frame_count\": " << stats.key_frame_count << "," << std::endl;
+    file << "    \"total_video_frames\": " << stats.total_video_frames << "," << std::endl;
+    file << "    \"i_frame_count\": " << stats.i_frame_count << "," << std::endl;
+    file << "    \"p_frame_count\": " << stats.p_frame_count << "," << std::endl;
+    file << "    \"b_frame_count\": " << stats.b_frame_count << "," << std::endl;
+    file << "    \"other_frame_count\": " << stats.other_frame_count << "," << std::endl;
+    file << "    \"total_audio_frames\": " << stats.total_audio_frames << "," << std::endl;
     file << "    \"avg_packet_size\": " << stats.avg_packet_size << "," << std::endl;
     file << "    \"max_packet_size\": " << stats.max_packet_size << "," << std::endl;
     file << "    \"min_packet_size\": " << stats.min_packet_size << "," << std::endl;
@@ -140,13 +162,16 @@ bool StreamStatsExporter::ExportJSON(const std::string& filename, const model::S
 
 bool StreamStatsExporter::ExportHTMLReport(const std::string& filename, const model::StreamStats& stats,
                                            const std::vector<double>& fps_history,
-                                           const std::vector<int>& bitrate_history, const std::string& video_file) {
+                                           const std::vector<int>& bitrate_history, const std::string& video_file,
+                                           const StreamReportExtras& extras) {
 
     std::ofstream file(ToNativePath(filename));
     if (!file.is_open()) {
         LOG_ERROR("无法创建HTML文件: " + filename);
         return false;
     }
+
+    const int max_gop = extras.max_gop_frames > 0 ? extras.max_gop_frames : stats.max_gop_size;
 
     file << "<!DOCTYPE html>" << std::endl;
     file << "<html lang=\"zh-CN\">" << std::endl;
@@ -183,7 +208,15 @@ bool StreamStatsExporter::ExportHTMLReport(const std::string& filename, const mo
     file << "    <tr><td>平均码率</td><td>" << FormatBitrate(stats.avg_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>峰值码率</td><td>" << FormatBitrate(stats.peak_bitrate_bps) << "</td></tr>" << std::endl;
     file << "    <tr><td>GOP 大小</td><td>" << stats.current_gop_size << " 帧</td></tr>" << std::endl;
+    file << "    <tr><td>最大 GOP</td><td>" << max_gop << " 帧</td></tr>" << std::endl;
+    if (extras.gop_count > 0) {
+        file << "    <tr><td>GOP 段数</td><td>" << extras.gop_count << "</td></tr>" << std::endl;
+    }
     file << "    <tr><td>关键帧数</td><td>" << stats.key_frame_count << "</td></tr>" << std::endl;
+    file << "    <tr><td>解码视频帧</td><td>" << stats.total_video_frames << "</td></tr>" << std::endl;
+    file << "    <tr><td>I / P / B 帧</td><td>" << stats.i_frame_count << " / " << stats.p_frame_count << " / "
+         << stats.b_frame_count << "</td></tr>" << std::endl;
+    file << "    <tr><td>音频帧</td><td>" << stats.total_audio_frames << "</td></tr>" << std::endl;
     file << "    <tr><td>持续时间</td><td>" << FormatTime(stats.duration_seconds) << "</td></tr>" << std::endl;
     file << "  </table>" << std::endl;
 

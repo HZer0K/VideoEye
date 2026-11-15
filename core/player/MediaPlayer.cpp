@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -195,6 +196,8 @@ MediaPlayer::MediaPlayer(QObject* parent) : QObject(parent), impl_(std::make_uni
     qRegisterMetaType<model::VisualDefect>("videoeye::model::VisualDefect");
     qRegisterMetaType<model::ActivePictureArea>("model::ActivePictureArea");
     qRegisterMetaType<model::ActivePictureArea>("videoeye::model::ActivePictureArea");
+    // 批量包信息（解码线程 -> UI 线程，std::vector 必须注册才能在排队连接里值拷贝）
+    qRegisterMetaType<std::vector<model::PacketInfo>>("std::vector<model::PacketInfo>");
 
     // 播放会话的信号转发到 MediaPlayer 的同名信号: 播放机械住在 PlaybackSession 里,
     // 但对外(UI)的信号契约必须保持原样, 一个字节都不许变。

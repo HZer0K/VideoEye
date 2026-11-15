@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
@@ -52,6 +53,10 @@ public:
     // 停止分析
     void Stop();
 
+    // 把不足一个统计窗口的尾部字节结算掉（正常每秒结算一次，播完/停用时
+    // 最后不足 1 秒的那段否则永远不会计入当前/峰值码率）。可重复调用。
+    void FinalizePendingWindow();
+
     // 获取最近的数据包历史 (用于图表显示)
     std::vector<PacketInfo> GetRecentPackets(int count = 100) const;
 
@@ -73,15 +78,20 @@ private:
     // 计算码率
     void CalculateBitrate();
 
+    // FinalizePendingWindow 的锁内实现（Stop 已经持锁）
+    void FinalizePendingWindowLocked();
+
     // 更新 GOP 信息
     void UpdateGopInfo(const AVPacket* packet);
 
     // 成员变量
     mutable std::mutex mutex_;
     StreamStats stats_;
-    std::vector<PacketInfo> packet_history_;
-    std::vector<double> fps_history_;
-    std::vector<int> bitrate_history_;
+    // 有界历史：只保留最后 MAX_HISTORY_SIZE 条。用 deque 而不是 vector，
+    // 每次淘汰都是 pop_front（O(1)），不再把整段元素往前搬。
+    std::deque<PacketInfo> packet_history_;
+    std::deque<double> fps_history_;
+    std::deque<int> bitrate_history_;
 
     bool is_analyzing_;
     int64_t last_pts_;

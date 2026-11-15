@@ -37,8 +37,18 @@ void StreamAnalyzer::Start() {
 
 void StreamAnalyzer::Stop() {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_analyzing_) {
+        return;
+    }
+    // 停用/换文件前把最后不足一秒的窗口结算掉，否则尾部码率与峰值永远不出现。
+    FinalizePendingWindowLocked();
     is_analyzing_ = false;
     LOG_INFO("流分析器已停止");
+}
+
+void StreamAnalyzer::FinalizePendingWindow() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    FinalizePendingWindowLocked();
 }
 
 void StreamAnalyzer::AnalyzePacket(const AVPacket* packet, const AVFormatContext* format_ctx) {
@@ -101,7 +111,7 @@ void StreamAnalyzer::AnalyzePacket(const AVPacket* packet, const AVFormatContext
 
     packet_history_.push_back(pkt_info);
     if (packet_history_.size() > MAX_HISTORY_SIZE) {
-        packet_history_.erase(packet_history_.begin());
+        packet_history_.pop_front();
     }
 
     // 计算帧率 (每秒一次)
@@ -183,7 +193,7 @@ std::vector<PacketInfo> StreamAnalyzer::GetRecentPackets(int count) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (packet_history_.size() <= count) {
-        return packet_history_;
+        return std::vector<PacketInfo>(packet_history_.begin(), packet_history_.end());
     }
 
     return std::vector<PacketInfo>(packet_history_.end() - count, packet_history_.end());
@@ -191,12 +201,12 @@ std::vector<PacketInfo> StreamAnalyzer::GetRecentPackets(int count) const {
 
 std::vector<double> StreamAnalyzer::GetFpsHistory() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return fps_history_;
+    return std::vector<double>(fps_history_.begin(), fps_history_.end());
 }
 
 std::vector<int> StreamAnalyzer::GetBitrateHistory() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return bitrate_history_;
+    return std::vector<int>(bitrate_history_.begin(), bitrate_history_.end());
 }
 
 void StreamAnalyzer::CalculateFps() {
@@ -211,7 +221,7 @@ void StreamAnalyzer::CalculateFps() {
             // 更新历史
             fps_history_.push_back(stats_.current_fps);
             if (fps_history_.size() > MAX_HISTORY_SIZE) {
-                fps_history_.erase(fps_history_.begin());
+                fps_history_.pop_front();
             }
 
             // 计算平均帧率
@@ -240,7 +250,7 @@ void StreamAnalyzer::CalculateBitrate() {
         // 更新历史
         bitrate_history_.push_back(stats_.current_bitrate_bps);
         if (bitrate_history_.size() > MAX_HISTORY_SIZE) {
-            bitrate_history_.erase(bitrate_history_.begin());
+            bitrate_history_.pop_front();
         }
 
         // 计算平均码率
@@ -252,6 +262,24 @@ void StreamAnalyzer::CalculateBitrate() {
         // 重置当前 GOP 计数器
         bitrate_window_bytes_ = 0;
     }
+}
+
+void StreamAnalyzer::FinalizePendingWindowLocked() {
+    if (!is_analyzing_ || bitrate_window_bytes_ <= 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_bitrate_calc_time_).count() / 1000.0;
+    if (elapsed <= 0.0) {
+        return;
+    }
+    // 只结算当前/峰值，不写历史、不改平均值：不足一秒的窗口用于平均值会引入噪声，
+    // 但"最后一秒的峰值"正是用户想看的。
+    const int bps = static_cast<int>(static_cast<double>(bitrate_window_bytes_) * 8.0 / elapsed);
+    stats_.current_bitrate_bps = bps;
+    stats_.peak_bitrate_bps = std::max(stats_.peak_bitrate_bps, bps);
+    bitrate_window_bytes_ = 0;
 }
 
 void StreamAnalyzer::UpdateGopInfo(const AVPacket* packet) {

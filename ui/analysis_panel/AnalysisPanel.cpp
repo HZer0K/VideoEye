@@ -284,6 +284,16 @@ void AnalysisPanel::AppendPacketInfo(const model::PacketInfo& packet_info) {
         pages_.frame_packet->AppendPacket(packet_info);
 }
 
+void AnalysisPanel::AppendPacketInfoBatch(const std::vector<model::PacketInfo>& packets) {
+    if (packets.empty())
+        return;
+    if (!feature_enabled_.value(AnalysisFeature::Master, true) ||
+        !feature_enabled_.value(AnalysisFeature::Packet, true))
+        return;
+    if (pages_.frame_packet)
+        pages_.frame_packet->AppendPackets(packets);
+}
+
 void AnalysisPanel::UpdateMacroblockInfo(const model::MacroblockFrameAnalysis& analysis) {
     if (pages_.macroblock)
         pages_.macroblock->SetAnalysis(analysis);

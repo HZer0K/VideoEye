@@ -90,6 +90,7 @@ const char* const kAnalysisSignatures[] = {
     "VideoFrameInfoReady(int,int,bool,qint64,double)",
     "AudioFrameInfoReady(int,qint64,double,int,int,int,int)",
     "PacketInfoReady(model::PacketInfo)",
+    "PacketInfoBatchReady(std::vector<model::PacketInfo>)",
     "AnalysisEventReady(model::AnalysisEvent)",
     "SyncSampleReady(model::SyncSample)",
     "TimelinePacketReady(model::PacketTiming)",
@@ -219,7 +220,7 @@ TEST(ContainerBusTests, ControllerEmitsFailureThroughBusForUnreadableFile) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. 门面不再背实时分析的 23 条信号，总线上一条不少
+// 7. 门面不再背实时分析的 24 条信号，总线上一条不少
 // ---------------------------------------------------------------------------
 TEST(AnalysisBusTests, FacadeDoesNotDeclareAnalysisSignalsAnymore) {
     for (const char* sig : kAnalysisSignatures) {

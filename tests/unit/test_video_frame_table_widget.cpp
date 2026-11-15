@@ -6,7 +6,7 @@
 // 只会让界面停在旧数据，是最难手动点测发现的回归。
 //
 // 具体盯四件事：
-//   1. 表结构：帧表 6 列、GOP 表 9 列、筛选下拉两项、组件自身不可见（宿主型）。
+//   1. 表结构：帧表 6 列、GOP 表 9 列、筛选下拉三项、组件自身不可见（宿主型）。
 //   2. GOP 派生：I 帧开新段、P/B 续段，段的起止帧号 / 计数必须正确。
 //   3. 脏标志 + FlushPending：只在 flush 时落表，并恰好发一次 GopSummariesChanged。
 //   4. 筛选与 Reset：切"仅 I 帧"重算可见行；Reset 清空缓存与两张表，且 flush 时仍发
@@ -109,9 +109,10 @@ TEST(VideoFrameTableWidgetTests, SetupCreatesFrameAndGopTables) {
 
     QComboBox* filter = widget.findChild<QComboBox*>();
     ASSERT_TRUE(filter != nullptr);
-    ASSERT_EQ(2, filter->count());
+    ASSERT_EQ(3, filter->count());
     EXPECT_EQ(QStringLiteral("全部帧"), filter->itemText(0));
     EXPECT_EQ(QStringLiteral("仅 I 帧"), filter->itemText(1));
+    EXPECT_EQ(QStringLiteral("仅非 I 帧"), filter->itemText(2));
 
     ASSERT_TRUE(widget.videoFramePage() != nullptr);
     ASSERT_TRUE(widget.gopPage() != nullptr);
@@ -227,8 +228,14 @@ TEST(VideoFrameTableWidgetTests, IFrameFilterRebuildsVisibleRows) {
     ASSERT_TRUE(summary != nullptr);
     EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 2")));
 
+    filter->setCurrentIndex(2); // 仅非 I 帧
+    EXPECT_EQ(2, RowCount(frame_table));
+    EXPECT_EQ(QStringLiteral("P"), Cell(frame_table, 0, 1));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 2")));
+
     filter->setCurrentIndex(0); // 全部帧
     EXPECT_EQ(4, RowCount(frame_table));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 4")));
 }
 
 // ---------------------------------------------------------------------------
@@ -279,4 +286,61 @@ TEST(VideoFrameTableWidgetTests, ResetClearsTablesAndNotifiesGopChanged) {
 
     widget.FlushPending();
     EXPECT_EQ(1, gop_changed);
+}
+
+// ---------------------------------------------------------------------------
+// 7. GOP 行双击：发出该段起始帧号，并能按帧号选中对应行（不是按行号）
+// ---------------------------------------------------------------------------
+
+TEST(VideoFrameTableWidgetTests, GopDoubleClickReportsStartFrameAndSelectsIt) {
+    EnsureApp();
+
+    VideoFrameTableWidget widget;
+    QTableView* frame_table = widget.frameTable();
+    QTableWidget* gop_table = GopTable(widget);
+    ASSERT_TRUE(frame_table != nullptr);
+    ASSERT_TRUE(gop_table != nullptr);
+
+    AppendStandardFrames(widget);
+    widget.FlushPending();
+    ASSERT_EQ(2, gop_table->rowCount());
+
+    int activated = -1;
+    QObject::connect(&widget, &VideoFrameTableWidget::GopActivated,
+                     [&activated](int start_frame_index) { activated = start_frame_index; });
+    gop_table->cellDoubleClicked(1, 0); // 第 2 段，起始帧号 4
+    EXPECT_EQ(4, activated);
+
+    // 按帧号定位记录再换成可见行号（筛选生效时行号 ≠ 记录索引）
+    ASSERT_TRUE(widget.SelectFrameByIndex(4));
+    ASSERT_TRUE(frame_table->selectionModel() != nullptr);
+    EXPECT_EQ(3, frame_table->selectionModel()->currentIndex().row());
+
+    // 已被裁剪/不存在的帧号返回 false
+    EXPECT_FALSE(widget.SelectFrameByIndex(9999));
+}
+
+// ---------------------------------------------------------------------------
+// 8. 裁剪后汇总仍然正确（增量计数器扣减 + 关键帧计数）
+// ---------------------------------------------------------------------------
+
+TEST(VideoFrameTableWidgetTests, TrimKeepsSummaryConsistent) {
+    EnsureApp();
+
+    VideoFrameTableWidget widget(nullptr, 3);
+    QTableView* frame_table = widget.frameTable();
+    QLabel* summary = SummaryLabel(widget);
+    ASSERT_TRUE(frame_table != nullptr);
+    ASSERT_TRUE(summary != nullptr);
+
+    AppendStandardFrames(widget); // I P P I，上限 3 → 第一帧被淘汰
+    widget.FlushPending();
+
+    ASSERT_EQ(3, RowCount(frame_table));
+    EXPECT_EQ(QStringLiteral("2"), Cell(frame_table, 0, 0)); // 头部一帧已被淘汰
+    // 关键帧从 2 扣成 1；GOP 摘要随裁剪清空重算
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("总帧数: 3")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("显示: 3")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("关键帧: 1")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("GOP: 0")));
 }
