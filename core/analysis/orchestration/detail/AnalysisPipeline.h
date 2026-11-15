@@ -328,6 +328,7 @@ struct VisualFrameProbe {
     int gray_width = 256;
     int rgb_width = 128;
     bool capture_rgb = true;
+    bool build_block_probe = false;
 
     // 统计（给维度状态与日志用）
     int64_t frames_decoded = 0;
@@ -344,7 +345,8 @@ struct VisualFrameProbe {
           time_base(other.time_base), sample_interval(other.sample_interval), next_sample_ts(other.next_sample_ts),
           no_pts_stride(other.no_pts_stride), last_ts(other.last_ts), frame_duration(other.frame_duration),
           gray_width(other.gray_width), rgb_width(other.rgb_width), capture_rgb(other.capture_rgb),
-          frames_decoded(other.frames_decoded), frames_sampled(other.frames_sampled) {
+          build_block_probe(other.build_block_probe), frames_decoded(other.frames_decoded),
+          frames_sampled(other.frames_sampled) {
         other.decoder = nullptr;
         other.frame = nullptr;
         other.opened = false;
@@ -366,6 +368,7 @@ struct VisualFrameProbe {
             gray_width = other.gray_width;
             rgb_width = other.rgb_width;
             capture_rgb = other.capture_rgb;
+            build_block_probe = other.build_block_probe;
             frames_decoded = other.frames_decoded;
             frames_sampled = other.frames_sampled;
             other.decoder = nullptr;

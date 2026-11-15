@@ -297,6 +297,11 @@ void VisualDefectPage::ResetAll() {
     dropped_frames_ = 0;
     analyzed_frames_ = 0;
     dirty_ = false;
+    // 以前漏了这一步: 重新开始一次分析后，"证据图已释放"的旧提示还留着，
+    // 新采集的证据图若是空的会被误报成"被限额释放"。
+    evidence_trimmed_ = false;
+    table_rows_ = 0;
+    table_first_id_ = -1;
     if (luma_chart_)
         luma_chart_->ClearSeriesData();
     if (sharp_chart_)
@@ -332,11 +337,13 @@ void VisualDefectPage::UpdateSummary() {
 
     QString area_text = tr("未检出");
     if (effective_area_.valid) {
+        // 展示源分辨率坐标。有效区是在 256 宽的采样图上算的，直接显示采样坐标
+        // 会变成 "256x108"，和用户手里的 1920x1080 对不上。
         area_text = QStringLiteral("%1x%2 (偏移 %3,%4)")
-                        .arg(effective_area_.width)
-                        .arg(effective_area_.height)
-                        .arg(effective_area_.x)
-                        .arg(effective_area_.y);
+                        .arg(effective_area_.SourceWidth())
+                        .arg(effective_area_.SourceHeight())
+                        .arg(effective_area_.SourceX())
+                        .arg(effective_area_.SourceY());
     }
 
     // VMAF 是可选依赖（libvmaf），默认构建未接入。有采样数据但 vmaf 全空时
@@ -394,17 +401,59 @@ void VisualDefectPage::RebuildTable() {
         return;
 
     const int rows = static_cast<int>(records_.size());
+    const int first_id = records_.empty() ? -1 : records_.front().id;
+    auto fill_row = [this](TableBatch& b, int r) {
+        const auto& d = records_[static_cast<size_t>(r)];
+        b.SetText(r, 0, QString::fromUtf8(model::ToString(d.type)));
+        b.SetText(r, 1, QString::fromUtf8(model::ToString(d.severity)));
+        b.SetText(r, 2, QString::number(d.start_seconds, 'f', 2));
+        b.SetText(r, 3, QString::number(d.end_seconds, 'f', 2));
+        b.SetText(r, 4, QString::number(d.DurationSeconds(), 'f', 2));
+        b.SetText(r, 5, QString::number(d.score, 'f', 4));
+        b.SetText(r, 6, QString::fromUtf8(d.description.c_str()));
+    };
+
+    // 追加模式: 首行 id 不变、行数只增不减，说明只是尾部多了新缺陷，
+    // 补写新增行即可。旧实现每次 flush（默认几百毫秒一次）都重写所有行，
+    // 几千条缺陷时每次刷新都在搬整张表，界面会明显卡。
+    const bool append = table_rows_ > 0 && table_first_id_ == first_id && rows >= table_rows_;
+    if (append) {
+        if (rows == table_rows_)
+            return;
+        TableBatch batch(table_);
+        batch.SetRowCount(rows);
+        for (int r = table_rows_; r < rows; ++r)
+            fill_row(batch, r);
+        table_rows_ = rows;
+        return;
+    }
+
+    // 全量重建前先记住选中项的 id: records_ 从头部裁剪过时行号会整体前移，
+    // 按行号恢复会选到别的缺陷（证据预览也跟着错位）。
+    std::vector<int> selected_ids;
+    if (auto* selection = table_->selectionModel()) {
+        for (const QModelIndex& index : selection->selectedRows()) {
+            const int row = index.row();
+            if (row >= 0 && row < static_cast<int>(records_.size()))
+                selected_ids.push_back(records_[static_cast<size_t>(row)].id);
+        }
+    }
+
     TableBatch batch(table_);
     batch.SetRowCount(rows);
-    for (int r = 0; r < rows; ++r) {
-        const auto& d = records_[static_cast<size_t>(r)];
-        batch.SetText(r, 0, QString::fromUtf8(model::ToString(d.type)));
-        batch.SetText(r, 1, QString::fromUtf8(model::ToString(d.severity)));
-        batch.SetText(r, 2, QString::number(d.start_seconds, 'f', 2));
-        batch.SetText(r, 3, QString::number(d.end_seconds, 'f', 2));
-        batch.SetText(r, 4, QString::number(d.DurationSeconds(), 'f', 2));
-        batch.SetText(r, 5, QString::number(d.score, 'f', 4));
-        batch.SetText(r, 6, QString::fromUtf8(d.description.c_str()));
+    for (int r = 0; r < rows; ++r)
+        fill_row(batch, r);
+    table_rows_ = rows;
+    table_first_id_ = first_id;
+
+    if (!selected_ids.empty()) {
+        for (int r = 0; r < rows; ++r) {
+            const int id = records_[static_cast<size_t>(r)].id;
+            if (std::find(selected_ids.begin(), selected_ids.end(), id) != selected_ids.end()) {
+                table_->selectRow(r);
+                break;
+            }
+        }
     }
 }
 

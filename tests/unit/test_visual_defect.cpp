@@ -604,3 +604,160 @@ TEST(VisualDefectAnalyzer, TimelineResetDrainsWorkerAndPreventsCrossSeekMerging)
     EXPECT_DOUBLE_EQ(report.defects[1].start_seconds, 10.0);
     EXPECT_DOUBLE_EQ(report.defects[1].end_seconds, 10.5);
 }
+
+// ---------- 分辨率 / 亮度范围 / HDR 回归 ----------
+
+TEST(VisualDefectMetrics, BlockinessUsesOneToOneProbeAtHighResolution) {
+    VisualDefectOptions opt;
+
+    // 1:1 源分辨率裁剪图: 128x128、8px 块。降采样图故意给"没有块结构"的自然纹理，
+    // 证明分数来自探针而不是采样图。
+    const int bw = 128;
+    const int bh = 128;
+    std::vector<uint8_t> probe(static_cast<size_t>(bw) * bh);
+    for (int y = 0; y < bh; ++y) {
+        for (int x = 0; x < bw; ++x) {
+            probe[static_cast<size_t>(y) * bw + x] = static_cast<uint8_t>(30 + (((x / 8) * 37 + (y / 8) * 91) % 200));
+        }
+    }
+    FrameSample with_probe = MakeSample(0, 0.0, Blocks(false));
+    with_probe.source_width = 1920;
+    with_probe.source_height = 1080;
+    with_probe.block_width = bw;
+    with_probe.block_height = bh;
+    with_probe.block_gray = probe;
+
+    const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(with_probe, nullptr, 0.0, opt);
+    ASSERT_TRUE(m.valid);
+    ASSERT_FALSE(std::isnan(m.blockiness_score));
+    EXPECT_GT(m.blockiness_score, opt.blockiness_score);
+
+    // 没有探针时按 源宽/样本宽 折算: 3840 源缩到 64 宽，一个 8px 块只剩 0 px。
+    // 旧实现会先拿 bs=0 去做 x % bs —— 直接除零崩溃。现在必须是"不可用"。
+    FrameSample no_probe = MakeSample(1, 0.5, Blocks(true));
+    no_probe.source_width = 3840;
+    no_probe.source_height = 2160;
+    const auto m2 = VisualDefectAnalyzer::ComputeFrameMetrics(no_probe, nullptr, 0.0, opt);
+    ASSERT_TRUE(m2.valid);
+    EXPECT_TRUE(std::isnan(m2.blockiness_score));
+}
+
+TEST(VisualDefectMetrics, LimitedRangePeakWhiteIsNotClipped) {
+    VisualDefectOptions opt;
+
+    // limited range 的合法峰值白是 235，保留范围后不能再按 full range 的 240/250 判削波
+    FrameSample peak = MakeSample(0, 0.0, Solid(235));
+    peak.limited_range = true;
+    const auto m_peak = VisualDefectAnalyzer::ComputeFrameMetrics(peak, nullptr, 0.0, opt);
+    EXPECT_NEAR(m_peak.highlight_ratio, 0.0, 1e-12);
+    EXPECT_NEAR(m_peak.clip_high_ratio, 0.0, 1e-12);
+
+    // 236 以上是 super-white（编码过冲/压到死白），仍要算作高光
+    FrameSample super_white = MakeSample(1, 0.5, Solid(238));
+    super_white.limited_range = true;
+    const auto m_super = VisualDefectAnalyzer::ComputeFrameMetrics(super_white, nullptr, 0.0, opt);
+    EXPECT_NEAR(m_super.highlight_ratio, 1.0, 1e-12);
+}
+
+TEST(VisualDefectMetrics, HdrDisablesExposureAndColorCast) {
+    VisualDefectOptions opt;
+    const auto white = Solid(253);
+    const auto rgb = Rgb(210, 100, 100);
+
+    FrameSample sdr = MakeSample(0, 0.0, white, &rgb);
+    const auto m_sdr = VisualDefectAnalyzer::ComputeFrameMetrics(sdr, nullptr, 0.0, opt);
+    EXPECT_FALSE(std::isnan(m_sdr.highlight_ratio));
+    EXPECT_FALSE(std::isnan(m_sdr.color_cast_score));
+
+    FrameSample hdr = MakeSample(1, 0.5, white, &rgb);
+    hdr.hdr = true;
+    const auto m_hdr = VisualDefectAnalyzer::ComputeFrameMetrics(hdr, nullptr, 0.0, opt);
+    // 未做色调映射时 PQ/HLG 码值不能当线性亮度用，相关指标必须置不可用
+    EXPECT_TRUE(std::isnan(m_hdr.highlight_ratio));
+    EXPECT_TRUE(std::isnan(m_hdr.dark_ratio));
+    EXPECT_TRUE(std::isnan(m_hdr.clip_high_ratio));
+    EXPECT_TRUE(std::isnan(m_hdr.color_cast_score));
+    // 结构类指标不受影响
+    EXPECT_FALSE(std::isnan(m_hdr.blur_score));
+}
+
+TEST(VisualDefectAnalyzer, SamplesAreTrimmedInBatchesAndFlagged) {
+    VisualDefectOptions opt;
+    opt.max_samples = 100;
+    VisualDefectAnalyzer a;
+    a.Reset(opt);
+
+    for (int i = 0; i < 500; ++i)
+        a.Feed(MakeSample(i, i * 0.04, Sharp(i % 8)));
+
+    const auto report = a.Snapshot();
+    EXPECT_LE(report.samples.size(), 100u);
+    EXPECT_TRUE(report.samples_truncated);
+    EXPECT_FALSE(report.defects_truncated);
+    // 留下的是最新的那一段
+    EXPECT_EQ(report.samples.back().frame_index, 499);
+}
+
+TEST(VisualDefectAnalyzer, FreezeSurvivesShortAudioGap) {
+    VisualDefectOptions opt;
+    opt.sample_fps = 4.0;
+    VisualDefectAnalyzer a;
+    a.Reset(opt);
+
+    int index = 0;
+    for (double t = 0.0; t < 1.0; t += 0.25)
+        a.Feed(MakeSample(index++, t, Sharp(static_cast<int>(t * 4))));
+    for (double t = 1.0; t < 6.0; t += 0.25) {
+        // 只在 2.0s 这一帧静音: 说话间隙不该把连续冻结切断
+        a.Feed(MakeSample(index++, t, Sharp(99), nullptr, std::abs(t - 2.0) < 1e-9));
+    }
+    a.Flush(6.0);
+
+    ASSERT_EQ(CountType(a.defects(), VisualDefectType::FreezeFrame), 1);
+    EXPECT_GE(a.defects().front().DurationSeconds(), 4.5);
+}
+
+TEST(VisualDefectAnalyzer, FlushUsesProvidedEndTime) {
+    VisualDefectOptions opt;
+    opt.sample_fps = 4.0;
+    VisualDefectAnalyzer a;
+    a.Reset(opt);
+
+    int index = 0;
+    for (double t = 0.0; t < 1.0; t += 0.25)
+        a.Feed(MakeSample(index++, t, Solid(0)));
+    // 采样只到 0.75，但素材实际到 2.0s 才结束；缺陷时长必须按 2.0s 收尾
+    a.Flush(2.0);
+
+    ASSERT_EQ(CountType(a.defects(), VisualDefectType::BlackFrame), 1);
+    EXPECT_DOUBLE_EQ(a.defects().front().end_seconds, 2.0);
+    EXPECT_DOUBLE_EQ(a.defects().front().DurationSeconds(), 2.0);
+}
+
+TEST(VisualDefectAnalyzer, EffectiveAreaIsReportedInSourceCoordinates) {
+    VisualDefectOptions opt;
+    opt.sample_fps = 4.0;
+    VisualDefectAnalyzer a;
+    a.Reset(opt);
+
+    int index = 0;
+    for (double t = 0.0; t < 2.0; t += 0.25) {
+        FrameSample s = MakeSample(index++, t, Letterbox(8));
+        s.source_width = 1920;
+        s.source_height = 1080;
+        a.Feed(s);
+    }
+
+    const auto area = a.EffectiveArea();
+    ASSERT_TRUE(area.valid);
+    ASSERT_TRUE(area.HasSourceSize());
+    EXPECT_EQ(area.SourceX(), 0);
+    EXPECT_EQ(area.SourceY(), 240); // 8/36 * 1080
+    EXPECT_EQ(area.SourceWidth(), 1920);
+    EXPECT_EQ(area.SourceHeight(), 600); // 20/36 * 1080（上下各 8 行黑边）
+    EXPECT_TRUE(area.letterbox);
+    EXPECT_FALSE(area.pillarbox);
+    // 黑边判定按中位数占比，不再只看 y > 0
+    EXPECT_GT(area.top_bar_ratio, 0.0);
+    EXPECT_GT(area.bottom_bar_ratio, 0.0);
+}

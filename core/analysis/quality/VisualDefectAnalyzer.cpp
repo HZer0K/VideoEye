@@ -152,6 +152,13 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     const uint8_t* g = sample.gray.data();
 
     // ---- 亮度统计（一次遍历顺带把各档像素占比数出来）----
+    // 阈值口径: 采样图保留源帧的亮度范围（见 QualityAnalyzer::ApplyNativeLumaRange），
+    // limited range 素材的合法峰值白是 235，用 full range 的 240/250 去卡会把
+    // 白底/标题卡误报成过曝。这里把高光/削波阈值按 limited range 重新标定，
+    // 只把超过 235 的 super-white（236+，多是编码过冲或压缩到死白）算作高光/削波。
+    const bool limited_range = sample.limited_range;
+    const double highlight_luma = limited_range ? 236.0 : options.highlight_luma;
+    const double clip_high_luma = limited_range ? 252.0 : options.clip_high_luma;
     long double sum = 0.0;
     long double sum_sq = 0.0;
     long long cnt_black = 0;
@@ -167,9 +174,9 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
             ++cnt_black;
         if (v <= options.shadow_luma)
             ++cnt_dark;
-        if (v >= options.highlight_luma)
+        if (v >= highlight_luma)
             ++cnt_high;
-        if (v >= options.clip_high_luma)
+        if (v >= clip_high_luma)
             ++cnt_clip_high;
         if (v <= options.clip_low_luma)
             ++cnt_clip_low;
@@ -188,6 +195,17 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     m.highlight_ratio = static_cast<double>(cnt_high) * inv_n;
     m.clip_high_ratio = static_cast<double>(cnt_clip_high) * inv_n;
     m.clip_low_ratio = static_cast<double>(cnt_clip_low) * inv_n;
+
+    // HDR（PQ / HLG）没做色调映射时，码值到显示亮度是非线性的，阈值占比没有意义 ——
+    // 不置不可用就会把整片高动态范围素材判成过曝/欠曝。曝光判定依赖这些字段的
+    // Valid() 检查，置 NaN 即自动关闭，无需再改判定逻辑。
+    // 黑场/模糊/块效应/黑边这类结构指标仍按码值算，不受影响。
+    if (sample.hdr) {
+        m.highlight_ratio = NoValue();
+        m.clip_high_ratio = NoValue();
+        m.dark_ratio = NoValue();
+        m.clip_low_ratio = NoValue();
+    }
 
     // ---- 模糊: 拉普拉斯方差 ----
     // 清晰画面有强边缘 -> 二阶差分大且分布分散（方差大）；
@@ -245,58 +263,70 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     // ---- 花屏 / 马赛克（块效应）----
     // 块边界处的像素落差明显大于块内部落差时，画面就是被 8x8 块切过的。
     // 内部统计跳过紧邻边界的一列/一行（x%bs == 1），否则会把边界落差算进"内部"。
-    if (options.detect_blockiness && w >= 16 && h >= 16) {
+    //
+    // 采样图经过缩放，8px 编码块的周期已经被抹平（1920 源缩到 256 宽时一个块只剩
+    // 1px 多），在采样图上找块边界只会把缩放痕迹当误报。因此优先用 BuildSample
+    // 生成的 1:1 源分辨率中心裁剪图（block_gray），此时 bs 就是源像素的 block_size。
+    // 没有探针（手造样本 / 探针失败）时才退回采样图，并按 源宽/样本宽 折算 bs；
+    // 折算结果不足 2px 直接置 NoValue，绝不能进入 x % bs（bs 可能为 0，会除零崩溃）。
+    if (options.detect_blockiness) {
         const int nominal_bs = options.block_size > 1 ? options.block_size : 8;
-        // block_size 是源图像素量级的编码块边长，判边界前要按 源宽/样本宽 缩到样本空间。
-        // 缩样本后一个块不足 2px（例如 1920 源 -> 256 采样，8px 的块只剩 1px 多）时，
-        // 块结构已经被降采样抹平，剩下那些"看起来像块边界"的落差全是缩放痕迹 ——
-        // 照旧按周期找边界只会误报，这种情况置 NoValue，不参与判定。
-        // 源宽未知（手造样本）时按 1:1 处理。
-        const int bs =
-            (sample.source_width > w)
-                ? static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width))
-                : nominal_bs;
-        long double boundary = 0.0;
-        long double interior = 0.0;
-        long long bc = 0;
-        long long ic = 0;
-        for (int y = 0; y < h; ++y) {
-            const uint8_t* row = g + static_cast<size_t>(y) * w;
-            for (int x = 1; x < w; ++x) {
-                const int d = std::abs(static_cast<int>(row[x]) - static_cast<int>(row[x - 1]));
-                const int mod = x % bs;
-                if (mod == 0) {
-                    boundary += d;
-                    ++bc;
-                } else if (mod >= 2) {
-                    interior += d;
-                    ++ic;
+        const uint8_t* bg = g;
+        int bw = w;
+        int bh = h;
+        int bs = nominal_bs;
+        const bool probe = sample.has_block_gray();
+        if (probe) {
+            bg = sample.block_gray.data();
+            bw = sample.block_width;
+            bh = sample.block_height;
+        } else if (sample.source_width > w) {
+            bs = static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width));
+        }
+
+        if (bw >= 16 && bh >= 16 && bs >= 2) {
+            long double boundary = 0.0;
+            long double interior = 0.0;
+            long long bc = 0;
+            long long ic = 0;
+            for (int y = 0; y < bh; ++y) {
+                const uint8_t* row = bg + static_cast<size_t>(y) * bw;
+                for (int x = 1; x < bw; ++x) {
+                    const int d = std::abs(static_cast<int>(row[x]) - static_cast<int>(row[x - 1]));
+                    const int mod = x % bs;
+                    if (mod == 0) {
+                        boundary += d;
+                        ++bc;
+                    } else if (mod >= 2) {
+                        interior += d;
+                        ++ic;
+                    }
                 }
             }
-        }
-        for (int y = 1; y < h; ++y) {
-            const uint8_t* r0 = g + static_cast<size_t>(y - 1) * w;
-            const uint8_t* r1 = r0 + w;
-            const int mod = y % bs;
-            for (int x = 0; x < w; ++x) {
-                const int d = std::abs(static_cast<int>(r1[x]) - static_cast<int>(r0[x]));
-                if (mod == 0) {
-                    boundary += d;
-                    ++bc;
-                } else if (mod >= 2) {
-                    interior += d;
-                    ++ic;
+            for (int y = 1; y < bh; ++y) {
+                const uint8_t* r0 = bg + static_cast<size_t>(y - 1) * bw;
+                const uint8_t* r1 = r0 + bw;
+                const int mod = y % bs;
+                for (int x = 0; x < bw; ++x) {
+                    const int d = std::abs(static_cast<int>(r1[x]) - static_cast<int>(r0[x]));
+                    if (mod == 0) {
+                        boundary += d;
+                        ++bc;
+                    } else if (mod >= 2) {
+                        interior += d;
+                        ++ic;
+                    }
                 }
             }
-        }
-        if (bs < 2) {
-            // 上面的统计也就没有意义了，块效应置 NoValue（而不是照常给出个分数）
+            if (bc > 0 && ic > 0) {
+                const double b = static_cast<double>(boundary / bc);
+                const double i = static_cast<double>(interior / ic);
+                const double denom = b + i;
+                m.blockiness_score = (denom > 1e-6) ? Clamp01((b - i) / denom) : 0.0;
+            }
+        } else {
+            // 折算后一个块不足 2px，块结构在采样图上已不可分辨 —— 置 NoValue，不误报
             m.blockiness_score = NoValue();
-        } else if (bc > 0 && ic > 0) {
-            const double b = static_cast<double>(boundary / bc);
-            const double i = static_cast<double>(interior / ic);
-            const double denom = b + i;
-            m.blockiness_score = (denom > 1e-6) ? Clamp01((b - i) / denom) : 0.0;
         }
     }
 
@@ -349,6 +379,12 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
             area.height = h - top - bottom;
             if (area.width > 0 && area.height > 0) {
                 area.valid = true;
+                // 记下坐标所在的采样尺寸与对应源尺寸: 报告/界面展示的是源分辨率坐标，
+                // 换算逻辑见 ActivePictureArea::SourceX() 等。源宽未知时留 0。
+                area.sample_width = w;
+                area.sample_height = h;
+                area.source_width = sample.source_width;
+                area.source_height = sample.source_height;
                 area.top_bar_ratio = static_cast<double>(top) / h;
                 area.bottom_bar_ratio = static_cast<double>(bottom) / h;
                 area.left_bar_ratio = static_cast<double>(left) / w;
@@ -364,7 +400,9 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     }
 
     // ---- 色偏 ----
-    if (options.detect_color_cast && sample.has_rgb()) {
+    // HDR 的 RGB 码值经过 PQ/HLG 传递函数，未做色调映射时 R/G/B 均值差反映的是
+    // 传递曲线而不是真实白平衡，置为不可用（has_rgb 仍为真，只是不判定）。
+    if (options.detect_color_cast && sample.has_rgb() && !sample.hdr) {
         const size_t pixels = static_cast<size_t>(sample.rgb_width) * sample.rgb_height;
         long double sr = 0.0;
         long double sg = 0.0;
@@ -428,7 +466,14 @@ void VisualDefectAnalyzer::Reset(const VisualDefectOptions& options) {
     has_prev_ = false;
     prev_sample_ = model::FrameSample();
     prev_luma_mean_ = NoValue();
+    last_audio_active_ts_ = NoValue();
     next_defect_id_ = 1;
+    samples_truncated_ = false;
+    defects_truncated_ = false;
+    evidence_defects_ = 0;
+    realtime_processing_ = false;
+    effective_area_cache_valid_ = false;
+    effective_area_cache_ = model::ActivePictureArea();
     dropped_samples_.store(0);
     analyzed_samples_.store(0);
 }
@@ -523,7 +568,7 @@ void VisualDefectAnalyzer::WorkerLoop() {
                 queue_.pop_front();
             }
             std::lock_guard<std::mutex> lock(m_);
-            ProcessSampleLocked(sample);
+            ProcessSampleLocked(sample, true);
         }
     });
     if (failure) {
@@ -533,7 +578,7 @@ void VisualDefectAnalyzer::WorkerLoop() {
 
 void VisualDefectAnalyzer::Feed(const model::FrameSample& sample) {
     std::lock_guard<std::mutex> lock(m_);
-    ProcessSampleLocked(sample);
+    ProcessSampleLocked(sample, false);
 }
 
 void VisualDefectAnalyzer::Flush(double end_timestamp_seconds) {
@@ -551,6 +596,7 @@ void VisualDefectAnalyzer::ResetTimeline(double end_timestamp_seconds) {
         has_prev_ = false;
         prev_sample_ = model::FrameSample();
         prev_luma_mean_ = NoValue();
+        last_audio_active_ts_ = NoValue();
         luma_history_.clear();
         luma_history_ts_.clear();
     }
@@ -574,26 +620,61 @@ std::vector<model::VisualDefect> VisualDefectAnalyzer::TakePendingDefects() {
 }
 
 model::ActivePictureArea VisualDefectAnalyzer::EffectiveArea() const {
+    std::lock_guard<std::mutex> lock(m_);
+    if (!effective_area_cache_valid_) {
+        effective_area_cache_ = ComputeEffectiveAreaLocked();
+        effective_area_cache_valid_ = true;
+    }
+    return effective_area_cache_;
+}
+
+model::ActivePictureArea VisualDefectAnalyzer::ComputeEffectiveAreaLocked() const {
     std::vector<int> xs;
     std::vector<int> ys;
     std::vector<int> ws;
     std::vector<int> hs;
+    std::vector<int> sws;
+    std::vector<int> shs;
+    std::vector<int> srcs_w;
+    std::vector<int> srcs_h;
     std::vector<double> ratios;
-    {
-        std::lock_guard<std::mutex> lock(m_);
-        xs.reserve(active_areas_.size());
-        ys.reserve(active_areas_.size());
-        ws.reserve(active_areas_.size());
-        hs.reserve(active_areas_.size());
-        ratios.reserve(active_areas_.size());
-        for (const auto& a : active_areas_) {
-            if (!a.valid)
-                continue;
-            xs.push_back(a.x);
-            ys.push_back(a.y);
-            ws.push_back(a.width);
-            hs.push_back(a.height);
-            ratios.push_back(a.active_ratio);
+    std::vector<double> bars_top;
+    std::vector<double> bars_bottom;
+    std::vector<double> bars_left;
+    std::vector<double> bars_right;
+    const size_t n = active_areas_.size();
+    xs.reserve(n);
+    ys.reserve(n);
+    ws.reserve(n);
+    hs.reserve(n);
+    sws.reserve(n);
+    shs.reserve(n);
+    srcs_w.reserve(n);
+    srcs_h.reserve(n);
+    ratios.reserve(n);
+    bars_top.reserve(n);
+    bars_bottom.reserve(n);
+    bars_left.reserve(n);
+    bars_right.reserve(n);
+    for (const auto& a : active_areas_) {
+        if (!a.valid)
+            continue;
+        xs.push_back(a.x);
+        ys.push_back(a.y);
+        ws.push_back(a.width);
+        hs.push_back(a.height);
+        ratios.push_back(a.active_ratio);
+        bars_top.push_back(a.top_bar_ratio);
+        bars_bottom.push_back(a.bottom_bar_ratio);
+        bars_left.push_back(a.left_bar_ratio);
+        bars_right.push_back(a.right_bar_ratio);
+        if (a.sample_width > 0 && a.sample_height > 0) {
+            sws.push_back(a.sample_width);
+            shs.push_back(a.sample_height);
+        }
+        if (a.source_width > 0 && a.source_height > 0) {
+            srcs_w.push_back(a.source_width);
+            srcs_h.push_back(a.source_height);
         }
     }
     model::ActivePictureArea area;
@@ -601,18 +682,35 @@ model::ActivePictureArea VisualDefectAnalyzer::EffectiveArea() const {
         return area;
 
     auto median_int = [](std::vector<int>& v) {
+        if (v.empty())
+            return 0;
         std::sort(v.begin(), v.end());
         return v[v.size() / 2];
     };
-    std::sort(ratios.begin(), ratios.end());
+    auto median_double = [](std::vector<double>& v) {
+        if (v.empty())
+            return 0.0;
+        std::sort(v.begin(), v.end());
+        return v[v.size() / 2];
+    };
     area.valid = true;
     area.x = median_int(xs);
     area.y = median_int(ys);
     area.width = median_int(ws);
     area.height = median_int(hs);
-    area.active_ratio = ratios[ratios.size() / 2];
-    area.letterbox = area.y > 0;
-    area.pillarbox = area.x > 0;
+    area.active_ratio = median_double(ratios);
+    // 四条边各自取中位数后再判定，不能只看 x>0/y>0 —— 采样噪声会在边缘留下 1px
+    // 的暗行，单帧足以让"有没有黑边"翻车；中位数 + 占比阈值才是全片口径。
+    area.top_bar_ratio = median_double(bars_top);
+    area.bottom_bar_ratio = median_double(bars_bottom);
+    area.left_bar_ratio = median_double(bars_left);
+    area.right_bar_ratio = median_double(bars_right);
+    area.letterbox = (area.top_bar_ratio + area.bottom_bar_ratio) >= options_.border_bar_ratio;
+    area.pillarbox = (area.left_bar_ratio + area.right_bar_ratio) >= options_.border_bar_ratio;
+    area.sample_width = median_int(sws);
+    area.sample_height = median_int(shs);
+    area.source_width = median_int(srcs_w);
+    area.source_height = median_int(srcs_h);
     return area;
 }
 
@@ -621,9 +719,16 @@ model::VisualDefectReport VisualDefectAnalyzer::Snapshot() const {
     model::VisualDefectReport report;
     report.defects = defects_;
     report.samples = metrics_;
+    if (!effective_area_cache_valid_) {
+        effective_area_cache_ = ComputeEffectiveAreaLocked();
+        effective_area_cache_valid_ = true;
+    }
+    report.effective_area = effective_area_cache_;
     report.analyzed = analyzed_samples_.load() > 0;
     report.analyzed_frames = analyzed_samples_.load();
     report.dropped_frames = dropped_samples_.load();
+    report.samples_truncated = samples_truncated_;
+    report.defects_truncated = defects_truncated_;
     if (!metrics_.empty()) {
         report.duration_seconds = metrics_.back().timestamp_seconds - metrics_.front().timestamp_seconds;
     }
@@ -634,31 +739,59 @@ model::VisualDefectReport VisualDefectAnalyzer::Snapshot() const {
 // 逐帧处理
 // ===========================================================================
 
-void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample) {
+void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample, bool realtime) {
     if (!sample.valid())
         return;
 
+    realtime_processing_ = realtime;
     model::FrameQualityMetric m =
         ComputeFrameMetrics(sample, has_prev_ ? &prev_sample_ : nullptr, prev_luma_mean_, options_);
     if (!m.valid)
         return;
 
     metrics_.push_back(m);
-    pending_metrics_.push_back(m);
+    // 离线 Feed 没有消费者取 pending_*，写进去只是把整份结果再拷一份（离线全帧时等于翻倍）。
+    if (realtime)
+        pending_metrics_.push_back(m);
+    // 超上限时按批裁剪: 每帧 erase 头部 1 条是 O(n) 搬移，200k 条样本下离线分析会被
+    // 拖成 O(n^2)。这里一次多丢一点，之后若干帧都不用再搬。
     if (metrics_.size() > options_.max_samples) {
-        metrics_.erase(metrics_.begin(), metrics_.begin() + static_cast<long>(metrics_.size() - options_.max_samples));
+        samples_truncated_ = true;
+        const size_t keep = options_.max_samples;
+        size_t batch = std::max<size_t>(keep / 8, 256);
+        batch = std::min(batch, std::max<size_t>(keep / 2, 1));
+        size_t drop = metrics_.size() - keep + batch;
+        if (drop > metrics_.size())
+            drop = metrics_.size();
+        metrics_.erase(metrics_.begin(), metrics_.begin() + static_cast<std::ptrdiff_t>(drop));
     }
-    if (m.active_area.valid)
+    if (m.active_area.valid) {
         active_areas_.push_back(m.active_area);
+        effective_area_cache_valid_ = false;
+        // 中位数用不着保留全部采样帧，超长素材只留最近一段，避免长视频把内存吃满
+        if (active_areas_.size() > kMaxActiveAreaSamples) {
+            active_areas_.erase(active_areas_.begin(),
+                                active_areas_.begin() +
+                                    static_cast<std::ptrdiff_t>(active_areas_.size() - kMaxActiveAreaSamples));
+        }
+    }
     analyzed_samples_.fetch_add(1);
 
     const double ts = m.timestamp_seconds;
     const int frame = m.frame_index;
 
-    // 闪烁窗口要用到历史亮度，先更新再判定
+    // 闪烁窗口要用到历史亮度，先更新再判定。
+    // 按时间限窗（flicker_window_seconds）而不是固定点数: 1fps 与 5fps 档位的
+    // 点数窗口长度相差 5 倍，会让时长/严重度口径不一致。
     luma_history_.push_back(m.luma_mean);
     luma_history_ts_.push_back(ts);
-    while (luma_history_.size() > 8) {
+    const double flicker_window = options_.flicker_window_seconds > 0.0 ? options_.flicker_window_seconds : 3.0;
+    while (luma_history_.size() > 2 && (ts - luma_history_ts_.front()) > flicker_window) {
+        luma_history_.pop_front();
+        luma_history_ts_.pop_front();
+    }
+    // 极端帧率下的兜底上限（3s 内 4096 个采样点已远超任何档位）
+    while (luma_history_.size() > 4096) {
         luma_history_.pop_front();
         luma_history_ts_.pop_front();
     }
@@ -666,8 +799,17 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
     const bool black_hit = options_.detect_black && Valid(m.black_ratio) && m.black_ratio >= options_.black_ratio &&
                            m.luma_mean <= options_.black_luma_mean;
 
+    // 音频静音按"连续静音"判定: 说话间隙里的单帧静音不能把冻结洗白。
+    // 只有静音持续 freeze_audio_silence_seconds 以上，才认为这一刻本来就没有声音。
+    if (!sample.audio_silent)
+        last_audio_active_ts_ = ts;
+    const double silence_grace =
+        options_.freeze_audio_silence_seconds > 0.0 ? options_.freeze_audio_silence_seconds : 1.0;
+    const bool audio_silent =
+        sample.audio_silent && (!Valid(last_audio_active_ts_) || ts - last_audio_active_ts_ >= silence_grace);
+
     const bool freeze_hit = options_.detect_freeze && has_prev_ && Valid(m.frame_diff) &&
-                            m.frame_diff <= options_.freeze_diff && !sample.audio_silent && !black_hit;
+                            m.frame_diff <= options_.freeze_diff && !audio_silent && !black_hit;
 
     // 模糊判定要排除"画面本来就没有内容"的帧: 纯色/黑场的拉普拉斯方差天然接近 0，
     // 那是"没细节"不是"糊了"，交给黑场/欠曝去报。
@@ -675,14 +817,18 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
                           m.black_ratio < 0.5 && m.luma_std >= options_.blur_min_luma_std;
 
     double flicker_amplitude = 0.0;
-    const bool flicker_hit = options_.detect_flicker && FlickerHitLocked(ts, &flicker_amplitude) && !black_hit;
+    double flicker_start = NoValue();
+    const bool flicker_hit =
+        options_.detect_flicker && FlickerHitLocked(ts, &flicker_amplitude, &flicker_start) && !black_hit;
 
     const bool over_hit = options_.detect_exposure && Valid(m.highlight_ratio) &&
                           (m.clip_high_ratio >= options_.over_exposure_clip_ratio ||
                            (m.highlight_ratio >= options_.over_exposure_highlight_ratio && m.clip_high_ratio >= 0.02));
 
+    // HDR 的码值亮度不是显示亮度，dark_ratio 虽已置 NaN，但 luma_mean 还要给黑场/闪烁用，
+    // 这里必须显式排除，否则暗部场景的 PQ 码值会被当成"欠曝"。
     const bool under_hit =
-        options_.detect_exposure && !black_hit && Valid(m.dark_ratio) &&
+        options_.detect_exposure && !sample.hdr && !black_hit && Valid(m.dark_ratio) &&
         (m.dark_ratio >= options_.under_exposure_dark_ratio || m.luma_mean <= options_.under_exposure_luma_mean);
 
     const bool cast_hit =
@@ -730,7 +876,8 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample)
         u.aux = NoValue();
         u.threshold = options_.flicker_delta;
         u.reverse = false;
-        u.start_ts = luma_history_ts_.empty() ? ts : luma_history_ts_.front();
+        // 从第一次真正发生亮暗交替的采样点算起，而不是把整个窗口的前端都算进缺陷时长
+        u.start_ts = flicker_start;
         UpdateSegmentLocked(u, sample);
     }
     if (options_.detect_exposure) {
@@ -849,7 +996,14 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
     const SegmentState st = it->second;
     it->second = SegmentState();
 
-    const double duration = std::max(0.0, st.last_ts - st.start_ts);
+    // 收尾时间取"最后一个命中帧"与调用方给的时间中更晚的那个:
+    // Flush(素材结束时间) 通常晚于最后一个采样点，否则素材在结束前就恢复正常的
+    // 那一段会被少算（缺陷时长偏短）。
+    double end = st.last_ts;
+    if (Valid(end_ts) && end_ts > end)
+        end = end_ts;
+    const double duration = std::max(0.0, end - st.start_ts);
+    const int end_frame_index = (end_frame >= 0) ? end_frame : st.last_frame;
     if (duration + kEpsilon < MinSecondsFor(type, options_))
         return;
 
@@ -858,8 +1012,8 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
         model::VisualDefect& last = defects_.back();
         if (last.type == type && st.start_ts >= last.end_seconds &&
             (st.start_ts - last.end_seconds) <= options_.MergeGapSeconds()) {
-            last.end_seconds = st.last_ts;
-            last.end_frame = st.last_frame;
+            last.end_seconds = end;
+            last.end_frame = end_frame_index;
             const bool reverse = IsReverseScore(type);
             last.score = reverse ? std::min(last.score, st.worst) : std::max(last.score, st.worst);
             const double total = std::max(0.0, last.end_seconds - last.start_seconds);
@@ -876,9 +1030,9 @@ void VisualDefectAnalyzer::CloseSegmentLocked(model::VisualDefectType type, doub
     defect.type = type;
     defect.severity = SeverityFor(type, duration, st.worst, options_);
     defect.start_seconds = st.start_ts;
-    defect.end_seconds = st.last_ts;
+    defect.end_seconds = end;
     defect.start_frame = st.start_frame;
-    defect.end_frame = st.last_frame;
+    defect.end_frame = end_frame_index;
     defect.score = st.worst;
     defect.threshold = st.threshold;
     defect.description = DescribeDefect(type, duration, st.worst, st.aux, st.threshold);
@@ -901,37 +1055,56 @@ void VisualDefectAnalyzer::CloseAllSegmentsLocked(double end_ts, int end_frame) 
 }
 
 void VisualDefectAnalyzer::PushDefectLocked(model::VisualDefect defect) {
-    if (defects_.size() >= options_.max_defects)
+    if (defects_.size() >= options_.max_defects) {
+        // 以前超上限直接静默丢弃，报告里看不出"结果被截断"
+        defects_truncated_ = true;
         return;
-    pending_defects_.push_back(defect);
+    }
+    // 证据缩略图单独设配额: 每条 27KB 左右，离线全帧跑长片能产出上千条，
+    // 全留既吃内存也没人看（报告只内嵌少量）。超配额的缺陷保留文字、丢掉图。
+    if (defect.evidence.valid()) {
+        if (evidence_defects_ >= options_.max_evidence_defects) {
+            defect.evidence = model::EvidenceFrame();
+        } else {
+            ++evidence_defects_;
+        }
+    }
     defects_.push_back(std::move(defect));
+    if (realtime_processing_)
+        pending_defects_.push_back(defects_.back());
 }
 
-bool VisualDefectAnalyzer::FlickerHitLocked(double ts, double* amplitude) const {
-    (void)ts;
+bool VisualDefectAnalyzer::FlickerHitLocked(double ts, double* amplitude, double* window_start) const {
     if (luma_history_.size() < 4)
         return false;
 
-    double sum_abs = 0.0;
-    int pairs = 0;
+    const double window = options_.flicker_window_seconds > 0.0 ? options_.flicker_window_seconds : 3.0;
+    // 用窗口内的最大跳变作为强度: 取均值会被"只有少数几次真跳变"的窗口稀释，
+    // 明明闪得很厉害却卡在阈值之下。
+    double max_delta = 0.0;
     int alternations = 0;
+    double first_alternation_ts = model::kQualityNoValue;
     for (size_t i = 1; i < luma_history_.size(); ++i) {
         const double d = luma_history_[i] - luma_history_[i - 1];
-        sum_abs += std::abs(d);
-        ++pairs;
-        if (i >= 2) {
-            const double prev_d = luma_history_[i - 1] - luma_history_[i - 2];
-            // 亮->暗->亮 才算闪烁；单向缓慢变化（淡入淡出）不算
-            if (d * prev_d < 0.0 && std::abs(d) >= options_.flicker_delta &&
-                std::abs(prev_d) >= options_.flicker_delta) {
-                ++alternations;
-            }
-        }
+        max_delta = std::max(max_delta, std::abs(d));
+        if (i < 2)
+            continue;
+        const double prev_d = luma_history_[i - 1] - luma_history_[i - 2];
+        // 亮->暗->亮 才算闪烁；单向缓慢变化（淡入淡出）不算
+        const bool opposite = d * prev_d < 0.0;
+        if (!opposite || std::abs(d) < options_.flicker_delta || std::abs(prev_d) < options_.flicker_delta)
+            continue;
+        if (ts - luma_history_ts_[i] > window)
+            continue;
+        ++alternations;
+        if (!Valid(first_alternation_ts))
+            first_alternation_ts = luma_history_ts_[i - 2];
     }
-    const double mean_abs = (pairs > 0) ? (sum_abs / pairs) : 0.0;
     if (amplitude)
-        *amplitude = mean_abs;
-    return alternations >= options_.flicker_min_alternations && mean_abs >= options_.flicker_delta;
+        *amplitude = max_delta;
+    if (window_start)
+        *window_start = first_alternation_ts;
+    return alternations >= options_.flicker_min_alternations && max_delta >= options_.flicker_delta;
 }
 
 model::VisualDefectSeverity VisualDefectAnalyzer::SeverityFor(model::VisualDefectType type, double duration_seconds,

@@ -121,12 +121,19 @@ private:
         double start_ts = model::kQualityNoValue; // 覆盖段首时间（闪烁用窗口起点）
     };
 
-    // 在 m_ 已加锁的前提下处理一帧
-    void ProcessSampleLocked(const model::FrameSample& sample);
+    // 在 m_ 已加锁的前提下处理一帧。realtime=true 表示这帧来自工作线程（消费者会
+    // 用 TakePending* 取增量结果），false 表示离线 Feed（结果只在 Snapshot 里取，
+    // 不再额外存一份 pending 拷贝）。
+    void ProcessSampleLocked(const model::FrameSample& sample, bool realtime);
     void UpdateSegmentLocked(const SegmentUpdate& update, const model::FrameSample& sample);
     void CloseSegmentLocked(model::VisualDefectType type, double end_ts, int end_frame);
     void CloseAllSegmentsLocked(double end_ts, int end_frame);
-    bool FlickerHitLocked(double ts, double* amplitude) const;
+    // 闪烁判定: 只看最近 flicker_window_seconds 内的采样点。
+    // amplitude 回填窗口内的最大亮度跳变（取最大值而非均值，避免偶发跳变被稀释），
+    // window_start 回填第一次有效亮暗交替的起点（缺陷段从真正开始闪的地方算起）。
+    bool FlickerHitLocked(double ts, double* amplitude, double* window_start) const;
+    // 有效画面区域中位数（调用方已持锁）。结果按 active_areas_ 的追加缓存。
+    model::ActivePictureArea ComputeEffectiveAreaLocked() const;
     static model::VisualDefectSeverity SeverityFor(model::VisualDefectType type, double duration_seconds, double score,
                                                    const VisualDefectOptions& options);
     void WorkerLoop();
@@ -169,10 +176,32 @@ private:
     std::vector<model::FrameQualityMetric> metrics_;
     std::vector<model::VisualDefect> defects_;
     size_t timeline_defect_begin_ = 0;
+    // 只给实时工作线程的消费者准备。离线 Feed 没人取，写进去就是整份结果的第二份拷贝
+    // （离线全帧模式下等于把内存翻倍），所以只有 realtime 路径才投递。
     std::vector<model::FrameQualityMetric> pending_metrics_;
     std::vector<model::VisualDefect> pending_defects_;
+
+    // 有效画面区域样本。超长素材不保留全部（中位数用不上这么多），只留最近的一段。
     std::vector<model::ActivePictureArea> active_areas_;
+    mutable model::ActivePictureArea effective_area_cache_;
+    mutable bool effective_area_cache_valid_ = false;
+
+    // 结果被上限截断过（Snapshot 里置到 report 上，提示"结果不完整"）
+    bool samples_truncated_ = false;
+    bool defects_truncated_ = false;
+    // 已占用证据缩略图配额的缺陷条数（见 options_.max_evidence_defects）
+    size_t evidence_defects_ = 0;
+    // 当前这帧是否来自实时工作线程（决定要不要写 pending_*）
+    bool realtime_processing_ = false;
+
+    // 最近一次"音频非静音"的采样时刻。冻结判定要求静音持续一小段时间，
+    // 否则说话间隙里的单帧静音就会把真正的冻结判成正常静帧。
+    double last_audio_active_ts_ = model::kQualityNoValue;
+
     int next_defect_id_ = 1;
+
+    // active_areas_ 的保留上限（中位数样本，取最近这么多帧足够稳定）
+    static constexpr size_t kMaxActiveAreaSamples = 4096;
 };
 
 } // namespace videoeye

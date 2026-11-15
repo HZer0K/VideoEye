@@ -59,8 +59,11 @@ public:
     // 把任意像素格式的 AVFrame 降采样成视觉分析用的快照（GRAY8 + 可选 RGB24 小图）。
     // gray_width / rgb_width 为目标宽度，高度按原比例推算（最小 2 行）。
     // capture_rgb=false 时 out.rgb 为空，省一次 sws_scale（只要不看色偏/证据图就够用）。
+    // build_block_probe=true 时额外生成一块 1:1 的源分辨率中心裁剪灰度图，
+    // 供块效应检测使用（降采样图会把 8px 编码块周期抹平）。
+    // 同时记录源帧的 limited_range / hdr 标记，供曝光阈值与不可用判定使用。
     static bool BuildSample(const AVFrame* frame, int gray_width, int rgb_width, bool capture_rgb,
-                            model::FrameSample& out, std::string& error);
+                            model::FrameSample& out, std::string& error, bool build_block_probe = false);
 
     // VMAF: 可选依赖。需要 libvmaf（体积大、模型文件另带），默认构建不接入。
     // 未接入时返回 std::nullopt（而非 NaN）—— "未启用"必须与"算出失败"可区分，
@@ -71,6 +74,9 @@ public:
     static bool VmafSupported();
 
 private:
+    // 1:1 源分辨率中心裁剪灰度图，专供块效应检测（保住 8x8 编码块周期）
+    static bool BuildBlockProbe(const AVFrame* frame, model::FrameSample& out, std::string& error);
+
     struct GrayPlane {
         int width = 0;
         int height = 0;
@@ -78,8 +84,11 @@ private:
     };
 
     static bool ExtractGrayPlane(const AVFrame* frame, GrayPlane& grayPlane, std::string& errorMessage);
-    // 按目标尺寸缩放出 GRAY8 / RGB24 平面（BuildSample 用）
-    static bool ScaleToGray(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out, std::string& error);
+    // 按目标尺寸缩放出 GRAY8 / RGB24 平面（BuildSample 用）。
+    // limited_range 回填缩放时实际采用的亮度范围口径（true = limited 16-235），
+    // 曝光阈值要按它标定。
+    static bool ScaleToGray(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out, std::string& error,
+                            bool* limited_range = nullptr);
     static bool ScaleToRgb24(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out,
                              std::string& error);
     static bool MakeGrayPlane(const model::FrameSample& sample, GrayPlane& grayPlane, std::string& error);

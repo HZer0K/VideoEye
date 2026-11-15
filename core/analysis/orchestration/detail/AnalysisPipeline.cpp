@@ -158,6 +158,7 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
         visual_probe_.gray_width = options_.visual_qc_options.EffectiveAnalysisWidth();
         visual_probe_.rgb_width = options_.visual_qc_options.EffectiveEvidenceWidth();
         visual_probe_.capture_rgb = options_.visual_qc_options.capture_rgb;
+        visual_probe_.build_block_probe = options_.visual_qc_options.detect_blockiness;
         visual_probe_.next_sample_ts = 0.0;
         visual_probe_.last_ts = 0.0;
         LOG_INFO(
@@ -1135,7 +1136,8 @@ void AnalysisPipeline::FeedVisualFrame(AVFrame* frame) {
 
     model::FrameSample sample;
     std::string error;
-    if (!QualityAnalyzer::BuildSample(frame, probe.gray_width, probe.rgb_width, probe.capture_rgb, sample, error)) {
+    if (!QualityAnalyzer::BuildSample(frame, probe.gray_width, probe.rgb_width, probe.capture_rgb, sample, error,
+                                      probe.build_block_probe)) {
         // 单帧降采样失败不终止整条维度：探针里记不到样本，维度覆盖率会自然反映出来。
         return;
     }

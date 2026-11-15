@@ -428,10 +428,14 @@ void AppendVisualQc(std::ostringstream& out, const model::AnalysisResult& analys
     if (visual.dropped_frames > 0)
         out << "（丢弃 " << visual.dropped_frames << " 帧）";
     out << " ｜ 检出 " << visual.defects.size() << " 条画面缺陷";
+    if (visual.samples_truncated || visual.defects_truncated)
+        out << "（超出上限已截断: " << (visual.samples_truncated ? "采样指标" : "")
+            << ((visual.samples_truncated && visual.defects_truncated) ? "、" : "")
+            << (visual.defects_truncated ? "缺陷列表" : "") << "）";
     const model::ActivePictureArea& area = visual.effective_area;
     if (area.valid) {
-        out << " ｜ 有效画面区域 " << area.width << "x" << area.height << "（" << Fixed(area.active_ratio * 100.0, 1)
-            << "%）";
+        out << " ｜ 有效画面区域 " << area.SourceWidth() << "x" << area.SourceHeight() << "（位置 " << area.SourceX()
+            << "," << area.SourceY() << "，" << Fixed(area.active_ratio * 100.0, 1) << "%）";
         if (area.letterbox || area.pillarbox)
             out << " ｜ 黑边: " << (area.letterbox ? "上下" : "") << (area.pillarbox ? "左右" : "");
     }

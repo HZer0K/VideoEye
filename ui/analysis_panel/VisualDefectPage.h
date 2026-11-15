@@ -130,6 +130,11 @@ private:
     // 原因可能是没采集（勾选项关着），也可能是采集过但被限额释放了 ——
     // 这两种情况给同一句提示，会让人以为是功能坏了。
     bool evidence_trimmed_ = false;
+
+    // 表格增量刷新状态: 已填充的行数 + 第 0 行对应的缺陷 id。
+    // 首行 id 变了说明 records_ 被从头部裁剪过，行号已整体位移，只能全量重建。
+    int table_rows_ = 0;
+    int table_first_id_ = -1;
 };
 
 } // namespace ui

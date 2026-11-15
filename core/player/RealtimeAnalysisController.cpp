@@ -364,7 +364,8 @@ void RealtimeAnalysisController::FeedVisualDefectFrame(const AVFrame* frame, dou
     model::FrameSample sample;
     std::string error;
     if (!videoeye::QualityAnalyzer::BuildSample(frame, vd_opts.EffectiveAnalysisWidth(),
-                                                vd_opts.EffectiveEvidenceWidth(), vd_opts.capture_rgb, sample, error)) {
+                                                vd_opts.EffectiveEvidenceWidth(), vd_opts.capture_rgb, sample, error,
+                                                vd_opts.detect_blockiness)) {
         LOG_WARN("画面质量分析: 降采样失败 - " + error);
         return;
     }

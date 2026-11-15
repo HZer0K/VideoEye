@@ -90,6 +90,9 @@ struct VisualDefectReport {
     int total_frames = 0;    // 送进来的帧数（含被抽样跳过的）
     double duration_seconds = 0.0;
     bool analyzed = false;
+    // 指标 / 缺陷超过上限被静默截断时置位，报告据此提示"结果不完整"
+    bool samples_truncated = false;
+    bool defects_truncated = false;
 
     int CountByType(VisualDefectType type) const;
     int CountBySeverity(VisualDefectSeverity severity) const;

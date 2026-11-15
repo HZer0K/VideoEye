@@ -51,6 +51,9 @@ struct VisualDefectOptions {
     // ---- 冻结帧 ----
     double freeze_diff = 0.01; // 与上一采样帧的平均绝对差 / 255（约 2.5 个灰阶）
     double freeze_min_seconds = 1.0;
+    // 音频"静音"要连续持续这么久才成立。单帧静音多半只是说话间隙，
+    // 不能因为这几帧静音就把真正的冻结（画面不动但声音还在）漏掉。
+    double freeze_audio_silence_seconds = 1.0;
 
     // ---- 模糊 ----
     // blur_score = 拉普拉斯方差 / 1000。实测（256 宽采样）:
@@ -66,14 +69,19 @@ struct VisualDefectOptions {
     double flicker_delta = 8.0;       // 相邻采样帧亮度均值跳变 (>= 该值算一次亮暗跳变)
     int flicker_min_alternations = 3; // 窗口内亮->暗->亮交替次数
     double flicker_min_seconds = 0.5;
+    // 闪烁只看最近这段时间内的采样点。按时间限窗而不是按固定点数，
+    // 否则 1fps / 5fps 档位的窗口长度会相差 5 倍，时长与严重度口径不一致。
+    double flicker_window_seconds = 3.0;
 
     // ---- 曝光 ----
+    // 阈值默认按 full-range（0-255）标定；源帧是 limited range（16-235）时，
+    // 分析内部会把 highlight/clip_high 自动换成 236/252，避免把合法峰值白当削波。
     double highlight_luma = 240.0;               // 高光像素阈值
     double clip_high_luma = 250.0;               // 硬削波阈值
     double clip_low_luma = 5.0;                  // 暗部压死阈值
     double shadow_luma = 40.0;                   // 暗部像素阈值（欠曝统计用）
     double over_exposure_highlight_ratio = 0.20; // 高光占比
-    double over_exposure_clip_ratio = 0.08;      // 削波占比（两者满足其一即判过曝）
+    double over_exposure_clip_ratio = 0.08;      // 削波占比；或 高光占比达标且削波 >= 2%
     double under_exposure_dark_ratio = 0.60;     // 暗部占比
     double under_exposure_luma_mean = 35.0;      // 或全帧均值过低
     double exposure_min_seconds = 0.3;
@@ -88,7 +96,9 @@ struct VisualDefectOptions {
     double combing_min_seconds = 0.5;
 
     // ---- 花屏 / 马赛克（块效应）----
-    int block_size = 8;             // 以采样图像素计的块边长
+    // 块边长按"源图像素"计。分析时会额外取一块 1:1 的源分辨率中心裁剪图做检测，
+    // 避免 4K/1080p 降采样到 256 宽后 8px 块结构被抹平、导致规则永远不可用。
+    int block_size = 8;
     double blockiness_score = 0.35; // 块边界不连续度
     double blockiness_min_seconds = 0.3;
 
@@ -99,7 +109,8 @@ struct VisualDefectOptions {
 
     // ---- 通用 ----
     size_t max_defects = 2000;   // 缺陷条数上限（超长素材兜底）
-    size_t max_samples = 200000; // 采样指标条数上限（图表用，超了就丢最早的）
+    size_t max_samples = 200000; // 采样指标条数上限（超了按批丢最早的，避免每帧搬移整表）
+    size_t max_evidence_defects = 200; // 保留证据缩略图的缺陷条数上限（报告只内嵌少量）
 
     // 相邻同类缺陷间隔小于该秒数时合并成一条（避免同一段问题被切成好几条）
     double MergeGapSeconds() const {

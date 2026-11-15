@@ -504,3 +504,42 @@ TEST(VisualDefectPageTests, QualitySamplesAreCapped) {
     // 真正兜住上限的是上面的缺陷条数与这里的"喂完不炸"
     EXPECT_FALSE(page.HasPending());
 }
+
+// ---------------------------------------------------------------------------
+// 13. 表格增量刷新: 追加只补新行，换文件 ResetAll 要清掉证据释放标记
+// ---------------------------------------------------------------------------
+
+TEST(VisualDefectPageTests, TableAppendsNewRowsWithoutRebuilding) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    page.AppendDefect(MakeDefect(1, 1.0, 2.0));
+    page.FlushPending();
+
+    QTableWidget* table = page.findChild<QTableWidget*>();
+    ASSERT_TRUE(table != nullptr);
+    ASSERT_EQ(1, table->rowCount());
+    ASSERT_TRUE(table->item(0, 6) != nullptr);
+    const QString first_description = table->item(0, 6)->text();
+
+    page.AppendDefect(MakeDefect(2, 3.0, 4.0));
+    page.FlushPending();
+    EXPECT_EQ(2, table->rowCount());
+    // 追加模式不该重写已有行
+    EXPECT_EQ(first_description, table->item(0, 6)->text());
+    ASSERT_TRUE(table->item(1, 6) != nullptr);
+}
+
+TEST(VisualDefectPageTests, ResetAllClearsEvidenceTrimFlag) {
+    EnsureApp();
+
+    VisualDefectPage page(true, VisualDefectOptions());
+    for (int i = 1; i <= 210; ++i)
+        page.AppendDefect(MakeDefectWithEvidence(i, static_cast<double>(i), static_cast<double>(i) + 0.5));
+    ASSERT_TRUE(page.evidence_trimmed());
+
+    page.ResetAll();
+    // 重新开始一次分析后，旧的"证据图已释放"提示必须清掉，
+    // 否则新采集的空证据会被误报成"被限额释放"
+    EXPECT_FALSE(page.evidence_trimmed());
+}

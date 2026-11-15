@@ -347,13 +347,25 @@ JsonValue BuildVisualQcObject(const model::AnalysisResult& result) {
     node.Set("dropped_frames", JNumber(static_cast<double>(qc.dropped_frames)));
     node.Set("duration_seconds", JNumber(qc.duration_seconds));
     node.Set("defect_count", JNumber(static_cast<double>(qc.defects.size())));
+    node.Set("samples_truncated", JsonValue(qc.samples_truncated));
+    node.Set("defects_truncated", JsonValue(qc.defects_truncated));
 
     if (qc.effective_area.valid) {
         JsonValue area = JsonValue::MakeObject();
-        area.Set("x", JNumber(static_cast<double>(qc.effective_area.x)));
-        area.Set("y", JNumber(static_cast<double>(qc.effective_area.y)));
-        area.Set("width", JNumber(static_cast<double>(qc.effective_area.width)));
-        area.Set("height", JNumber(static_cast<double>(qc.effective_area.height)));
+        // x/y/width/height 用源分辨率坐标（与报告展示、用户认知一致）；
+        // 采样坐标另外给出，便于与逐帧指标对照。
+        area.Set("x", JNumber(static_cast<double>(qc.effective_area.SourceX())));
+        area.Set("y", JNumber(static_cast<double>(qc.effective_area.SourceY())));
+        area.Set("width", JNumber(static_cast<double>(qc.effective_area.SourceWidth())));
+        area.Set("height", JNumber(static_cast<double>(qc.effective_area.SourceHeight())));
+        area.Set("sample_x", JNumber(static_cast<double>(qc.effective_area.x)));
+        area.Set("sample_y", JNumber(static_cast<double>(qc.effective_area.y)));
+        area.Set("sample_width", JNumber(static_cast<double>(qc.effective_area.width)));
+        area.Set("sample_height", JNumber(static_cast<double>(qc.effective_area.height)));
+        if (qc.effective_area.HasSourceSize()) {
+            area.Set("frame_width", JNumber(static_cast<double>(qc.effective_area.source_width)));
+            area.Set("frame_height", JNumber(static_cast<double>(qc.effective_area.source_height)));
+        }
         area.Set("active_ratio", JNumber(qc.effective_area.active_ratio));
         area.Set("letterbox", JsonValue(qc.effective_area.letterbox));
         area.Set("pillarbox", JsonValue(qc.effective_area.pillarbox));

@@ -215,11 +215,17 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             << visual.total_frames << " 帧）";
         if (visual.dropped_frames > 0)
             out << " ｜ 丢弃 " << visual.dropped_frames << " 帧";
-        out << " ｜ 检出 " << visual.defects.size() << " 条画面缺陷\n";
+        out << " ｜ 检出 " << visual.defects.size() << " 条画面缺陷";
+        if (visual.samples_truncated || visual.defects_truncated)
+            out << "（超出上限已截断: " << (visual.samples_truncated ? "采样指标" : "")
+                << ((visual.samples_truncated && visual.defects_truncated) ? "、" : "")
+                << (visual.defects_truncated ? "缺陷列表" : "") << "）";
+        out << "\n";
         const model::ActivePictureArea& area = visual.effective_area;
         if (area.valid) {
-            out << "  有效画面区域 " << area.width << "x" << area.height << "（占比 "
-                << Fixed(area.active_ratio * 100.0, 1) << "%）";
+            // 展示源分辨率坐标: 采样坐标（如 256x108）对用户没有意义
+            out << "  有效画面区域 " << area.SourceWidth() << "x" << area.SourceHeight() << "（位置 " << area.SourceX()
+                << "," << area.SourceY() << "，占比 " << Fixed(area.active_ratio * 100.0, 1) << "%）";
             if (area.letterbox || area.pillarbox)
                 out << " ｜ 黑边: " << (area.letterbox ? "上下" : "") << (area.pillarbox ? "左右" : "");
             out << "\n";

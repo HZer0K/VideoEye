@@ -127,10 +127,42 @@ int ScaledHeight(int src_width, int src_height, int dst_width) {
     return height;
 }
 
+// 让 sws 保持源帧自己的亮度范围（limited 16-235 / full 0-255）。
+// 默认 GRAY8 输出会把 limited 展开成 full，导致合法峰值白 235 -> 255，
+// 曝光检测会把白底/标题卡误当成削波。这里把 dstRange 配成 srcRange。
+// srcRange 优先取帧上声明的 color_range；没声明时沿用 sws 自己的推断
+// （YUV 默认 limited、YUVJ/RGB 默认 full），避免拍脑袋猜错范围。
+void ApplyNativeLumaRange(SwsContext* sws, const AVFrame* frame, int* effective_src_range = nullptr) {
+    if (!sws || !frame)
+        return;
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame->format));
+    if (!desc || (desc->flags & AV_PIX_FMT_FLAG_RGB))
+        return; // RGB 输入本身就是 full range，不需要再转换
+    int* inv_table = nullptr;
+    int* table = nullptr;
+    int src_range = 0;
+    int dst_range = 1;
+    int brightness = 0;
+    int contrast = 0;
+    int saturation = 0;
+    if (sws_getColorspaceDetails(sws, &inv_table, &src_range, &table, &dst_range, &brightness, &contrast, &saturation) <
+        0) {
+        return;
+    }
+    if (frame->color_range == AVCOL_RANGE_MPEG)
+        src_range = 0;
+    else if (frame->color_range == AVCOL_RANGE_JPEG)
+        src_range = 1;
+    // 未声明范围时 src_range 保留 sws 的推断结果
+    sws_setColorspaceDetails(sws, inv_table, src_range, table, src_range, brightness, contrast, saturation);
+    if (effective_src_range)
+        *effective_src_range = src_range;
+}
+
 } // namespace
 
 bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_width, bool capture_rgb,
-                                  model::FrameSample& out, std::string& error) {
+                                  model::FrameSample& out, std::string& error, bool build_block_probe) {
     out = model::FrameSample();
     if (!frame) {
         error = "Frame is null";
@@ -148,13 +180,25 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
         return false;
     }
     std::vector<uint8_t> gray;
-    if (!ScaleToGray(frame, gw, gh, gray, error))
+    bool limited_range = false;
+    if (!ScaleToGray(frame, gw, gh, gray, error, &limited_range))
         return false;
     out.width = gw;
     out.height = gh;
-    // 记下源宽：下游要把编码块这类"源像素量级"的判定换算到样本像素（见块效应检测）
+    // 记下源尺寸：下游要把编码块这类"源像素量级"的判定换算到样本像素，
+    // 报告/界面也要把采样坐标换算回源分辨率展示。
     out.source_width = frame->width;
+    out.source_height = frame->height;
+    // 以缩放时实际采用的范围为准（未声明 color_range 时由 sws 推断），
+    // 否则会出现"样本值是 235 但阈值按 full range 卡"的口径错位。
+    out.limited_range = limited_range;
+    out.hdr = frame->color_trc == AVCOL_TRC_SMPTE2084 || frame->color_trc == AVCOL_TRC_ARIB_STD_B67;
     out.gray = std::move(gray);
+
+    if (build_block_probe && !BuildBlockProbe(frame, out, error)) {
+        // 块效应探针失败只影响这一项规则，不该把整帧分析废掉
+        error.clear();
+    }
 
     if (capture_rgb) {
         const int rw = rgb_width > 16 ? rgb_width : 16;
@@ -172,8 +216,10 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
 }
 
 bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out,
-                                  std::string& error) {
+                                  std::string& error, bool* limited_range) {
     out.clear();
+    if (limited_range)
+        *limited_range = false;
     if (!frame || width <= 0 || height <= 0 || frame->format < 0 || !frame->data[0]) {
         error = "Frame dimensions are invalid";
         return false;
@@ -192,6 +238,10 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height, s
         out.clear();
         return false;
     }
+    int src_range = -1;
+    ApplyNativeLumaRange(sws, frame, &src_range);
+    if (limited_range)
+        *limited_range = (src_range == 0);
     uint8_t* dst_data[4] = {out.data(), nullptr, nullptr, nullptr};
     const int dst_linesize[4] = {width, 0, 0, 0};
     const int ret = sws_scale(sws, frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
@@ -201,6 +251,70 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height, s
         out.clear();
         return false;
     }
+    return true;
+}
+
+bool QualityAnalyzer::BuildBlockProbe(const AVFrame* frame, model::FrameSample& out, std::string& error) {
+    out.block_width = 0;
+    out.block_height = 0;
+    out.block_gray.clear();
+    if (!frame || frame->width < 16 || frame->height < 16 || frame->format < 0 || !frame->data[0])
+        return false;
+
+    const auto src_fmt = static_cast<AVPixelFormat>(frame->format);
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(src_fmt);
+    if (!desc)
+        return false;
+
+    // 取源分辨率中心 384x384（不足则取整帧），1:1 不缩放，保住 8x8 编码块周期。
+    const int crop_w = std::min(frame->width, 384) & ~1;
+    const int crop_h = std::min(frame->height, 384) & ~1;
+    if (crop_w < 16 || crop_h < 16)
+        return false;
+    const int x0 = ((frame->width - crop_w) / 2) & ~1;
+    const int y0 = ((frame->height - crop_h) / 2) & ~1;
+
+    const uint8_t* src_data[4] = {nullptr, nullptr, nullptr, nullptr};
+    int src_linesize[4] = {0, 0, 0, 0};
+    for (int plane = 0; plane < 4; ++plane) {
+        if (!frame->data[plane])
+            continue;
+        int comp = -1;
+        for (int c = 0; c < desc->nb_components; ++c) {
+            if (desc->comp[c].plane == plane) {
+                comp = c;
+                break;
+            }
+        }
+        if (comp < 0)
+            continue;
+        const int shift_w = (plane == 1 || plane == 2) ? desc->log2_chroma_w : 0;
+        const int shift_h = (plane == 1 || plane == 2) ? desc->log2_chroma_h : 0;
+        const int step = desc->comp[comp].step > 0 ? desc->comp[comp].step : 1;
+        src_data[plane] = frame->data[plane] + static_cast<ptrdiff_t>(y0 >> shift_h) * frame->linesize[plane] +
+                          static_cast<ptrdiff_t>(x0 >> shift_w) * step;
+        src_linesize[plane] = frame->linesize[plane];
+    }
+
+    std::vector<uint8_t> gray(static_cast<size_t>(crop_w) * crop_h);
+    SwsContext* sws =
+        sws_getContext(crop_w, crop_h, src_fmt, crop_w, crop_h, AV_PIX_FMT_GRAY8, SWS_POINT, nullptr, nullptr, nullptr);
+    if (!sws) {
+        error = "Failed to create sws context (block probe)";
+        return false;
+    }
+    ApplyNativeLumaRange(sws, frame);
+    uint8_t* dst_data[4] = {gray.data(), nullptr, nullptr, nullptr};
+    const int dst_linesize[4] = {crop_w, 0, 0, 0};
+    const int ret = sws_scale(sws, src_data, src_linesize, 0, crop_h, dst_data, dst_linesize);
+    sws_freeContext(sws);
+    if (ret < 0) {
+        error = "Failed to scale block probe";
+        return false;
+    }
+    out.block_width = crop_w;
+    out.block_height = crop_h;
+    out.block_gray = std::move(gray);
     return true;
 }
 

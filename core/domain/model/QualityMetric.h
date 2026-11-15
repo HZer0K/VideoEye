@@ -51,8 +51,37 @@ struct ActivePictureArea {
 
     double active_ratio = 1.0; // 有效区面积 / 整帧面积
 
+    // 采样图与源图尺寸，用于把上面的采样坐标换算回源分辨率展示 / 导出。
+    // 为 0 时表示未知（手造样本），调用方按采样坐标处理。
+    int sample_width = 0;
+    int sample_height = 0;
+    int source_width = 0;
+    int source_height = 0;
+
     bool HasBars() const {
         return letterbox || pillarbox;
+    }
+
+    bool HasSourceSize() const {
+        return sample_width > 0 && sample_height > 0 && source_width > 0 && source_height > 0;
+    }
+
+    int SourceX() const {
+        return HasSourceSize() ? static_cast<int>(std::lround(static_cast<double>(x) * source_width / sample_width))
+                               : x;
+    }
+    int SourceY() const {
+        return HasSourceSize() ? static_cast<int>(std::lround(static_cast<double>(y) * source_height / sample_height))
+                               : y;
+    }
+    int SourceWidth() const {
+        return HasSourceSize() ? static_cast<int>(std::lround(static_cast<double>(width) * source_width / sample_width))
+                               : width;
+    }
+    int SourceHeight() const {
+        return HasSourceSize()
+                   ? static_cast<int>(std::lround(static_cast<double>(height) * source_height / sample_height))
+                   : height;
     }
 };
 
@@ -70,7 +99,20 @@ struct FrameSample {
     // 降采样前的源帧宽度（为 0 表示未知，例如单测里手造的样本）。
     // 视觉缺陷检测要用它把"源图像素"量级的参数（如编码块边长）换算到样本像素。
     int source_width = 0;
+    int source_height = 0;
     std::vector<uint8_t> gray; // width * height，GRAY8，无行对齐
+
+    // 源分辨率中心裁剪（1:1，不缩放）的灰度小图，仅用于块效应检测。
+    // 8x8 编码块在 256 宽的降采样图上只剩 1px 多，周期结构已被抹平；
+    // 用 1:1 的局部裁剪才能保住块边界，让 block_size 真正按源像素生效。
+    int block_width = 0;
+    int block_height = 0;
+    std::vector<uint8_t> block_gray;
+
+    // 源帧的亮度范围 / 传输特性。limited_range 时曝光阈值需要按 16-235 重新标定；
+    // hdr（PQ/HLG）不做色调映射时曝光/色偏指标不可信，置为不可用。
+    bool limited_range = false;
+    bool hdr = false;
 
     int rgb_width = 0;
     int rgb_height = 0;
@@ -82,6 +124,11 @@ struct FrameSample {
 
     bool valid() const {
         return width > 0 && height > 0 && gray.size() == static_cast<size_t>(width) * static_cast<size_t>(height);
+    }
+
+    bool has_block_gray() const {
+        return block_width >= 16 && block_height >= 16 &&
+               block_gray.size() == static_cast<size_t>(block_width) * static_cast<size_t>(block_height);
     }
 
     bool has_rgb() const {
