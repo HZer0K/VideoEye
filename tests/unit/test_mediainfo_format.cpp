@@ -65,6 +65,21 @@ TEST(MediaInfoFormatTest, DurationKeepsMillisecondsBeyondOneMinute) {
     EXPECT_TRUE(Contains(exact, "Duration                   : 1 min 5 s\n"));
 }
 
+TEST(MediaInfoFormatTest, MetadataLinesAlignWithFieldColumns) {
+    AVFormatContextGuard format;
+    ASSERT_NE(format.get(), nullptr);
+    av_dict_set(&format.get()->metadata, "encoder", "Lavf61", 0);
+    av_dict_set(&format.get()->metadata, "major_brand", "isom", 0);
+
+    const std::string text = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "meta.mp4");
+
+    // metadata 条目比字段行多缩进两格，但冒号必须和上面各字段落在同一列：
+    // 键补到 25 列 + 4 格缩进 = 29，和 "  Complete name              : " 对齐。
+    EXPECT_TRUE(Contains(text, "  Metadata:\n"));
+    EXPECT_TRUE(Contains(text, "    encoder                  : Lavf61\n"));
+    EXPECT_TRUE(Contains(text, "    major_brand              : isom\n"));
+}
+
 TEST(MediaInfoFormatTest, FormatsGeneralAndStreamSectionsFromContext) {
     AVFormatContextGuard format;
     ASSERT_NE(format.get(), nullptr);

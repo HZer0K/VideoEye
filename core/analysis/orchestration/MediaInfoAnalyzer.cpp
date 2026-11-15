@@ -147,6 +147,12 @@ std::string LanguageName(const AVDictionary* metadata, const AVStream* stream) {
 void AppendMetadata(std::string& out, const AVDictionary* dict, const std::string& indent) {
     if (!dict)
         return;
+    // 与 General / 各流字段共用同一列：字段行缩进 indent、标签补到 27 列后接 ": "；
+    // metadata 条目在 indent 下再缩进两格，所以键补到 25 列，冒号和取值仍落在同一列。
+    // 以前这里写成 "key : value"（冒号前只有一个空格），和上面的字段行对不齐。
+    constexpr size_t kLabelWidth = 27;
+    const size_t kKeyWidth = kLabelWidth - 2;
+    const std::string entry_indent = indent + "  ";
     const AVDictionaryEntry* entry = nullptr;
     bool any = false;
     while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX))) {
@@ -156,7 +162,12 @@ void AppendMetadata(std::string& out, const AVDictionary* dict, const std::strin
             out += indent + "Metadata:\n";
             any = true;
         }
-        out += indent + "  " + entry->key + " : " + entry->value + '\n';
+        const std::string key = entry->key ? entry->key : std::string();
+        out += entry_indent + key;
+        if (key.size() < kKeyWidth) {
+            out.append(kKeyWidth - key.size(), ' ');
+        }
+        out += std::string(": ") + entry->value + '\n';
     }
 }
 
