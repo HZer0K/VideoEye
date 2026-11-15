@@ -43,6 +43,9 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QResizeEvent;
+class QShowEvent;
+class QTimer;
 class QToolButton;
 
 namespace videoeye {
@@ -54,9 +57,9 @@ class FileStructureMapPage : public QWidget {
     Q_OBJECT
 
 public:
-    // feature_checked: 页头「启用分析」的初值（复用容器结构这个 feature 的当前值）。
-    // 本页的开关只 gate 本页是否绘制：容器解析在打开文件时已经自动跑完，
-    // 关掉开关不会改动全局 feature，也不会丢已收到的结果。
+    // feature_checked: 页头「启用分析」的初值（与「文件结构」页共用同一个容器解析 feature）。
+    // 开关与「文件结构」页双向联动：任意一页开启 / 关闭都会同步；关闭只停止绘制，
+    // 不丢弃已收到的结果。解析本身仍由 AnalysisPanel -> MainWindow 编排。
     explicit FileStructureMapPage(bool feature_checked, QWidget* parent = nullptr);
 
     // 打开文件时容器解析完成 / 失败 / 换文件。三者都只碰本页自己的状态。
@@ -79,6 +82,9 @@ public:
     structure_map_detail::MapViewKind ViewKind() const;
     int SelectedNode() const;
     int HitCount() const;
+    // 层级带的纵向窗口：定位深层命中时这两个值应随之变化。
+    int FirstVisibleRow() const;
+    int VisibleRowCount() const;
     QString DetailText() const;
     QString SearchQuery() const;
     QString CoverageText() const;
@@ -102,19 +108,33 @@ public:
     void SetLayoutMode(structure_map_detail::MapLayoutMode mode);
     void SetViewKind(structure_map_detail::MapViewKind kind);
     void SetVisibleLayers(int layers); // 0 = 全部
+    // 面板把「启用分析」feature 的当前值同步到本页（不改 feature、不回抛信号）。
+    void SetFeatureChecked(bool checked);
     // 把当前选中节点定位到「文件结构」树页。无选中节点时什么都不做。
     void RequestJumpToTree();
+    // 当前视图的 SVG 快照（「导出当前视图 SVG」用的同一份实现，供单测直接校验）。
+    // 空结果 / 无可见矩形时返回空，不产"看起来像成功导出"的空图。
+    QByteArray ExportSvgBytes() const;
 
 signals:
     // 跨页联动：路径 + 偏移 + 大小是身份，不是行号。由 AnalysisPanel 上抛给
     // MainWindow::ShowPageById（它负责同步侧栏高亮），再回调面板选中树节点。
     void StructureNodeJumpRequested(const QString& path, quint64 offset, quint64 size);
+    // 页内开关变化：面板负责写回统一 feature 表并同步「文件结构」页。
+    void FeatureToggled(bool enabled);
 
 private:
     void SetupUi();
     void Refresh();
     void RebuildNodes();
+    void ComputeRowBudget(int plot_width, int plot_height, int* rows, int* total_layers) const;
+    void RevealNodeRow(int index);
+    void ScheduleRelayout();
     void RebuildDepthCombo();
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
     void ApplyViewAvailability();
     void UpdateDetail();
     void UpdateHitLabel();
@@ -138,6 +158,9 @@ private:
     model::ContainerStructureResult result_;
     std::vector<structure_map_detail::MapNode> nodes_;
     structure_map_detail::PacketBandData bands_;
+    // 包带只跟 result_ 与桶数有关：resize / 换布局不必重扫全部样本。
+    bool bands_dirty_ = true;
+    int bands_bins_ = 0;
     structure_map_detail::StreamByteRows stream_rows_;
     structure_map_detail::MapCoverage coverage_;
     structure_map_detail::FormatProfile profile_;
@@ -156,6 +179,10 @@ private:
     structure_map_detail::MapViewKind view_kind_ = structure_map_detail::MapViewKind::Icicle;
     bool nodes_truncated_ = false;
     bool depth_truncated_ = false;
+    // 是否真的收到过一次结果 / 失败。用来区分「尚未分析」与「分析失败」，
+    // 避免页面一打开就显示「结构分析失败」。
+    bool has_attempt_ = false;
+    QTimer* relayout_timer_ = nullptr;
 };
 
 } // namespace ui

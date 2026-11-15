@@ -18,10 +18,12 @@
 #include <QPen>
 #include <QPushButton>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStringList>
 #include <QTextStream>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -31,6 +33,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/analysis_panel/StructureMapFormat.h"
@@ -186,6 +189,13 @@ public:
         selected_ = index;
         update();
     }
+    // 只切换「是否绘制」，不重建节点 / 包带；开关联动时用。
+    void SetDrawingEnabled(bool enabled) {
+        if (enabled_ == enabled)
+            return;
+        enabled_ = enabled;
+        update();
+    }
     void SetHits(const QVector<int>& hits) {
         hits_ = hits;
         update();
@@ -216,6 +226,99 @@ public:
         selected_stream_row_ = row;
         selected_stream_bin_ = bin;
         update();
+    }
+
+    // 信息栏文字只算一次：屏幕上绘制与 SVG 导出都读它，避免两边各写一套而漂移。
+    std::pair<QString, QString> BuildInfoLines() const {
+        QString line1;
+        QString line2;
+        switch (view_kind_) {
+        case smd::MapViewKind::Treemap:
+            line1 = tr("%1 · %2 · %3 个节点 · 字节树图（压缩字节权重）")
+                        .arg(format_name_, file_span_ > 0 ? smd::FormatBytes(file_span_) : tr("大小未知"))
+                        .arg(nodes_.size());
+            line2 = tr("面积按压缩权重且小盒子保底（真实占比见节点详情）· 最深 %1 层 · 与结构图共用节点身份")
+                        .arg(kTreemapMaxDepth);
+            break;
+        case smd::MapViewKind::PacketBands:
+            if (bands_.axis == smd::MapBandAxis::ByteOffset) {
+                line1 = tr("%1 · 字节分布带 · %2 · 跨度 %3")
+                            .arg(format_name_, bands_.source, smd::FormatBytes(static_cast<quint64>(bands_.axis_max)));
+                line2 = tr("%1 条轨 · %2 个字节桶 · %3 条块摘要 · %4")
+                            .arg(bands_.tracks.size())
+                            .arg(bands_.BinCount())
+                            .arg(bands_.TotalCount())
+                            .arg(bands_.sampled ? tr("抽样结果") : tr("已声明摘要全集"));
+            } else {
+                line1 = tr("%1 · 时间轴包带 · %2 · 时长 %3 s")
+                            .arg(format_name_, bands_.source)
+                            .arg(bands_.duration_seconds, 0, 'f', 2);
+                line2 = tr("%1 条轨 · %2 个时间桶 · %3 条记录 · %4")
+                            .arg(bands_.tracks.size())
+                            .arg(bands_.BinCount())
+                            .arg(bands_.TotalCount())
+                            .arg(bands_.sampled ? tr("抽样结果") : tr("已声明样本全集"));
+            }
+            break;
+        case smd::MapViewKind::FormatOverview:
+            line1 = tr("%1 · 格式概览 · %2 项实测事实").arg(profile_.family_label).arg(profile_.facts.size());
+            line2 = profile_.structure_note;
+            if (!profile_.window_label.isEmpty())
+                line2 += QStringLiteral(" · ") + profile_.window_label;
+            break;
+        case smd::MapViewKind::Icicle:
+        default: {
+            const QString mode = mode_ == smd::MapLayoutMode::Balanced ? tr("均衡布局") : tr("字节占比");
+            const int shown_layers = std::min(rows_, total_layers_ - first_row_);
+            line1 = tr("%1 · %2 · %3 个节点 · %4 · 视窗 %5%")
+                        .arg(format_name_, file_span_ > 0 ? smd::FormatBytes(file_span_) : tr("大小未知"))
+                        .arg(nodes_.size())
+                        .arg(mode)
+                        .arg(100.0 / view_.scale, 0, 'f', 1);
+            line2 = tr("可见第 %1–%2 层 / 共 %3 层 · %4 条流 · %5 项元数据 · %6")
+                        .arg(first_row_ + 1)
+                        .arg(first_row_ + shown_layers)
+                        .arg(total_layers_)
+                        .arg(streams_.size())
+                        .arg(metadata_.size())
+                        .arg(!stream_rows_.available ? tr("底部不绘制流区间")
+                             : stream_rows_.any_truncated ? tr("底部 = 样本分布（样本表截断，右侧为未展开区）")
+                                                          : tr("底部 = 样本按当前布局的分布"));
+            if (!summary_.isEmpty())
+                line2 += QStringLiteral(" · ") + summary_;
+            if (profile_.has_precise_window && !profile_.window_label.isEmpty())
+                line2 += QStringLiteral(" · ") + profile_.window_label;
+            break;
+        }
+        }
+        if (truncated_)
+            line1 += tr(" · 已裁剪");
+        return {line1, line2};
+    }
+
+    // 屏幕与 SVG 导出共用同一份图例，避免"导出即所见"只对了一半。
+    static std::vector<std::pair<QColor, QString>> LegendItems() {
+        return {{QColor(QStringLiteral("#12263A")), QString::fromUtf8("元数据 / 关键帧")},
+                {QColor(QStringLiteral("#21262D")), QString::fromUtf8("载荷")},
+                {QColor(QStringLiteral("#3A2A12")), QString::fromUtf8("分片")},
+                {QColor(QStringLiteral("#5A1E1E")), QString::fromUtf8("异常")}};
+    }
+
+    // 流带行标签与色块：导出要与屏幕一致，SVG 里也得能分清哪条带是哪条流。
+    std::vector<std::pair<QColor, QString>> StreamRowLegend() const {
+        std::vector<std::pair<QColor, QString>> rows;
+        if (!stream_rows_.available)
+            return rows;
+        const int shown = std::min<int>(smd::kStreamMaxRows, static_cast<int>(stream_rows_.rows.size()));
+        for (int r = 0; r < shown; ++r) {
+            const smd::StreamByteRow& row = stream_rows_.rows[static_cast<size_t>(r)];
+            rows.emplace_back(smd::StreamColor(row.type), QStringLiteral("#%1").arg(row.track_id));
+        }
+        return rows;
+    }
+
+    int StreamBandTop() const {
+        return stream_rows_.available ? BandTop(Geometry()) : -1;
     }
 
     std::function<void(int)> on_select;          // node index（或 -1 取消选中）
@@ -358,20 +461,22 @@ protected:
                 dragging_ = true;
             if (dragging_) {
                 const smd::MapGeometry geom = Geometry();
-                const double dx = static_cast<double>(pos.x() - last_pos_.x());
+                // 只有冰柱图有「层级行」可以上下拖；树图 / 包带的行位置与 first_row 无关，
+                // 拖拽在那里改 first_row 不会有任何视觉反馈。
                 if (view_kind_ == smd::MapViewKind::Icicle) {
+                    const double dx = static_cast<double>(pos.x() - last_pos_.x());
                     smd::MapViewport next = view_;
                     next.origin -= dx / (geom.width * next.scale);
                     SetView(next);
-                }
-                drag_y_accum_ += static_cast<double>(pos.y() - last_pos_.y());
-                while (drag_y_accum_ >= geom.row_height) {
-                    SetFirstRow(first_row_ + 1);
-                    drag_y_accum_ -= geom.row_height;
-                }
-                while (drag_y_accum_ <= -geom.row_height) {
-                    SetFirstRow(first_row_ - 1);
-                    drag_y_accum_ += geom.row_height;
+                    drag_y_accum_ += static_cast<double>(pos.y() - last_pos_.y());
+                    while (drag_y_accum_ >= geom.row_height) {
+                        SetFirstRow(first_row_ + 1);
+                        drag_y_accum_ -= geom.row_height;
+                    }
+                    while (drag_y_accum_ <= -geom.row_height) {
+                        SetFirstRow(first_row_ - 1);
+                        drag_y_accum_ += geom.row_height;
+                    }
                 }
             }
             last_pos_ = pos;
@@ -547,87 +652,23 @@ private:
     }
 
     void DrawInfoBar(QPainter& painter, const smd::MapGeometry& geom) {
-        QString line1;
-        QString line2;
-        switch (view_kind_) {
-        case smd::MapViewKind::Treemap:
-            line1 = tr("%1 · %2 · %3 个节点 · 字节树图（压缩字节权重）")
-                        .arg(format_name_, file_span_ > 0 ? smd::FormatBytes(file_span_) : tr("大小未知"))
-                        .arg(nodes_.size());
-            line2 = tr("面积按压缩权重且小盒子保底（真实占比见节点详情）· 最深 %1 层 · 与结构图共用节点身份")
-                        .arg(kTreemapMaxDepth);
-            break;
-        case smd::MapViewKind::PacketBands:
-            if (bands_.axis == smd::MapBandAxis::ByteOffset) {
-                line1 = tr("%1 · 字节分布带 · %2 · 跨度 %3")
-                            .arg(format_name_, bands_.source, smd::FormatBytes(static_cast<quint64>(bands_.axis_max)));
-                line2 = tr("%1 条轨 · %2 个字节桶 · %3 条块摘要 · %4")
-                            .arg(bands_.tracks.size())
-                            .arg(bands_.BinCount())
-                            .arg(bands_.TotalCount())
-                            .arg(bands_.sampled ? tr("抽样结果") : tr("已声明摘要全集"));
-            } else {
-                line1 = tr("%1 · 时间轴包带 · %2 · 时长 %3 s")
-                            .arg(format_name_, bands_.source)
-                            .arg(bands_.duration_seconds, 0, 'f', 2);
-                line2 = tr("%1 条轨 · %2 个时间桶 · %3 条记录 · %4")
-                            .arg(bands_.tracks.size())
-                            .arg(bands_.BinCount())
-                            .arg(bands_.TotalCount())
-                            .arg(bands_.sampled ? tr("抽样结果") : tr("已声明样本全集"));
-            }
-            break;
-        case smd::MapViewKind::FormatOverview:
-            line1 = tr("%1 · 格式概览 · %2 项实测事实").arg(profile_.family_label).arg(profile_.facts.size());
-            line2 = profile_.structure_note;
-            if (!profile_.window_label.isEmpty())
-                line2 += QStringLiteral(" · ") + profile_.window_label;
-            break;
-        case smd::MapViewKind::Icicle:
-        default: {
-            const QString mode = mode_ == smd::MapLayoutMode::Balanced ? tr("均衡布局") : tr("字节占比");
-            const int shown_layers = std::min(rows_, total_layers_ - first_row_);
-            line1 = tr("%1 · %2 · %3 个节点 · %4 · 视窗 %5%")
-                        .arg(format_name_, file_span_ > 0 ? smd::FormatBytes(file_span_) : tr("大小未知"))
-                        .arg(nodes_.size())
-                        .arg(mode)
-                        .arg(100.0 / view_.scale, 0, 'f', 1);
-            line2 = tr("可见第 %1–%2 层 / 共 %3 层 · %4 条流 · %5 项元数据 · %6")
-                        .arg(first_row_ + 1)
-                        .arg(first_row_ + shown_layers)
-                        .arg(total_layers_)
-                        .arg(streams_.size())
-                        .arg(metadata_.size())
-                        .arg(!stream_rows_.available ? tr("底部不绘制流区间")
-                             : stream_rows_.any_truncated ? tr("底部 = 样本分布（样本表截断，右侧为未展开区）")
-                                                          : tr("底部 = 样本按当前布局的分布"));
-            if (!summary_.isEmpty())
-                line2 += QStringLiteral(" · ") + summary_;
-            if (profile_.has_precise_window && !profile_.window_label.isEmpty())
-                line2 += QStringLiteral(" · ") + profile_.window_label;
-            break;
-        }
-        }
-        if (truncated_)
-            line1 += tr(" · 已裁剪");
+        const std::pair<QString, QString> lines = BuildInfoLines();
+        const QString& line1 = lines.first;
+        const QString& line2 = lines.second;
         painter.setPen(QColor(theme::color::kTextPrimary));
         painter.drawText(geom.left, 14, painter.fontMetrics().elidedText(line1, Qt::ElideRight, geom.width));
 
         // 图例固定在右上角；第二行文字截到它左边，两行文字与色块不能抢同一块像素。
-        static const struct LegendItem {
-            const char* color;
-            const char* label;
-        } kLegend[] = {{"#12263A", "元数据 / 关键帧"}, {"#21262D", "载荷"}, {"#3A2A12", "分片"}, {"#5A1E1E", "异常"}};
         const int legend_x = std::max(geom.left, width() - smd::kPlotRight - 320);
         painter.setPen(QColor(theme::color::kTextSecondary));
         const int line2_width = std::max(40, legend_x - geom.left - 12);
         painter.drawText(geom.left, 29, painter.fontMetrics().elidedText(line2, Qt::ElideRight, line2_width));
         int x = legend_x;
-        for (const LegendItem& item : kLegend) {
-            painter.fillRect(x, 23, 8, 8, QColor(QString::fromLatin1(item.color)));
+        for (const auto& item : LegendItems()) {
+            painter.fillRect(x, 23, 8, 8, item.first);
             painter.setPen(QColor(theme::color::kTextMuted));
-            painter.drawText(x + 11, 30, QString::fromUtf8(item.label));
-            x += 11 + painter.fontMetrics().horizontalAdvance(QString::fromUtf8(item.label)) + 12;
+            painter.drawText(x + 11, 30, item.second);
+            x += 11 + painter.fontMetrics().horizontalAdvance(item.second) + 12;
         }
     }
 
@@ -677,7 +718,7 @@ private:
             const int y = band_top + r * smd::kStreamRowHeight;
             painter.fillRect(2, y + 2, 4, smd::kStreamRowHeight - 5, smd::StreamColor(row.type));
             painter.setPen(QColor(theme::color::kTextSecondary));
-            painter.drawText(9, y + smd::kStreamRowHeight - 3, QStringLiteral("#%1").arg(row.stream_index));
+            painter.drawText(9, y + smd::kStreamRowHeight - 3, QStringLiteral("#%1").arg(row.track_id));
         }
         painter.setPen(QColor(theme::color::kTextMuted));
         if (stream_rows_.rows.size() > static_cast<size_t>(shown))
@@ -699,9 +740,10 @@ private:
         const bool byte_axis =
             view_kind_ == smd::MapViewKind::PacketBands && bands_.axis == smd::MapBandAxis::ByteOffset;
         const bool overview = view_kind_ == smd::MapViewKind::FormatOverview;
-        for (int tick = 0; tick <= 4; ++tick) {
-            if (overview)
-                break; // 事实卡片没有横轴，画刻度只会让人误以为它是一张图
+        // 树图没有字节横轴，也不支持滚轮 / 拖拽：再画字节刻度和操作提示就是假交互。
+        const bool treemap = view_kind_ == smd::MapViewKind::Treemap;
+        // 事实卡片 / 树图的盒子不由横轴位置决定，画刻度只会让人误以为它是一张图。
+        for (int tick = 0; tick <= 4 && !overview && !treemap; ++tick) {
             const int x = geom.left + geom.width * tick / 4;
             QString label;
             if (byte_axis) {
@@ -716,6 +758,7 @@ private:
             painter.drawText(x + 2, axis_y, label);
         }
         const QString hint = overview ? tr("点击事实卡片查看口径 · 所有字段均来自解析结果")
+                             : treemap ? tr("盒子面积按压缩权重绘制 · 点击盒子查看详情 · 双击跳树页")
                              : byte_axis ? tr("横轴 = 文件字节偏移（不是时间）· 点击字节桶查看详情")
                              : view_kind_ == smd::MapViewKind::PacketBands
                                  ? tr("点击时间桶查看详情 · 双击结构图节点跳树页")
@@ -826,6 +869,20 @@ private:
 // ---------------------------------------------------------------------------
 FileStructureMapPage::FileStructureMapPage(bool feature_checked, QWidget* parent) : QWidget(parent) {
     SetupUi();
+    // 窗口尺寸变化（含页面从隐藏变为可见）后按新几何重算 LOD / 分桶。
+    // 用防抖计时器：拖拽缩放时只在停稳后重建一次。
+    relayout_timer_ = new QTimer(this);
+    relayout_timer_->setSingleShot(true);
+    relayout_timer_->setInterval(120);
+    connect(relayout_timer_, &QTimer::timeout, this, [this]() {
+        if (!result_.valid || !canvas_)
+            return;
+        const int cursor = hit_cursor_;
+        RebuildNodes();
+        // resize 不改变节点顺序，命中游标应保留，别让用户搜到一半被重置。
+        hit_cursor_ = cursor < hits_.size() ? cursor : -1;
+        UpdateHitLabel();
+    });
     feature_toggle_->setChecked(feature_checked);
     Refresh();
 }
@@ -847,9 +904,15 @@ void FileStructureMapPage::SetupUi() {
     header->addStretch();
 
     feature_toggle_ = new QCheckBox(tr("启用分析"), title_row);
+    feature_toggle_->setObjectName(QStringLiteral("fileStructureMapFeatureToggle"));
     feature_toggle_->setToolTip(
-        tr("控制本页是否绘制结构图谱。容器结构在打开文件时已自动解析，关闭开关不会取消分析或丢弃结果。"));
-    connect(feature_toggle_, &QCheckBox::toggled, this, [this](bool) { Refresh(); });
+        tr("与「文件结构」页的「启用分析」联动：开启后解析容器结构并绘制图谱；关闭只停止本页绘制，"
+           "不会丢弃已收到的结果。"));
+    connect(feature_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
+        if (canvas_)
+            canvas_->SetDrawingEnabled(checked);
+        emit FeatureToggled(checked);
+    });
     header->addWidget(feature_toggle_);
     header->addWidget(
         MakeExportMenuButton(title_row, {{tr("结构节点 CSV…"), [this]() { OnExportCsv(); },
@@ -857,10 +920,11 @@ void FileStructureMapPage::SetupUi() {
                                          {tr("结构数据 JSON…"), [this]() { OnExportJson(); },
                                           tr("导出结构树、流、元数据与完整性标记（分五维，不合成一个完成态）")},
                                          {tr("当前视图 SVG…"), [this]() { OnExportSvg(); },
-                                          tr("把当前视图（三种视图均支持）导出为矢量图，导出即所见")}}));
+                                          tr("把当前视图导出为矢量图：矩形 / 标签 / 信息栏 / 图例 / 流带与斜纹都一致"
+                                             "（不含坐标轴刻度与悬停态）")}}));
     layout->addWidget(title_row);
 
-    status_label_ = new QLabel(tr("打开媒体文件后将自动生成结构图谱"), this);
+    status_label_ = new QLabel(tr("打开媒体文件并启用分析后将生成结构图谱"), this);
     status_label_->setObjectName(QStringLiteral("SectionLabel"));
     status_label_->setWordWrap(true);
     status_label_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
@@ -1018,7 +1082,9 @@ void FileStructureMapPage::SetupUi() {
 }
 
 void FileStructureMapPage::SetResult(const model::ContainerStructureResult& result) {
+    has_attempt_ = true;
     result_ = result;
+    bands_dirty_ = true;
     title_label_->setText(result_.valid ? QString::fromStdString(result_.format_name) + tr(" 结构图谱")
                                         : tr("文件结构图谱"));
     selected_ = -1;
@@ -1028,18 +1094,26 @@ void FileStructureMapPage::SetResult(const model::ContainerStructureResult& resu
     selected_stream_row_ = -1;
     selected_stream_bin_ = -1;
     hit_cursor_ = -1;
+    // 新文件 / 新结果从整幅视图开始，别把上一个文件的缩放与滚动带过来。
+    ResetView();
     Refresh();
 }
 
 void FileStructureMapPage::SetError(const QString& message) {
+    has_attempt_ = true;
     result_ = model::ContainerStructureResult{};
+    bands_dirty_ = true;
+    // 原因写进结果，完整性条与状态栏用同一份措辞。
+    result_.error_message = message.toStdString();
     title_label_->setText(tr("文件结构图谱"));
+    ResetView();
     Refresh();
-    status_label_->setText(tr("结构分析失败：%1").arg(message.isEmpty() ? tr("无法分析该格式") : message));
 }
 
 void FileStructureMapPage::Clear() {
+    has_attempt_ = false;
     result_ = model::ContainerStructureResult{};
+    bands_dirty_ = true;
     title_label_->setText(tr("文件结构图谱"));
     SetSearchQuery(QString());
     selected_ = -1;
@@ -1049,8 +1123,8 @@ void FileStructureMapPage::Clear() {
     selected_stream_row_ = -1;
     selected_stream_bin_ = -1;
     hit_cursor_ = -1;
+    ResetView();
     Refresh();
-    status_label_->setText(tr("打开媒体文件后将自动生成结构图谱"));
 }
 
 int FileStructureMapPage::NodeCount() const {
@@ -1125,6 +1199,14 @@ int FileStructureMapPage::HitCount() const {
     return hits_.size();
 }
 
+int FileStructureMapPage::FirstVisibleRow() const {
+    return canvas_ ? canvas_->first_row() : 0;
+}
+
+int FileStructureMapPage::VisibleRowCount() const {
+    return canvas_ ? canvas_->rows() : 0;
+}
+
 QString FileStructureMapPage::DetailText() const {
     return detail_label_->text();
 }
@@ -1142,19 +1224,17 @@ void FileStructureMapPage::RebuildNodes() {
 
     const int plot_width = std::max(1, canvas_->width() - smd::kDepthLabelWidth - smd::kPlotRight);
     const smd::MapLod lod = smd::ComputeLod(plot_width, canvas_->height(), tree_depth_);
-    int rows = lod.rows;
-    int total_layers = std::min(tree_depth_ + 1, smd::kMaxTreeDepth + 1);
-    if (visible_layers_ > 0) {
-        rows = std::min(visible_layers_, rows);
-        total_layers = std::min(visible_layers_, total_layers);
-    }
-    rows = std::max(1, rows);
-    total_layers = std::max(rows, total_layers);
+    int rows = 1;
+    int total_layers = 1;
+    ComputeRowBudget(plot_width, canvas_->height(), &rows, &total_layers);
 
-    nodes_ = smd::CollectNodes(result_, smd::kMaxTreeDepth, lod.max_nodes, mode_);
-    // 多要一个节点来判断"是否真的还有没画出来的"，别把刚好等于预算误报成裁剪。
-    nodes_truncated_ = smd::CollectNodes(result_, smd::kMaxTreeDepth, lod.max_nodes + 1, mode_).size() >
-                       static_cast<size_t>(lod.max_nodes);
+    // 一次 DFS 拿到"多一个"，前半段就是正式节点。原来跑两遍 CollectNodes，
+    // 大文件上等于白扫两次元素树。
+    const std::vector<smd::MapNode> collected =
+        smd::CollectNodes(result_, smd::kMaxTreeDepth, lod.max_nodes + 1, mode_);
+    nodes_truncated_ = collected.size() > static_cast<size_t>(lod.max_nodes);
+    const size_t keep = std::min<size_t>(collected.size(), static_cast<size_t>(lod.max_nodes));
+    nodes_.assign(collected.begin(), collected.begin() + keep);
     // 换了布局 / 层级后节点集合可能变了，旧命中索引不能留着指到别的盒子上。
     hits_ = smd::MatchNodes(nodes_, SearchQuery());
     hit_cursor_ = -1;
@@ -1163,8 +1243,13 @@ void FileStructureMapPage::RebuildNodes() {
     UpdateCoverageUi();
 
     // 包带桶数跟画布宽度走：窄窗口少画几个桶，但每桶仍覆盖同样长的时间窗。
+    // 包带只由 result_ 与桶数决定，跟层级 / 布局无关：窗口缩放时不必重扫全部样本。
     const int bins = std::max(16, std::min(160, plot_width / 6));
-    bands_ = smd::BuildPacketBands(result_, bins);
+    if (bands_dirty_ || bins != bands_bins_) {
+        bands_ = smd::BuildPacketBands(result_, bins);
+        bands_bins_ = bins;
+        bands_dirty_ = false;
+    }
     // 分桶用与上方结构盒相同的布局投影；没有样本偏移时一行都不画。
     // 切「字节占比 / 均衡布局」时 nodes_ 会重建，这里必须跟着重算，否则色带会停在旧口径。
     const smd::MapLayoutProjection projection = smd::BuildLayoutProjection(nodes_);
@@ -1181,6 +1266,63 @@ void FileStructureMapPage::RebuildNodes() {
     canvas_->SetFactSelection(selected_fact_);
     canvas_->SetStreamSelection(selected_stream_row_, selected_stream_bin_);
     canvas_->SetHits(hits_);
+}
+
+void FileStructureMapPage::ComputeRowBudget(int plot_width, int plot_height, int* rows, int* total_layers) const {
+    const smd::MapLod lod = smd::ComputeLod(plot_width, plot_height, tree_depth_);
+    int want_rows = lod.rows;
+    int want_total = std::min(tree_depth_ + 1, smd::kMaxTreeDepth + 1);
+    if (visible_layers_ > 0) {
+        want_rows = std::min(visible_layers_, want_rows);
+        want_total = std::min(visible_layers_, want_total);
+    }
+    *rows = std::max(1, want_rows);
+    *total_layers = std::max(*rows, want_total);
+}
+
+void FileStructureMapPage::RevealNodeRow(int index) {
+    if (!canvas_ || index < 0 || index >= static_cast<int>(nodes_.size()))
+        return;
+    const int depth = nodes_[index].depth;
+    // 用户把层级收窄过，深层节点根本不在窗口里：定位前先放开到「全部层级」。
+    if (visible_layers_ > 0 && depth >= visible_layers_) {
+        visible_layers_ = 0;
+        if (depth_combo_) {
+            QSignalBlocker blocker(depth_combo_);
+            depth_combo_->setCurrentIndex(0);
+        }
+    }
+    int rows = 1;
+    int total_layers = 1;
+    const int plot_width = std::max(1, canvas_->width() - smd::kDepthLabelWidth - smd::kPlotRight);
+    ComputeRowBudget(plot_width, canvas_->height(), &rows, &total_layers);
+    canvas_->SetRows(rows, total_layers);
+    const int first = canvas_->first_row();
+    int target = first;
+    if (depth < first)
+        target = depth;
+    else if (depth >= first + rows)
+        target = depth - rows + 1;
+    if (target != first)
+        canvas_->SetFirstRow(target);
+}
+
+void FileStructureMapPage::ScheduleRelayout() {
+    if (relayout_timer_)
+        relayout_timer_->start();
+}
+
+void FileStructureMapPage::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (result_.valid)
+        ScheduleRelayout();
+}
+
+void FileStructureMapPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    // 结果可能在页面隐藏时到达，当时算出的 LOD 用的是旧几何。
+    if (result_.valid)
+        ScheduleRelayout();
 }
 
 void FileStructureMapPage::RebuildDepthCombo() {
@@ -1235,9 +1377,15 @@ void FileStructureMapPage::Refresh() {
     RebuildNodes();
 
     if (!result_.valid) {
-        status_label_->setText(tr("结构分析失败：%1")
-                                   .arg(result_.error_message.empty() ? tr("无法分析该格式")
-                                                                      : QString::fromStdString(result_.error_message)));
+        if (!has_attempt_) {
+            // 「还没分析」不是失败：默认关闭的 feature、刚换文件都会走到这里。
+            status_label_->setText(tr("打开媒体文件并启用分析后将生成结构图谱"));
+        } else {
+            status_label_->setText(tr("结构分析失败：%1")
+                                       .arg(result_.error_message.empty()
+                                                ? tr("无法分析该格式")
+                                                : QString::fromStdString(result_.error_message)));
+        }
         UpdateDetail();
         UpdateCoverageUi();
         return;
@@ -1266,6 +1414,13 @@ void FileStructureMapPage::Refresh() {
 void FileStructureMapPage::UpdateCoverageUi() {
     if (!coverage_label_)
         return;
+    if (!has_attempt_) {
+        coverage_ = smd::MapCoverage{};
+        coverage_label_->clear();
+        coverage_label_->setVisible(false);
+        return;
+    }
+    coverage_label_->setVisible(true);
     coverage_ = smd::BuildCoverage(result_, nodes_truncated_, depth_truncated_);
     if (coverage_.facts.isEmpty()) {
         coverage_label_->setText(QString());
@@ -1401,6 +1556,8 @@ void FileStructureMapPage::SelectNode(int index) {
         canvas_->SetFactSelection(selected_fact_);
         canvas_->SetStreamSelection(selected_stream_row_, selected_stream_bin_);
     }
+    // 搜索命中 / 跨页定位可能落在当前纵向窗口之外，选中后顺带把该层滚进视野。
+    RevealNodeRow(index);
     UpdateDetail();
 }
 
@@ -1447,6 +1604,7 @@ void FileStructureMapPage::SelectFact(int index) {
 void FileStructureMapPage::FocusNode(int index) {
     if (!canvas_ || index < 0 || index >= static_cast<int>(nodes_.size()))
         return;
+    RevealNodeRow(index);
     canvas_->SetView(smd::FitInterval(canvas_->view(), nodes_[index].x0, nodes_[index].x1));
 }
 
@@ -1504,6 +1662,15 @@ void FileStructureMapPage::SetVisibleLayers(int layers) {
     RebuildNodes();
 }
 
+void FileStructureMapPage::SetFeatureChecked(bool checked) {
+    if (!feature_toggle_ || feature_toggle_->isChecked() == checked)
+        return;
+    QSignalBlocker blocker(feature_toggle_);
+    feature_toggle_->setChecked(checked);
+    if (canvas_)
+        canvas_->SetDrawingEnabled(checked);
+}
+
 void FileStructureMapPage::RequestJumpToTree() {
     if (selected_ < 0 || selected_ >= static_cast<int>(nodes_.size()))
         return;
@@ -1545,14 +1712,25 @@ void FileStructureMapPage::OnExportJson() {
     QMessageBox::information(this, tr("成功"), tr("已导出结构数据与完整性标记到:\n%1").arg(path));
 }
 
-void FileStructureMapPage::OnExportSvg() {
-    QByteArray svg;
+QByteArray FileStructureMapPage::ExportSvgBytes() const {
+    if (!canvas_)
+        return {};
+    // 信息栏 / 图例 / 流带行标签都取自画布同一份状态：菜单写「导出即所见」，
+    // 导出的 SVG 就得和屏幕上看到的是同一张图，而不是只有一堆没有标注的矩形。
+    smd::MapSvgChrome chrome;
+    const std::pair<QString, QString> lines = canvas_->BuildInfoLines();
+    chrome.header << lines.first << lines.second;
+    chrome.legend = StructureMapCanvas::LegendItems();
     if (view_kind_ == smd::MapViewKind::Icicle) {
-        svg = smd::BuildStructureSvg(nodes_, canvas_->Geometry(), canvas_->view(), canvas_->first_row(), mode_,
-                                     nodes_truncated_);
-    } else {
-        svg = smd::BuildVisualsSvg(canvas_->Visuals(), canvas_->size(), view_kind_, nodes_truncated_);
+        chrome.stream_rows = canvas_->StreamRowLegend();
+        chrome.stream_band_top = canvas_->StreamBandTop();
+        chrome.stream_row_height = smd::kStreamRowHeight;
     }
+    return smd::BuildVisualsSvg(canvas_->Visuals(), canvas_->size(), view_kind_, nodes_truncated_, chrome);
+}
+
+void FileStructureMapPage::OnExportSvg() {
+    const QByteArray svg = ExportSvgBytes();
     if (svg.isEmpty()) {
         QMessageBox::information(this, tr("导出"), tr("当前视图没有可导出的节点，未生成文件。"));
         return;

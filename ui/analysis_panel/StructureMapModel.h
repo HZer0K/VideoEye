@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/domain/model/ContainerStructureInfo.h"
@@ -144,11 +145,6 @@ QVector<int> MatchNodes(const std::vector<MapNode>& nodes, const QString& query)
 QString BuildNodePath(const std::vector<MapNode>& nodes, int index);
 QString DescribeNode(const MapNode& node, quint64 file_span);
 
-// 当前结构图视图的 SVG 快照：与画布共用 NodeRect / MapGeometry，导出即所见。
-// 无节点返回空，绝不产一张"看起来像成功导出"的空图。
-QByteArray BuildStructureSvg(const std::vector<MapNode>& nodes, const MapGeometry& geom, const MapViewport& view,
-                             int first_row, MapLayoutMode mode, bool truncated);
-
 // ---------------------------------------------------------------------------
 // 统一视觉矩形（切片 3）
 // ---------------------------------------------------------------------------
@@ -179,6 +175,17 @@ struct MapVisual {
     int bar_height = -1;
 };
 
+// 当前视图的 SVG 快照。视觉矩形来自 MapVisual，所以导出与屏幕共用同一份几何。
+// chrome 把屏幕上的信息栏 / 图例 / 流带行标签也带进 SVG：菜单写的是「导出即所见」，
+// 少了这些，导出的图会退化成"一堆没有标注的矩形"，读者分不清哪条带是哪条流。
+struct MapSvgChrome {
+    QStringList header;                                  // 信息栏两行（左上）
+    std::vector<std::pair<QColor, QString>> legend;      // 右上角图例
+    std::vector<std::pair<QColor, QString>> stream_rows; // 底部流带：色块 + 行标签
+    int stream_band_top = -1;                            // 流带顶边；< 0 表示不画
+    int stream_row_height = 0;
+};
+
 std::vector<MapVisual> BuildIcicleVisuals(const std::vector<MapNode>& nodes, const MapGeometry& geom,
                                           const MapViewport& view, int first_row);
 // 递归按「压缩字节权重 + 每个兄弟保底」二分切分，父矩形包含子矩形，回答"有哪些盒子、谁大谁小"。
@@ -187,7 +194,8 @@ std::vector<MapVisual> BuildIcicleVisuals(const std::vector<MapNode>& nodes, con
 std::vector<MapVisual> BuildTreemapVisuals(const std::vector<MapNode>& nodes, QRect area, int max_visuals);
 // 返回命中的 visual 下标（不是 node 下标）；没有命中返回 -1。
 int VisualAt(const std::vector<MapVisual>& visuals, QPoint pos);
-QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_size, MapViewKind kind, bool truncated);
+QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_size, MapViewKind kind, bool truncated,
+                           const MapSvgChrome& chrome = MapSvgChrome{});
 
 // ---------------------------------------------------------------------------
 // 时间轴包带（切片 3）
@@ -275,7 +283,9 @@ struct StreamByteBin {
 struct StreamByteRow {
     QString label;
     std::string type;
-    int stream_index = -1;
+    // 真实身份：MP4 为 tkhd track_id（与「样本表」页的 Track N 一致）。
+    // 早先用的是行序号，跳过空轨后会与流号错位，详情里的 #N 指不到用户看到的那条轨。
+    int track_id = -1;
     quint64 total_bytes = 0;
     quint64 total_count = 0;
     bool truncated = false;

@@ -49,6 +49,9 @@ public:
     // 裸图像 / PCM 这类不会再走容器分析的类型，否则会一直显示上一个视频的结构。
     void Clear();
 
+    // 面板把统一 feature 的当前值同步到本页开关（不改 feature、不回抛信号）。
+    void SetFeatureChecked(bool checked);
+
     // 由「文件结构图谱」页的双击跳转调用：按身份（面包屑路径 + offset + size）
     // 在通用结构树里定位并选中。图谱按绘制预算裁剪过，所以不能用行号对齐；
     // 找不到返回 false，调用方仍停留在树页（用户至少已经在正确页面上了）。
@@ -74,6 +77,7 @@ private:
 
     QLabel* title_label_ = nullptr; // 动态标题（格式名 + 结构分析）
     QLabel* summary_label_ = nullptr;
+    QCheckBox* feature_toggle_ = nullptr;
     QTreeWidget* tree_ = nullptr;            // 通用结构树
     QStackedWidget* detail_stack_ = nullptr; // 右侧详情区（通用 / MP4 / EBML）
 

@@ -54,14 +54,16 @@ void ContainerStructurePage::SetupUi() {
         trl->addWidget(title_label_);
         trl->addStretch();
         // 开关文案与其它播放页统一为「启用分析」，具体时机写进 tooltip
-        QCheckBox* toggle = new QCheckBox(tr("启用分析"), titleRow);
-        toggle->setChecked(feature_checked_);
-        toggle->setToolTip(tr("打开文件时解析容器结构，结果同时供「流媒体包」页使用。默认关闭，按需开启。"));
-        connect(toggle, &QCheckBox::toggled, this, [this](bool checked) {
+        feature_toggle_ = new QCheckBox(tr("启用分析"), titleRow);
+        feature_toggle_->setObjectName(QStringLiteral("containerStructureFeatureToggle"));
+        feature_toggle_->setChecked(feature_checked_);
+        feature_toggle_->setToolTip(
+            tr("打开文件时解析容器结构，结果同时供「流媒体包」与「文件结构图谱」页使用。默认关闭，按需开启。"));
+        connect(feature_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
             feature_checked_ = checked;
             emit FeatureToggled(checked);
         });
-        trl->addWidget(toggle);
+        trl->addWidget(feature_toggle_);
 
         // 页头唯一的「导出」入口：结构数据（文本）+ MP4 样本表 CSV 都收进这个菜单，
         // 不再让页尾和 Sample Table 子页各挂一个导出按钮。
@@ -355,6 +357,14 @@ void ContainerStructurePage::Clear() {
     }
     if (mp4_sample_widget_)
         mp4_sample_widget_->SetSamples(model::Mp4SampleTableResult{});
+}
+
+void ContainerStructurePage::SetFeatureChecked(bool checked) {
+    if (!feature_toggle_ || feature_toggle_->isChecked() == checked)
+        return;
+    QSignalBlocker blocker(feature_toggle_);
+    feature_toggle_->setChecked(checked);
+    feature_checked_ = checked;
 }
 
 bool ContainerStructurePage::SelectElement(const QString& path, quint64 offset, quint64 size) {

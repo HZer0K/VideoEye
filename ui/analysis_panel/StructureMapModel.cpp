@@ -366,44 +366,6 @@ QString DescribeNode(const MapNode& node, quint64 file_span) {
     return html;
 }
 
-QByteArray BuildStructureSvg(const std::vector<MapNode>& nodes, const MapGeometry& geom, const MapViewport& view,
-                             int first_row, MapLayoutMode mode, bool truncated) {
-    // 反向守护：没有事实就不产图。一张空白 SVG 分不清"没节点"和"分析失败"。
-    if (nodes.empty())
-        return {};
-    const int svg_w = geom.left + geom.width + kPlotRight;
-    const int svg_h = geom.top + geom.rows * geom.row_height + kAxisHeight;
-    QByteArray svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-    svg += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" + QByteArray::number(svg_w) + "\" height=\"" +
-           QByteArray::number(svg_h) + "\" viewBox=\"0 0 " + QByteArray::number(svg_w) + " " +
-           QByteArray::number(svg_h) + "\">\n";
-    svg += "<!-- layout=" + QByteArray(mode == MapLayoutMode::Balanced ? "balanced" : "byte-proportional") +
-           " truncated=" + QByteArray(truncated ? "yes" : "no") + " scale=" + QByteArray::number(view.scale, 'f', 3) +
-           " -->\n";
-    svg += "<rect width=\"100%\" height=\"100%\" fill=\"" + QByteArray(theme::color::kBg) + "\"/>\n";
-    int drawn = 0;
-    for (const MapNode& node : nodes) {
-        const int row = node.depth - first_row;
-        if (row < 0 || row >= geom.rows)
-            continue;
-        const QRect box = NodeRect(node, geom, view, first_row);
-        if (box.right() < geom.left || box.left() > geom.left + geom.width)
-            continue;
-        svg += "<rect x=\"" + QByteArray::number(box.x()) + "\" y=\"" + QByteArray::number(box.y()) + "\" width=\"" +
-               QByteArray::number(box.width()) + "\" height=\"" + QByteArray::number(box.height()) + "\" fill=\"" +
-               NodeFill(node.name).name().toUtf8() + "\" stroke=\"" + QByteArray(theme::color::kBorder) + "\"/>\n";
-        if (box.width() > 40) {
-            svg += "<text x=\"" + QByteArray::number(box.x() + 4) + "\" y=\"" +
-                   QByteArray::number(box.y() + box.height() / 2 + 4) + "\" fill=\"" +
-                   QByteArray(theme::color::kTextPrimary) + "\" font-size=\"11\">" + XmlEscape(node.name).toUtf8() +
-                   "</text>\n";
-        }
-        ++drawn;
-    }
-    svg += "</svg>\n";
-    return drawn > 0 ? svg : QByteArray();
-}
-
 // ---------------------------------------------------------------------------
 // 统一视觉矩形：三个视图的绘制 / 命中 / 导出共用
 // ---------------------------------------------------------------------------
@@ -560,19 +522,44 @@ int VisualAt(const std::vector<MapVisual>& visuals, QPoint pos) {
     return hit;
 }
 
-QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_size, MapViewKind kind, bool truncated) {
+QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_size, MapViewKind kind, bool truncated,
+                           const MapSvgChrome& chrome) {
     if (visuals.empty() || canvas_size.width() < 8 || canvas_size.height() < 8)
         return {};
     const char* view_name = kind == MapViewKind::Treemap          ? "treemap"
                             : kind == MapViewKind::FormatOverview ? "format-overview"
                             : kind == MapViewKind::Icicle         ? "structure-map"
                                                                   : "packet-bands";
+    // 斜纹（未展开 / 窗口外）在屏幕上用 BDiagPattern 表达，SVG 里用 pattern 保持一致。
+    // 按填充色分别建 pattern，避免把不同底色压成同一块灰。
+    std::vector<QString> hatch_colors;
+    for (const MapVisual& visual : visuals) {
+        if (!visual.hatched)
+            continue;
+        const QString hex = visual.fill.name().toUpper();
+        if (std::find(hatch_colors.begin(), hatch_colors.end(), hex) == hatch_colors.end())
+            hatch_colors.push_back(hex);
+    }
+    auto hatch_id = [](const QString& hex) { return QStringLiteral("hatch-%1").arg(hex.mid(1)); };
+
     QByteArray svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
     svg += "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" + QByteArray::number(canvas_size.width()) +
            "\" height=\"" + QByteArray::number(canvas_size.height()) + "\" viewBox=\"0 0 " +
            QByteArray::number(canvas_size.width()) + " " + QByteArray::number(canvas_size.height()) + "\">\n";
     svg += "<!-- view=" + QByteArray(view_name) + " truncated=" + QByteArray(truncated ? "yes" : "no") + " -->\n";
     svg += "<rect width=\"100%\" height=\"100%\" fill=\"" + QByteArray(theme::color::kBg) + "\"/>\n";
+    if (!hatch_colors.empty()) {
+        svg += "<defs>\n";
+        for (const QString& hex : hatch_colors) {
+            svg += "<pattern id=\"" + hatch_id(hex).toUtf8() +
+                   "\" patternUnits=\"userSpaceOnUse\" width=\"6\" "
+                   "height=\"6\"><rect width=\"6\" height=\"6\" fill=\"";
+            svg += hex.toUtf8();
+            svg += "\"/><path d=\"M0,6 L6,0\" stroke=\"" + QByteArray(theme::color::kBorderLight) +
+                   "\" stroke-width=\"1\"/></pattern>\n";
+        }
+        svg += "</defs>\n";
+    }
     int drawn = 0;
     for (const MapVisual& visual : visuals) {
         const QRect box = visual.rect;
@@ -581,9 +568,11 @@ QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_s
         const int fill_h =
             visual.bar_height >= 0 ? std::max(1, std::min(box.height(), visual.bar_height)) : box.height();
         const int fill_y = visual.bar_height >= 0 ? box.bottom() + 1 - fill_h : box.y();
+        const QByteArray fill = visual.hatched ? ("url(#" + hatch_id(visual.fill.name().toUpper()) + ")").toUtf8()
+                                               : visual.fill.name().toUtf8();
         svg += "<rect x=\"" + QByteArray::number(box.x()) + "\" y=\"" + QByteArray::number(fill_y) + "\" width=\"" +
-               QByteArray::number(box.width()) + "\" height=\"" + QByteArray::number(fill_h) + "\" fill=\"" +
-               visual.fill.name().toUtf8() + "\" stroke=\"" + visual.border.name().toUtf8() + "\"/>\n";
+               QByteArray::number(box.width()) + "\" height=\"" + QByteArray::number(fill_h) + "\" fill=\"" + fill +
+               "\" stroke=\"" + visual.border.name().toUtf8() + "\"/>\n";
         if (visual.label.isEmpty() || box.width() <= 30 || fill_h < 12)
             ++drawn;
         else {
@@ -591,6 +580,38 @@ QByteArray BuildVisualsSvg(const std::vector<MapVisual>& visuals, QSize canvas_s
                    "\" fill=\"" + QByteArray(theme::color::kTextPrimary) + "\" font-size=\"11\">" +
                    XmlEscape(visual.label).toUtf8() + "</text>\n";
             ++drawn;
+        }
+    }
+
+    // ---- 信息栏 / 图例 / 流带行标签：与屏幕上同一份文字 ----
+    if (!chrome.header.isEmpty()) {
+        const int left = kDepthLabelWidth;
+        for (int i = 0; i < chrome.header.size() && i < 2; ++i) {
+            svg += "<text x=\"" + QByteArray::number(left) + "\" y=\"" + QByteArray::number(i == 0 ? 14 : 29) +
+                   "\" fill=\"" + QByteArray(theme::color::kTextPrimary) + "\" font-size=\"11\">" +
+                   XmlEscape(chrome.header[i]).toUtf8() + "</text>\n";
+        }
+    }
+    if (!chrome.legend.empty()) {
+        int x = std::max(kDepthLabelWidth, canvas_size.width() - kPlotRight - 320);
+        for (const auto& item : chrome.legend) {
+            svg += "<rect x=\"" + QByteArray::number(x) + "\" y=\"23\" width=\"8\" height=\"8\" fill=\"" +
+                   item.first.name().toUtf8() + "\"/>\n";
+            svg += "<text x=\"" + QByteArray::number(x + 11) + "\" y=\"30\" fill=\"" +
+                   QByteArray(theme::color::kTextMuted) + "\" font-size=\"10\">" + XmlEscape(item.second).toUtf8() +
+                   "</text>\n";
+            x += 11 + item.second.size() * 10 + 12;
+        }
+    }
+    if (chrome.stream_band_top >= 0 && chrome.stream_row_height > 0) {
+        for (int r = 0; r < static_cast<int>(chrome.stream_rows.size()); ++r) {
+            const int y = chrome.stream_band_top + r * chrome.stream_row_height;
+            svg += "<rect x=\"2\" y=\"" + QByteArray::number(y + 2) + "\" width=\"4\" height=\"" +
+                   QByteArray::number(chrome.stream_row_height - 5) + "\" fill=\"" +
+                   chrome.stream_rows[static_cast<size_t>(r)].first.name().toUtf8() + "\"/>\n";
+            svg += "<text x=\"9\" y=\"" + QByteArray::number(y + chrome.stream_row_height - 3) + "\" fill=\"" +
+                   QByteArray(theme::color::kTextSecondary) + "\" font-size=\"10\">" +
+                   XmlEscape(chrome.stream_rows[static_cast<size_t>(r)].second).toUtf8() + "</text>\n";
         }
     }
     svg += "</svg>\n";
@@ -618,7 +639,8 @@ PacketBandData BuildPacketBands(const model::ContainerStructureResult& result, i
             if (track.samples.empty())
                 continue;
             PacketBandTrack band;
-            band.stream_index = static_cast<int>(out.tracks.size());
+            // 与底部流带、样本表页统一：标签里的 #N 是真实 track_id，不是会被空轨挤歪的行号。
+            band.stream_index = static_cast<int>(track.track_id);
             band.label = QStringLiteral("#%1 %2 %3")
                              .arg(band.stream_index)
                              .arg(QString::fromStdString(track.type), QString::fromStdString(track.codec));
@@ -772,7 +794,7 @@ PacketBandData BuildPacketBands(const model::ContainerStructureResult& result, i
                     if (out.tracks.size() >= 8)
                         continue; // 卡片预算：多余轨道合并丢弃，并在 note 里说明
                     PacketBandTrack band;
-                    band.stream_index = static_cast<int>(out.tracks.size());
+                    band.stream_index = block.track_number; // EBML 的真实身份是轨道号
                     band.label = QStringLiteral("轨道 %1").arg(block.track_number);
                     band.duration_seconds = static_cast<double>(span);
                     band.has_bytes = true;
@@ -949,10 +971,11 @@ StreamByteRows BuildStreamByteRows(const model::ContainerStructureResult& result
         if (track.samples.empty())
             continue;
         StreamByteRow row;
-        row.stream_index = static_cast<int>(out.rows.size());
+        // 用真实 track_id 而非行号：空轨会被跳过，行号一错位，#N 就指不到「样本表」里那条轨。
+        row.track_id = static_cast<int>(track.track_id);
         row.type = track.type;
         row.label = QStringLiteral("#%1 %2 %3")
-                        .arg(row.stream_index)
+                        .arg(row.track_id)
                         .arg(QString::fromStdString(track.type), QString::fromStdString(track.codec));
         row.truncated = track.samples_truncated;
         any_truncated = any_truncated || track.samples_truncated;
@@ -1010,7 +1033,7 @@ StreamByteRows BuildStreamByteRows(const model::ContainerStructureResult& result
         for (const StreamByteRow& row : out.rows) {
             if (row.truncated)
                 per_track << QStringLiteral("#%1 %2/%3")
-                                 .arg(row.stream_index)
+                                 .arg(row.track_id)
                                  .arg(row.expanded_samples)
                                  .arg(row.declared_samples);
         }

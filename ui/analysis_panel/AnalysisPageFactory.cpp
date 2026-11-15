@@ -124,7 +124,7 @@ QWidget* BuildFileStructurePage(AnalysisPages& pages, const PageBuildDeps& deps,
 }
 
 // 「文件结构图谱」：与容器结构页共用 ContainerStructure 这个 feature 的初值，
-// 但开关只 gate 本页绘制（见 FileStructureMapPage.h 的说明），不往面板发信号。
+// 两页开关由 AnalysisPanel 双向同步（见 FileStructureMapPage.h 的说明）。
 QWidget* BuildFileStructureMapPage(AnalysisPages& pages, const PageBuildDeps& deps, const QString&) {
     pages.structure_map =
         new FileStructureMapPage(deps.is_feature_on(model::AnalysisFeature::ContainerStructure), deps.parent);

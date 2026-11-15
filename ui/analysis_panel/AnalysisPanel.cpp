@@ -423,11 +423,19 @@ PageBuildDeps AnalysisPanel::MakePageBuildDeps() {
 }
 
 void AnalysisPanel::WireAnalysisPages() {
-    // ---- 文件结构 ----
-    connect(pages_.container, &ContainerStructurePage::FeatureToggled, this, [this](bool enabled) {
+    // ---- 文件结构（树页 + 图谱页共用同一个容器解析 feature）----
+    // 两页都有「启用分析」开关，任一页切换都要写回同一份 feature 表并同步另一页，
+    // 否则用户在图谱页看到「已关闭」但树页其实已经开启（或反之）。
+    auto apply_container_feature = [this](bool enabled) {
         feature_enabled_[AnalysisFeature::ContainerStructure] = enabled;
+        if (pages_.container)
+            pages_.container->SetFeatureChecked(enabled);
+        if (pages_.structure_map)
+            pages_.structure_map->SetFeatureChecked(enabled);
         emit AnalysisFeatureToggled(static_cast<int>(AnalysisFeature::ContainerStructure), enabled);
-    });
+    };
+    connect(pages_.container, &ContainerStructurePage::FeatureToggled, this, apply_container_feature);
+    connect(pages_.structure_map, &FileStructureMapPage::FeatureToggled, this, apply_container_feature);
     // ---- 文件结构图谱：双击节点请求跨页定位 ----
     // 页面不认识 MainWindow，也不认识树页；面板只上抛意图，切页与侧栏同步由主窗口做。
     connect(pages_.structure_map, &FileStructureMapPage::StructureNodeJumpRequested, this,

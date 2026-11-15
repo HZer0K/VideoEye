@@ -45,7 +45,9 @@
 #include "ui/analysis_panel/AudioQcPage.h"
 #include "ui/analysis_panel/BitrateGopPage.h"
 #include "ui/analysis_panel/ColorHdrPage.h"
+#include "ui/analysis_panel/ContainerStructurePage.h"
 #include "ui/analysis_panel/DiagnosticsPage.h"
+#include "ui/analysis_panel/FileStructureMapPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/StreamOverviewView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
@@ -712,6 +714,40 @@ TEST(MacroblockCoordinationTest, SetMacroblockEnabledSyncsWithoutSignal) {
     panel.SetMacroblockAnalysisEnabled(false);
     EXPECT_FALSE(panel.IsFeatureEnabled(model::AnalysisFeature::Macroblock));
     EXPECT_EQ(toggled_count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// 文件结构：树页与图谱页共用同一个 ContainerStructure feature，开关必须双向同步。
+// ---------------------------------------------------------------------------
+TEST(ContainerFeatureSyncTest, ToggleOnEitherPageUpdatesTheOther) {
+    ASSERT_TRUE(EnsureApp() != nullptr);
+
+    ui::AnalysisPanel panel;
+    QStackedWidget stack;
+    panel.PopulateStackedWidget(&stack);
+
+    auto* container = stack.findChild<ui::ContainerStructurePage*>();
+    auto* map = stack.findChild<ui::FileStructureMapPage*>();
+    ASSERT_NE(container, nullptr);
+    ASSERT_NE(map, nullptr);
+    auto* container_toggle = container->findChild<QCheckBox*>(QStringLiteral("containerStructureFeatureToggle"));
+    auto* map_toggle = map->findChild<QCheckBox*>(QStringLiteral("fileStructureMapFeatureToggle"));
+    ASSERT_NE(container_toggle, nullptr);
+    ASSERT_NE(map_toggle, nullptr);
+
+    EXPECT_EQ(container_toggle->isChecked(), map_toggle->isChecked());
+
+    // 在图谱页开启：树页开关与统一 feature 表都要跟上，图谱页开始绘制。
+    map_toggle->setChecked(true);
+    EXPECT_TRUE(container_toggle->isChecked());
+    EXPECT_TRUE(map->DrawingEnabled());
+    EXPECT_TRUE(panel.IsFeatureEnabled(model::AnalysisFeature::ContainerStructure));
+
+    // 在树页关闭：图谱页同步关闭绘制，但不能丢已收到的结果（数据由页面自己保存）。
+    container_toggle->setChecked(false);
+    EXPECT_FALSE(map_toggle->isChecked());
+    EXPECT_FALSE(map->DrawingEnabled());
+    EXPECT_FALSE(panel.IsFeatureEnabled(model::AnalysisFeature::ContainerStructure));
 }
 
 // ---------------------------------------------------------------------------

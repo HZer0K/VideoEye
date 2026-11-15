@@ -16,6 +16,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,6 +25,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QStandardItemModel>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -440,27 +442,55 @@ TEST(StructureMapModelTest, SearchMatchesNameTypeValueAndNeverMatchesEmpty) {
 TEST(StructureMapModelTest, SvgSnapshotMirrorsDrawnNodesAndRejectsEmptyResults) {
     const auto nodes = detail::CollectNodes(MakeMapResult(), 20, 4000, detail::MapLayoutMode::Balanced);
     const detail::MapGeometry geom = TestGeometry();
-    const QByteArray svg =
-        detail::BuildStructureSvg(nodes, geom, detail::MapViewport{}, 0, detail::MapLayoutMode::Balanced, false);
+    const QSize size(geom.left + geom.width + detail::kPlotRight,
+                     geom.top + geom.rows * geom.row_height + detail::kAxisHeight);
+    const auto visuals = detail::BuildIcicleVisuals(nodes, geom, detail::MapViewport{}, 0);
+    const QByteArray svg = detail::BuildVisualsSvg(visuals, size, detail::MapViewKind::Icicle, false);
     ASSERT_FALSE(svg.isEmpty());
     EXPECT_TRUE(svg.contains("<svg"));
-    EXPECT_TRUE(svg.contains("layout=balanced"));
+    EXPECT_TRUE(svg.contains("view=structure-map"));
     EXPECT_TRUE(svg.contains("truncated=no"));
     EXPECT_TRUE(svg.contains("mdat"));
     EXPECT_GE(svg.count("<rect"), 8) << "背景 + 7 个节点";
 
-    const QByteArray truncated =
-        detail::BuildStructureSvg(nodes, geom, detail::MapViewport{}, 0, detail::MapLayoutMode::ByteProportional, true);
-    EXPECT_TRUE(truncated.contains("layout=byte-proportional"));
+    const QByteArray truncated = detail::BuildVisualsSvg(visuals, size, detail::MapViewKind::Icicle, true);
     EXPECT_TRUE(truncated.contains("truncated=yes"));
 
     // 反向守护：没有事实就不产图，别让"分析失败"看起来像一次成功的空导出。
-    EXPECT_TRUE(detail::BuildStructureSvg({}, geom, detail::MapViewport{}, 0, detail::MapLayoutMode::Balanced, false)
-                    .isEmpty());
-    EXPECT_TRUE(
-        detail::BuildStructureSvg(nodes, geom, detail::MapViewport{}, 99, detail::MapLayoutMode::Balanced, false)
-            .isEmpty())
+    EXPECT_TRUE(detail::BuildVisualsSvg({}, size, detail::MapViewKind::Icicle, false).isEmpty());
+    const auto offscreen = detail::BuildIcicleVisuals(nodes, geom, detail::MapViewport{}, 99);
+    EXPECT_TRUE(detail::BuildVisualsSvg(offscreen, size, detail::MapViewKind::Icicle, false).isEmpty())
         << "滚动到没有任何可见节点的层时也不能产出只有背景的空图";
+}
+
+TEST(StructureMapModelTest, SvgChromeCarriesHeaderLegendHatchAndStreamRows) {
+    // 画布上的信息栏 / 图例 / 斜纹 / 流带行标签，导出时必须一起进 SVG，
+    // 否则"导出即所见"只是一堆没有标注的矩形。
+    std::vector<detail::MapVisual> visuals;
+    detail::MapVisual hatch;
+    hatch.rect = QRect(40, 40, 400, 20);
+    hatch.fill = QColor(QStringLiteral("#30363D"));
+    hatch.border = QColor(QStringLiteral("#484F58"));
+    hatch.hatched = true;
+    hatch.label = QStringLiteral("未展开 36 样本");
+    visuals.push_back(hatch);
+
+    detail::MapSvgChrome chrome;
+    chrome.header << QStringLiteral("MP4 · 800.00 KiB") << QStringLiteral("可见第 1–3 层 / 共 4 层");
+    chrome.legend = {{QColor(QStringLiteral("#21262D")), QStringLiteral("载荷")}};
+    chrome.stream_rows = {{QColor(QStringLiteral("#1F6FEB")), QStringLiteral("#1")}};
+    chrome.stream_band_top = 300;
+    chrome.stream_row_height = 14;
+
+    const QByteArray svg =
+        detail::BuildVisualsSvg(visuals, QSize(800, 420), detail::MapViewKind::Icicle, false, chrome);
+    ASSERT_FALSE(svg.isEmpty());
+    EXPECT_TRUE(svg.contains("fill=\"url(#hatch-30363D)\"")) << "斜纹必须保留，不能退化成实心块";
+    EXPECT_TRUE(svg.contains(QStringLiteral("MP4 · 800.00 KiB").toUtf8())) << "信息栏第一行";
+    EXPECT_TRUE(svg.contains(QStringLiteral("可见第 1–3 层").toUtf8())) << "信息栏第二行";
+    EXPECT_TRUE(svg.contains(QStringLiteral("载荷").toUtf8())) << "图例";
+    EXPECT_TRUE(svg.contains(QStringLiteral("未展开 36 样本").toUtf8())) << "矩形标签";
+    EXPECT_TRUE(svg.contains(QStringLiteral("#1").toUtf8())) << "流带行标签";
 }
 
 TEST(StructureMapModelTest, DescribeNodeReportsRealOffsetsSizesAndSpan) {
@@ -710,6 +740,9 @@ TEST(StructureMapModelTest, PacketBandsAggregateRealSamplesIntoTimeBins) {
     EXPECT_EQ(bands.TotalCount(), 4u);
     EXPECT_EQ(bands.BinCount(), 10);
     EXPECT_TRUE(bands.tracks[0].has_bytes);
+    // 轨道身份用真实 track_id，与「样本表」页一致，不用会被空轨挤歪的行号。
+    EXPECT_EQ(bands.tracks[0].stream_index, 1);
+    EXPECT_TRUE(bands.tracks[0].label.contains(QStringLiteral("#1")));
 
     quint64 bytes = 0, count = 0, keyframes = 0;
     for (const auto& bin : bands.tracks[0].bins) {
@@ -1681,7 +1714,11 @@ TEST(FileStructureMapPageTest, TruncatedTrackMarksUnexpandedTailAsUnknownNotEmpt
     EXPECT_EQ(rows.rows[1].last_expanded_end, 360128u);
     EXPECT_GT(rows.rows[1].expanded_x1, 0.0);
     EXPECT_LT(rows.rows[1].expanded_x1, 1.0);
-    EXPECT_TRUE(rows.truncation_note.contains(QStringLiteral("#1 4/40")));
+    // 身份用真实 track_id（与「样本表」页的 Track 号一致），不是会被空轨挤歪的行号。
+    EXPECT_EQ(rows.rows[0].track_id, 1);
+    EXPECT_EQ(rows.rows[1].track_id, 2);
+    EXPECT_TRUE(rows.rows[1].label.contains(QStringLiteral("#2")));
+    EXPECT_TRUE(rows.truncation_note.contains(QStringLiteral("#2 4/40")));
     EXPECT_TRUE(rows.coverage_note.contains(QStringLiteral("未展开")));
     EXPECT_TRUE(rows.coverage_note.contains(QStringLiteral("不代表没有数据")));
 
@@ -1764,6 +1801,34 @@ TEST(FileStructureMapPageTest, PageWiresStreamByteRowsAndClearsThemOnFileChange)
     EXPECT_FALSE(page.StreamRows().available);
 }
 
+TEST(FileStructureMapPageTest, SvgExportIsWysiwygForStreamBandAndLegend) {
+    EnsureApp();
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    auto* page = new FileStructureMapPage(true, &host);
+    layout->addWidget(page);
+    host.resize(900, 640);
+    host.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    // 未分析：不能产出一张只有背景的"成功导出"。
+    EXPECT_TRUE(page->ExportSvgBytes().isEmpty());
+
+    page->SetResult(MakeTruncatedStreamResult());
+    const QByteArray svg = page->ExportSvgBytes();
+    ASSERT_FALSE(svg.isEmpty());
+    EXPECT_TRUE(svg.contains("view=structure-map"));
+    // 信息栏与图例：屏幕上有的，导出里也要有，否则"导出即所见"是空话。
+    EXPECT_TRUE(svg.contains(QStringLiteral("条流").toUtf8()));
+    EXPECT_TRUE(svg.contains(QStringLiteral("载荷").toUtf8()));
+    EXPECT_TRUE(svg.contains(QStringLiteral("异常").toUtf8()));
+    // 流带行标签用真实 track_id（audio 是 2，不是行号 1）。
+    EXPECT_TRUE(svg.contains(QStringLiteral("#2").toUtf8()));
+    // 截断轨的未展开区在 SVG 里仍以斜纹表达，不能退化成实心块。
+    EXPECT_TRUE(svg.contains("url(#hatch-30363D)"));
+}
+
 TEST(FileStructureMapPageTest, BalancedLayoutProjectsStreamBinsAwayFromHeaders) {
     const ContainerStructureResult r = MakeInterleavedResult();
     const auto balanced_nodes = detail::CollectNodes(r, 2, 512, detail::MapLayoutMode::Balanced);
@@ -1809,4 +1874,168 @@ TEST(FileStructureMapPageTest, BalancedLayoutProjectsStreamBinsAwayFromHeaders) 
     const QString text = detail::DescribeStreamByteBin(balanced_rows, 0, balanced_first);
     EXPECT_TRUE(text.contains(QStringLiteral("实测字节范围")));
     EXPECT_TRUE(text.contains(detail::FormatBytes(4128)));
+}
+
+// ---------------------------------------------------------------------------
+// 切片 5：空态 / 开关联动 / 深层定位 / 尺寸变化 / 换文件复位
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 指定深度的单链结构，用来把"层级窗口"撑到画布可见行数之外。
+ContainerStructureResult MakeChainResult(int depth) {
+    ContainerStructureResult r;
+    r.valid = true;
+    r.format = ContainerFormat::MKV;
+    r.format_name = "MKV";
+    ContainerElement chain = Element("leaf", 0, 8, depth);
+    for (int d = depth - 1; d >= 0; --d) {
+        ContainerElement parent = Element("level" + std::to_string(d), 0, 128, d);
+        parent.children.push_back(chain);
+        chain = parent;
+    }
+    r.element_tree.push_back(chain);
+    return r;
+}
+
+void WaitForUi(int ms) {
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+} // namespace
+
+TEST(FileStructureMapPageTest, EmptyStateDoesNotPretendAnalysisFailed) {
+    EnsureApp();
+    FileStructureMapPage page(false);
+
+    // 还没打开文件 / 还没启用分析：不能显示"失败"，也不能先渲染一份完整性结论。
+    EXPECT_FALSE(page.HasData());
+    EXPECT_FALSE(page.DrawingEnabled());
+    EXPECT_FALSE(page.StatusText().contains(QStringLiteral("失败"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.StatusText().contains(QStringLiteral("启用分析"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.CoverageText().isEmpty()) << "没有分析过就不该有完整性五维";
+
+    // 真失败时，状态栏与完整性条必须是同一个原因，不能一个说 boom、一个说"无法分析该格式"。
+    page.SetError(QStringLiteral("boom"));
+    EXPECT_TRUE(page.StatusText().contains(QStringLiteral("boom"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.CoverageText().contains(QStringLiteral("boom"))) << page.CoverageText().toStdString();
+
+    page.Clear();
+    EXPECT_FALSE(page.HasData());
+    EXPECT_FALSE(page.StatusText().contains(QStringLiteral("失败"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.StatusText().contains(QStringLiteral("打开媒体文件"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.CoverageText().isEmpty()) << "Clear 之后完整性条也必须回到空态";
+}
+
+TEST(FileStructureMapPageTest, FeatureSyncDoesNotEchoBackAndKeepsData) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+    QCheckBox* toggle = FindFeatureToggle(&page);
+    ASSERT_NE(toggle, nullptr);
+
+    int emissions = 0;
+    bool last_value = true;
+    QObject::connect(&page, &FileStructureMapPage::FeatureToggled, &page, [&](bool enabled) {
+        ++emissions;
+        last_value = enabled;
+    });
+
+    // 用户自己切换：要上抛一次，且只影响绘制，不丢结果。
+    toggle->setChecked(false);
+    EXPECT_EQ(emissions, 1);
+    EXPECT_FALSE(last_value);
+    EXPECT_FALSE(page.DrawingEnabled());
+    EXPECT_EQ(page.NodeCount(), 7) << "关闭开关只停止绘制，不能丢已收到的结果";
+
+    // 面板反向同步：只改开关 / 绘制，不能再回抛信号（否则两页会互相触发）。
+    page.SetFeatureChecked(true);
+    EXPECT_TRUE(toggle->isChecked());
+    EXPECT_TRUE(page.DrawingEnabled());
+    EXPECT_EQ(emissions, 1) << "SetFeatureChecked 是同步入口，不应回抛 FeatureToggled";
+
+    page.SetFeatureChecked(false);
+    EXPECT_FALSE(toggle->isChecked());
+    EXPECT_FALSE(page.DrawingEnabled());
+    EXPECT_EQ(emissions, 1);
+}
+
+TEST(FileStructureMapPageTest, SelectingDeepNodeRevealsHiddenLayerAndScrolls) {
+    EnsureApp();
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    auto* page = new FileStructureMapPage(true, &host);
+    layout->addWidget(page);
+    host.resize(900, 600);
+    host.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    page->SetResult(MakeChainResult(20));
+    QApplication::processEvents();
+    ASSERT_EQ(page->NodeCount(), 21) << "20 层链 + 叶子都应在深度预算内";
+
+    // 把层级收窄到 1：深层节点既不在绘制行里，也不在可见层级里。
+    page->SetVisibleLayers(1);
+    ASSERT_EQ(page->VisibleRowCount(), 1);
+    const int leaf = page->NodeCount() - 1;
+    page->SelectNode(leaf);
+
+    EXPECT_EQ(page->SelectedNode(), leaf);
+    EXPECT_GT(page->FirstVisibleRow(), 0) << "定位深层节点时应纵向滚动";
+    EXPECT_GT(page->VisibleRowCount(), 1) << "定位深层节点时应把层级过滤放开到全部";
+    EXPECT_GE(page->FirstVisibleRow() + page->VisibleRowCount(), 21) << "滚动后叶子所在行必须落在窗口内";
+}
+
+TEST(FileStructureMapPageTest, ResizeRebuildsRowBudgetAfterDebounce) {
+    EnsureApp();
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    auto* page = new FileStructureMapPage(true, &host);
+    layout->addWidget(page);
+    host.resize(900, 320);
+    host.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    page->SetResult(MakeChainResult(12));
+    QApplication::processEvents();
+    const int before = page->VisibleRowCount();
+    ASSERT_GT(before, 1);
+    ASSERT_LT(before, page->NodeCount()) << "初始应为小画布，行数少于总层级";
+
+    host.resize(900, 900);
+    QApplication::processEvents();
+    WaitForUi(200);
+
+    EXPECT_GT(page->VisibleRowCount(), before) << "窗口变大后必须按新高度重算可见行数";
+}
+
+TEST(FileStructureMapPageTest, NewResultAndClearResetViewport) {
+    EnsureApp();
+    QWidget host;
+    QVBoxLayout* layout = new QVBoxLayout(&host);
+    auto* page = new FileStructureMapPage(true, &host);
+    layout->addWidget(page);
+    host.resize(900, 600);
+    host.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    page->SetResult(MakeMapResult());
+    page->FocusNode(1);
+    ASSERT_GT(page->ViewScale(), 1.0);
+
+    // 新文件 / 新结果回到整幅视图，旧缩放不能带过去。
+    page->SetResult(MakeMapResult());
+    EXPECT_DOUBLE_EQ(page->ViewScale(), 1.0);
+    EXPECT_EQ(page->FirstVisibleRow(), 0);
+
+    page->FocusNode(1);
+    ASSERT_GT(page->ViewScale(), 1.0);
+    page->Clear();
+    EXPECT_DOUBLE_EQ(page->ViewScale(), 1.0);
+    EXPECT_EQ(page->FirstVisibleRow(), 0);
 }
