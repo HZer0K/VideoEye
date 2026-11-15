@@ -1,5 +1,6 @@
 #include "core/repair/RepairOutputWriter.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <vector>
@@ -40,6 +41,57 @@ std::filesystem::path ParentDirectory(const std::string& path) {
 // 所以拼接一律经过 ToNativePath，绝不把裸 std::string 交给 operator/。
 std::filesystem::path JoinUtf8(const std::filesystem::path& dir, const std::string& utf8_name) {
     return dir / ToNativePath(utf8_name);
+}
+
+// 默认产物根目录：源文件旁新建 "<源文件名>_repaired/"。它只是收纳用的命名空间，
+// 真正的一次修复的全部产物落在下面按 run 分的独立子文件夹里（见 RunDirectoryPath）。
+// 目录名取源文件 stem（不含扩展名）。
+std::filesystem::path DefaultDirectoryPath(const std::string& source_path) {
+    const std::string stem = FileStem(source_path);
+    const std::string folder = stem.empty() ? std::string("repaired") : stem + "_repaired";
+    return JoinUtf8(ParentDirectory(source_path), folder);
+}
+
+bool IsDigit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+// run_id 是 Resolve 的公开入参（引擎、测试、自动化调用方都可能传自定义值），却要
+// 直接当目录名用。只允许字母/数字/'-'/'_'，把 '.'、路径分隔符和 Windows 保留字符
+// 全换成 '_'：否则 ".." 或 "a/../../b" 会把产物写到专用文件夹之外，等于绕开了
+// 「所有产物收进专用文件夹」这条约束。
+bool IsSafeFolderChar(char c) {
+    return IsDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+}
+
+std::string SafeRunIdComponent(const std::string& run_id) {
+    std::string safe;
+    safe.reserve(run_id.size());
+    for (const char c : run_id)
+        safe.push_back(IsSafeFolderChar(c) ? c : '_');
+    if (safe.empty())
+        safe = "run";
+    return safe;
+}
+
+// 标准 run id（FormatLocalRunId）= "YYYYMMDDHHMMSS-XXXX"，本身就带时间戳与随机后缀，
+// 引擎每次 run 都会新生成一个。这里只把它排成 "YYYY-MM-DD_HH-MM-SS_XXXX" 更好认；
+// 非标准形态（自定义调用方 / 测试）原样使用，不猜格式、不丢可追溯性。
+std::string RunFolderName(const std::string& run_id) {
+    const std::string safe = SafeRunIdComponent(run_id);
+    const bool standard_shape = safe.size() == 19 && safe[14] == '-' &&
+                                std::all_of(safe.begin(), safe.begin() + 14, IsDigit) &&
+                                std::all_of(safe.begin() + 15, safe.end(), IsDigit);
+    if (!standard_shape)
+        return safe;
+    return safe.substr(0, 4) + "-" + safe.substr(4, 2) + "-" + safe.substr(6, 2) + "_" + safe.substr(8, 2) + "-" +
+           safe.substr(10, 2) + "-" + safe.substr(12, 2) + "_" + safe.substr(15);
+}
+
+// 每次修复一个独立文件夹：<stem>_repaired/<时间戳_runid>/。
+// 目录名与产物文件名、报告里的 result_id 同源，用户能按目录直接定位某次 run。
+std::filesystem::path RunDirectoryPath(const std::string& source_path, const std::string& run_id) {
+    return JoinUtf8(DefaultDirectoryPath(source_path), RunFolderName(run_id));
 }
 
 bool Exists(const std::string& path) {
@@ -99,6 +151,14 @@ std::string ValidateArtifacts(const RepairOutputPaths& paths, const model::Repai
 
 } // namespace
 
+std::string RepairOutputWriter::DefaultDirectory(const std::string& source_path) {
+    return ToUtf8String(DefaultDirectoryPath(source_path));
+}
+
+std::string RepairOutputWriter::RunDirectory(const std::string& source_path, const std::string& run_id) {
+    return ToUtf8String(RunDirectoryPath(source_path, run_id));
+}
+
 RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& request, const std::string& run_id) {
     RepairOutputPaths paths;
     if (request.source_path.empty()) {
@@ -106,10 +166,22 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
         return paths;
     }
 
-    std::filesystem::path directory = request.output_directory.empty() ? ParentDirectory(request.source_path)
-                                                                       : ToNativePath(request.output_directory);
+    // run_id 同时进目录名和文件名，两处都必须清洗：只清洗目录时，"../evil"
+    // 这类值仍会通过文件名里的路径分隔符把产物写到 run 目录之外。
+    const bool default_layout = request.output_directory.empty();
+    const std::string safe_run_id = SafeRunIdComponent(run_id);
+    // 未指定产物目录时按本次 run 新建独立子文件夹；显式指定时直接用用户选的目录，
+    // 不再嵌套任何子层（用户选了目录就是想要产物直接落在那里）。
+    std::filesystem::path directory =
+        default_layout ? RunDirectoryPath(request.source_path, safe_run_id) : ToNativePath(request.output_directory);
+    const std::filesystem::path root_dir =
+        default_layout ? DefaultDirectoryPath(request.source_path) : std::filesystem::path();
     std::error_code ec;
-    if (!std::filesystem::exists(ToNativePath(directory.u8string()), ec)) {
+    // 先记下「建之前存在与否」：终态回收只能动本次新建的层，用户已有的目录
+    // 哪怕此刻是空的，也绝不在回收范围内。
+    const bool root_existed = default_layout && std::filesystem::exists(ToNativePath(root_dir.u8string()), ec);
+    const bool run_existed = std::filesystem::exists(ToNativePath(directory.u8string()), ec);
+    if (!run_existed) {
         std::filesystem::create_directories(ToNativePath(directory.u8string()), ec);
         if (ec) {
             paths.error = "无法创建产物目录: " + directory.u8string() + " (" + ec.message() + ")";
@@ -117,11 +189,16 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
         }
     }
     if (!std::filesystem::is_directory(ToNativePath(directory.u8string()), ec)) {
-        paths.error = "产物目录不是可写目录: " + directory.u8string();
+        paths.error = "产物目录不是可写目录（可能被同名文件占用）: " + directory.u8string();
         return paths;
     }
 
     paths.directory = directory.u8string();
+    if (default_layout) {
+        paths.created_run_directory = !run_existed;
+        if (!root_existed)
+            paths.created_root_directory = ToUtf8String(root_dir);
+    }
     paths.extension = OutputExtension(request);
     const std::string stem = FileStem(request.source_path);
 
@@ -155,7 +232,7 @@ RepairOutputPaths RepairOutputWriter::Resolve(const model::RepairRequest& reques
     // 自动命名：run_id 里已有随机后缀，但派生产物也可能撞上已有文件，
     // 所以整组一起重试，而不是只看 final_path。
     for (int suffix = 0; suffix < 100; ++suffix) {
-        const std::string unique = run_id + (suffix == 0 ? std::string() : "-" + std::to_string(suffix));
+        const std::string unique = safe_run_id + (suffix == 0 ? std::string() : "-" + std::to_string(suffix));
         const std::string name = stem + ".repaired." + unique + "." + paths.extension;
         RepairOutputPaths candidate = build(JoinUtf8(directory, name).u8string());
         if (Exists(candidate.final_path))
@@ -324,6 +401,24 @@ void RepairOutputWriter::Discard(const std::string& path) {
         return;
     std::error_code ec;
     std::filesystem::remove(ToNativePath(path), ec);
+}
+
+void RepairOutputWriter::DiscardEmptyRunDirectories(const RepairOutputPaths& paths) {
+    // 三重闸门：① 本次确实新建了 run 目录；② 它此刻仍是目录且为空；③ 根目录也
+    // 只有「本次新建 + 仍为空」才回收。任一不满足就什么都不做 —— 这里宁可留下一个
+    // 空文件夹，也绝不删用户已有的目录或任何有内容的目录。
+    if (!paths.created_run_directory || paths.directory.empty())
+        return;
+    std::error_code ec;
+    const std::filesystem::path run_dir = ToNativePath(paths.directory);
+    if (!std::filesystem::is_directory(run_dir, ec) || !std::filesystem::is_empty(run_dir, ec))
+        return;
+    std::filesystem::remove(run_dir, ec);
+    if (ec || paths.created_root_directory.empty())
+        return;
+    const std::filesystem::path root_dir = ToNativePath(paths.created_root_directory);
+    if (std::filesystem::is_directory(root_dir, ec) && std::filesystem::is_empty(root_dir, ec))
+        std::filesystem::remove(root_dir, ec);
 }
 
 std::string RepairOutputWriter::PartialPath(const std::string& final_path) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <sstream>
+#include <utility>
 
 #include "core/domain/io/Utf8Path.h"
 #include "core/repair/RepairBudget.h"
@@ -111,6 +112,28 @@ private:
     bool released_ = false;
 };
 
+// 空目录回收守卫：Resolve 在诊断之前就把默认落点的两层目录建好了，预检失败 /
+// NeedsReference / 取消 / 超时等终态若一个文件都没留下，就会积下一串空文件夹。
+// 用 RAII 盖住 RunCore 的全部出口（含异常栈展开），只回收「本次新建且仍为空」的目录。
+//
+// ⚠️ Run() 里那条「不要把收尾放进 RAII 析构」的约束针对的是**改 result 字段**
+// （return 发生 move 后改的是被搬走的局部对象）；本守卫只碰文件系统、持有 paths
+// 的拷贝，与 result 无关，不受该约束影响。
+// ⚠️ 必须声明在 PartGuard **之前**：析构逆序，让 .part 先被删掉，本守卫才看得到空目录。
+class EmptyOutputDirectoryGuard {
+public:
+    explicit EmptyOutputDirectoryGuard(RepairOutputPaths paths) : paths_(std::move(paths)) {
+    }
+    ~EmptyOutputDirectoryGuard() {
+        RepairOutputWriter::DiscardEmptyRunDirectories(paths_);
+    }
+    EmptyOutputDirectoryGuard(const EmptyOutputDirectoryGuard&) = delete;
+    EmptyOutputDirectoryGuard& operator=(const EmptyOutputDirectoryGuard&) = delete;
+
+private:
+    RepairOutputPaths paths_;
+};
+
 // 预算命中时区分"用户取消"与"超出时间预算"。
 model::RepairBusinessStatus BudgetTerminal(const RepairRunBudget& budget) {
     return budget.Canceled() ? model::RepairBusinessStatus::Canceled : model::RepairBusinessStatus::TimedOut;
@@ -145,6 +168,9 @@ model::RepairResult RunCore(const model::RepairRequest& request, const std::atom
     }
     const std::string run_id = result.result_id.substr(std::string("result-").size());
     const RepairOutputPaths paths = RepairOutputWriter::Resolve(request, run_id);
+    // 覆盖之后所有 return：paths 无效 / Reserve 失败 / 诊断流产 / 取消 / 成功发布，
+    // 都在这里统一判断有没有留下文件。成功时目录里有产物，is_empty 会挡住回收。
+    EmptyOutputDirectoryGuard empty_dir_guard(paths);
     result.report_json_path = paths.report_json_path;
     result.report_text_path = paths.report_text_path;
     result.report_html_path = paths.report_html_path;

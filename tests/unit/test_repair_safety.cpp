@@ -33,6 +33,7 @@
 #include <QObject>
 #include <QTimer>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/domain/model/RepairRequest.h"
 #include "core/domain/model/RepairTypes.h"
 #include "core/media/container/IsobmffParser.h"
@@ -208,6 +209,168 @@ TEST(RepairSafety, ExistingPartFileIsNotTruncatedOrDeleted) {
     EXPECT_FALSE(repair::RepairOutputWriter::Reserve(fresh, &error));
     EXPECT_TRUE(std::filesystem::exists(fresh.part_path));
     repair::RepairOutputWriter::Discard(fresh.part_path);
+}
+
+// ---------------- 默认产物目录：专用根目录 + 每次 run 独立子文件夹 ----------------
+//
+// 旧行为是「产物散落在源文件所在目录」；后来收进专用文件夹，现在再按 run 分一层。
+// 逐个产物判 parent_path：只要有一份派生产物漏回上层，一次修复的文件就会和别的
+// run 混在一起，用户没法按文件夹判断「哪个视频配哪份报告」。
+
+TEST(RepairSafety, DefaultOutputDirectoryKeepsEveryArtifactInDedicatedFolder) {
+    const std::string dir = MakeTempDir("default_folder");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+
+    RepairRequest request;
+    request.source_path = source; // 关键：output_directory 留空
+    const repair::RepairOutputPaths paths = repair::RepairOutputWriter::Resolve(request, "run-folder");
+    ASSERT_TRUE(paths.valid) << paths.error;
+
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+    EXPECT_EQ(ToUtf8String(ToNativePath(root).filename()), std::string("clip_repaired")) << root;
+    EXPECT_EQ(ToNativePath(root).parent_path(), ToNativePath(source).parent_path());
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(root))) << root;
+    EXPECT_EQ(ToUtf8String(ToNativePath(paths.directory).filename()), std::string("run-folder")) << paths.directory;
+    EXPECT_EQ(ToNativePath(paths.directory).parent_path(), ToNativePath(root)) << paths.directory;
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(paths.directory))) << paths.directory;
+    // 界面提示（根目录）与真实落点（run 目录）必须同源，不能各拼一份字符串。
+    EXPECT_EQ(ToNativePath(repair::RepairOutputWriter::RunDirectory(source, "run-folder")),
+              ToNativePath(paths.directory));
+
+    const std::vector<std::string> artifacts = {paths.final_path,       paths.part_path,        paths.assembled_path,
+                                                paths.report_json_path, paths.report_text_path, paths.report_html_path};
+    for (const auto& artifact : artifacts) {
+        ASSERT_FALSE(artifact.empty());
+        EXPECT_EQ(ToNativePath(artifact).parent_path(), ToNativePath(paths.directory)) << artifact;
+    }
+    EXPECT_EQ(ReadText(source), "SOURCE") << "解析路径不得改动源文件";
+}
+
+TEST(RepairSafety, ExplicitOutputDirectoryIsNotNested) {
+    const std::string dir = MakeTempDir("explicit_folder");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    RepairRequest request = MakeRequest(source, dir + "/out");
+
+    const repair::RepairOutputPaths paths = repair::RepairOutputWriter::Resolve(request, "run-explicit");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    EXPECT_EQ(ToNativePath(paths.directory), ToNativePath(request.output_directory));
+    EXPECT_EQ(ToNativePath(paths.final_path).parent_path(), ToNativePath(request.output_directory));
+    EXPECT_EQ(ToNativePath(paths.report_json_path).parent_path(), ToNativePath(request.output_directory));
+    EXPECT_EQ(ToUtf8String(ToNativePath(paths.directory).filename()), std::string("out"));
+    // 用户显式选了目录就直接用，连专用根目录都不该被顺手建出来。
+    EXPECT_FALSE(std::filesystem::exists(ToNativePath(dir + "/clip_repaired"))) << paths.directory;
+}
+
+TEST(RepairSafety, DefaultOutputDirectoryRejectsSameNameFile) {
+    const std::string dir = MakeTempDir("folder_collision");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    const std::string blocker = dir + "/clip_repaired";
+    WriteBytes(blocker, "USER-FILE");
+
+    RepairRequest request;
+    request.source_path = source;
+    const repair::RepairOutputPaths paths = repair::RepairOutputWriter::Resolve(request, "run-collision");
+    EXPECT_FALSE(paths.valid) << paths.error;
+    EXPECT_NE(paths.error.find("产物目录"), std::string::npos) << paths.error;
+    EXPECT_EQ(ReadText(blocker), "USER-FILE") << "同名文件不得被覆盖或删除";
+}
+
+TEST(RepairSafety, RunFolderCollisionWithExistingFileIsRejected) {
+    const std::string dir = MakeTempDir("run_folder_collision");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+    std::filesystem::create_directories(ToNativePath(root));
+    const std::string blocker = root + "/run-blocked";
+    WriteBytes(blocker, "USER-FILE");
+
+    RepairRequest request;
+    request.source_path = source;
+    const repair::RepairOutputPaths paths = repair::RepairOutputWriter::Resolve(request, "run-blocked");
+    EXPECT_FALSE(paths.valid) << paths.error;
+    EXPECT_NE(paths.error.find("产物目录"), std::string::npos) << paths.error;
+    EXPECT_EQ(ReadText(blocker), "USER-FILE") << "run 目录被同名文件占用时不得覆盖或删除它";
+}
+
+TEST(RepairSafety, DefaultOutputDirectoryPreservesUtf8SourceStem) {
+    const std::string dir = MakeTempDir("utf8_folder");
+    const std::string source = dir + u8"/素材修复.mp4";
+
+    RepairRequest request;
+    request.source_path = source;
+    const repair::RepairOutputPaths paths = repair::RepairOutputWriter::Resolve(request, "run-utf8");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+    EXPECT_NE(ToUtf8String(ToNativePath(root).filename()).find(u8"素材修复"), std::string::npos) << root;
+    EXPECT_EQ(ToNativePath(paths.directory).parent_path(), ToNativePath(root)) << paths.directory;
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(paths.directory))) << paths.directory;
+    EXPECT_EQ(ToNativePath(paths.final_path).parent_path(), ToNativePath(paths.directory)) << paths.final_path;
+}
+
+TEST(RepairSafety, EachRunGetsItsOwnFolderAndResolutionIsIdempotent) {
+    const std::string dir = MakeTempDir("run_folders");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    RepairRequest request;
+    request.source_path = source;
+
+    // 标准 run id = FormatLocalRunId() 的 "YYYYMMDDHHMMSS-XXXX"。
+    const auto first = repair::RepairOutputWriter::Resolve(request, "20261115180649-1234");
+    const auto second = repair::RepairOutputWriter::Resolve(request, "20261115180650-5678");
+    ASSERT_TRUE(first.valid) << first.error;
+    ASSERT_TRUE(second.valid) << second.error;
+
+    EXPECT_EQ(ToUtf8String(ToNativePath(first.directory).filename()), std::string("2026-11-15_18-06-49_1234"))
+        << first.directory;
+    EXPECT_EQ(ToUtf8String(ToNativePath(second.directory).filename()), std::string("2026-11-15_18-06-50_5678"))
+        << second.directory;
+    EXPECT_NE(ToNativePath(first.directory), ToNativePath(second.directory));
+    EXPECT_EQ(ToNativePath(first.directory).parent_path(), ToNativePath(second.directory).parent_path());
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(first.directory)));
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(second.directory)));
+    EXPECT_EQ(ToNativePath(first.final_path).parent_path(), ToNativePath(first.directory));
+    EXPECT_EQ(ToNativePath(second.final_path).parent_path(), ToNativePath(second.directory));
+    EXPECT_EQ(ToNativePath(first.report_json_path).parent_path(), ToNativePath(first.directory));
+    EXPECT_NE(first.final_path, second.final_path);
+
+    // 同一 run 重复解析必须落在同一个目录：Resolve 是纯路径解析，不能每次都换地方，
+    // 否则同一 run 内「预留 .part → 发布 final → 写报告」会散到三个文件夹里。
+    const auto again = repair::RepairOutputWriter::Resolve(request, "20261115180649-1234");
+    ASSERT_TRUE(again.valid) << again.error;
+    EXPECT_EQ(ToNativePath(again.directory), ToNativePath(first.directory));
+    EXPECT_EQ(again.final_path, first.final_path);
+    EXPECT_EQ(again.report_json_path, first.report_json_path);
+}
+
+TEST(RepairSafety, RunIdCannotEscapeDedicatedRootFolder) {
+    const std::string dir = MakeTempDir("run_sanitize");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    RepairRequest request;
+    request.source_path = source;
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+
+    // run_id 是公开入参却能当目录名用；".." / 路径分隔符 / Windows 保留字符
+    // 必须被清洗掉，否则产物会落到专用根目录之外。
+    const std::vector<std::string> hostile = {"..", "../evil", "a/b", "..\\..\\evil", "a:b", ""};
+    for (const auto& run_id : hostile) {
+        const auto paths = repair::RepairOutputWriter::Resolve(request, run_id);
+        ASSERT_TRUE(paths.valid) << run_id << ": " << paths.error;
+        EXPECT_EQ(ToNativePath(paths.directory).parent_path(), ToNativePath(root)) << run_id << ": " << paths.directory;
+        EXPECT_EQ(ToNativePath(paths.final_path).parent_path(), ToNativePath(paths.directory)) << run_id;
+        const std::string folder = ToUtf8String(ToNativePath(paths.directory).filename());
+        EXPECT_EQ(folder.find(".."), std::string::npos) << run_id << ": " << folder;
+        EXPECT_EQ(folder.find('/'), std::string::npos) << run_id << ": " << folder;
+        EXPECT_EQ(folder.find('\\'), std::string::npos) << run_id << ": " << folder;
+        EXPECT_FALSE(folder.empty()) << run_id;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(ToNativePath(dir))) {
+        const std::string name = ToUtf8String(entry.path().filename());
+        EXPECT_TRUE(name == "clip.mp4" || name == "clip_repaired") << "产物目录逃逸到源目录层级: " << name;
+    }
 }
 
 TEST(RepairSafety, FilesystemAliasIsDetected) {
@@ -1380,4 +1543,110 @@ TEST(RepairSafety, RealRunsAttachMatchingCapabilityBoundaries) {
             has_init_trigger = true;
     }
     EXPECT_TRUE(has_init_trigger) << "契约必须写明是哪条证据触发的";
+}
+
+// ---------------- 终态空目录回收 ----------------
+//
+// Resolve 在诊断之前就把默认落点的两层目录建出来了。预检失败 / NeedsReference /
+// 取消等终态若一个文件都没留下，每失败一次就多一个空文件夹。回收必须只针对
+// 「本次新建且仍为空」的层：用户已有的、非空的、显式指定的目录一个都不能碰。
+
+TEST(RepairSafety, FailedRunLeavesNoEmptyOutputFolders) {
+    const std::string dir = MakeTempDir("reclaim_engine");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    const std::string taken = dir + "/taken.mp4";
+    WriteBytes(taken, "USER-FILE");
+
+    RepairRequest request;
+    request.source_path = source;
+    request.output_path = taken; // 已存在的显式目标 → 目录建好后 Resolve 判 invalid
+    request.write_report = false;
+
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    EXPECT_EQ(result.status, RepairBusinessStatus::Failed) << result.summary;
+    EXPECT_FALSE(result.output_published);
+    EXPECT_FALSE(std::filesystem::exists(ToNativePath(root))) << "预检失败不得留下空的专用根目录";
+    for (const auto& entry : std::filesystem::directory_iterator(ToNativePath(dir))) {
+        const std::string name = ToUtf8String(entry.path().filename());
+        EXPECT_TRUE(name == "clip.mp4" || name == "taken.mp4") << "残留空文件夹: " << name;
+    }
+    EXPECT_EQ(ReadText(source), "SOURCE");
+    EXPECT_EQ(ReadText(taken), "USER-FILE");
+}
+
+TEST(RepairSafety, NeedsReferenceRunReclaimsEmptyFolderButReportsStillWrite) {
+    const std::string dir = MakeTempDir("reclaim_needs_ref");
+    const std::string source = dir + "/no_moov.mp4";
+    ASSERT_TRUE(WriteMoovlessIsobmff(source));
+
+    RepairRequest request;
+    request.source_path = source; // 默认落点（不显式指定产物目录）
+    const RepairResult result = repair::RepairEngine::Run(request, nullptr, nullptr);
+    EXPECT_EQ(result.status, RepairBusinessStatus::NeedsReference) << result.summary;
+    EXPECT_FALSE(result.output_published);
+    EXPECT_FALSE(std::filesystem::exists(ToNativePath(repair::RepairOutputWriter::DefaultDirectory(source))))
+        << "NeedsReference 终态不得留下空的根目录 + run 子目录";
+
+    // 报告是引擎返回之后由界面异步写的：目录已被回收，WriteAll 必须自己重建父目录，
+    // 否则一次失败修复的诊断报告会三份全丢。
+    ASSERT_FALSE(result.report_json_path.empty());
+    const auto written = reporting::RepairReportExporter::WriteAll(result, result.report_json_path,
+                                                                   result.report_text_path, result.report_html_path);
+    EXPECT_TRUE(written.AllOk()) << written.error;
+    EXPECT_FALSE(ReadText(result.report_json_path).empty());
+    EXPECT_TRUE(std::filesystem::exists(ToNativePath(result.report_text_path)));
+    EXPECT_TRUE(std::filesystem::exists(ToNativePath(result.report_html_path)));
+}
+
+TEST(RepairSafety, NonEmptyRunFolderIsNotReclaimed) {
+    const std::string dir = MakeTempDir("reclaim_keep");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    RepairRequest request;
+    request.source_path = source;
+    const auto paths = repair::RepairOutputWriter::Resolve(request, "run-keep");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    const std::string artifact = paths.directory + "/keep.txt";
+    WriteBytes(artifact, "KEEP");
+
+    repair::RepairOutputWriter::DiscardEmptyRunDirectories(paths);
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(paths.directory)));
+    EXPECT_EQ(ReadText(artifact), "KEEP") << "有内容的目录绝不能被回收";
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(repair::RepairOutputWriter::DefaultDirectory(source))));
+}
+
+TEST(RepairSafety, PreexistingRootFolderIsNotReclaimed) {
+    const std::string dir = MakeTempDir("reclaim_preexisting");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    const std::string root = repair::RepairOutputWriter::DefaultDirectory(source);
+    std::filesystem::create_directories(ToNativePath(root));
+    WriteBytes(root + "/unrelated.txt", "USER-FILE");
+
+    RepairRequest request;
+    request.source_path = source;
+    const auto paths = repair::RepairOutputWriter::Resolve(request, "run-preexisting");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    EXPECT_TRUE(paths.created_root_directory.empty()) << "根目录已存在，不能算本次新建";
+
+    repair::RepairOutputWriter::DiscardEmptyRunDirectories(paths);
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(root)));
+    EXPECT_EQ(ReadText(root + "/unrelated.txt"), "USER-FILE");
+    EXPECT_FALSE(std::filesystem::exists(ToNativePath(paths.directory))) << "本次新建的空 run 目录应被回收";
+}
+
+TEST(RepairSafety, ExplicitOutputDirectoryIsNotReclaimed) {
+    const std::string dir = MakeTempDir("reclaim_explicit");
+    const std::string source = dir + "/clip.mp4";
+    WriteBytes(source, "SOURCE");
+    const RepairRequest request = MakeRequest(source, dir + "/out");
+    const auto paths = repair::RepairOutputWriter::Resolve(request, "run-explicit-reclaim");
+    ASSERT_TRUE(paths.valid) << paths.error;
+    EXPECT_FALSE(paths.created_run_directory);
+
+    repair::RepairOutputWriter::DiscardEmptyRunDirectories(paths);
+    EXPECT_TRUE(std::filesystem::is_directory(ToNativePath(request.output_directory)))
+        << "用户显式选的目录不属于可回收范围";
 }

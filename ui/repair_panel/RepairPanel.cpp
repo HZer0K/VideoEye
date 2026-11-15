@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "core/qt/RepairController.h"
+#include "core/repair/RepairOutputWriter.h"
 #include "core/reporting/RepairReportExporter.h"
 #include "ui/theme/AppTheme.h"
 
@@ -168,7 +169,8 @@ void RepairPanel::BuildUi() {
 
     ++row;
     grid->addWidget(new QLabel(QStringLiteral("产物目录"), config_group), row, 0);
-    output_edit_ = MakeReadOnlyPathEdit(QStringLiteral("默认与源文件同目录"), config_group);
+    output_edit_ = MakeReadOnlyPathEdit(
+        QStringLiteral("留空：每次修复在「源文件名_repaired」下新建带时间戳的独立文件夹"), config_group);
     grid->addWidget(output_edit_, row, 1);
     auto* output_button = new QPushButton(QStringLiteral("选择…"), config_group);
     grid->addWidget(output_button, row, 2);
@@ -499,8 +501,18 @@ void RepairPanel::OnBrowseSource() {
     if (path.isEmpty())
         return;
     source_edit_->setText(path);
-    if (output_edit_->text().isEmpty())
-        output_edit_->setPlaceholderText(QFileInfo(path).absolutePath());
+    if (output_edit_->text().isEmpty()) {
+        // 与 RepairOutputWriter::DefaultDirectory 同一事实源。run_id 要等开跑时才生成，
+        // 所以占位文本只能显示根目录，子文件夹的命名规则放在 tooltip 里讲清楚，
+        // 不能拼一个「看起来像真实路径」的假 run id。
+        const QString root = QString::fromStdString(repair::RepairOutputWriter::DefaultDirectory(path.toStdString()));
+        output_edit_->setPlaceholderText(root);
+        output_edit_->setToolTip(
+            QStringLiteral("留空时自动新建专用根目录：%1\n"
+                           "并在其下为每次修复单独建一个以时间戳 + run id 命名的子文件夹"
+                           "（例如 2026-11-15_18-06-49_1234）；修复视频、临时产物与三份报告都在该子文件夹内。")
+                .arg(root));
+    }
 }
 
 void RepairPanel::OnBrowseReference() {
@@ -515,8 +527,11 @@ void RepairPanel::OnBrowseOutput() {
     const QString start =
         output_edit_->text().isEmpty() ? QFileInfo(source_edit_->text()).absolutePath() : output_edit_->text();
     const QString directory = QFileDialog::getExistingDirectory(this, QStringLiteral("选择产物目录"), start);
-    if (!directory.isEmpty())
+    if (!directory.isEmpty()) {
         output_edit_->setText(directory);
+        // 显式目录不再嵌套任何子层，避免上一轮的「留空时…」提示误导用户。
+        output_edit_->setToolTip(QStringLiteral("已指定产物目录：修复视频与三份报告直接写入此目录，不再建子文件夹。"));
+    }
 }
 
 void RepairPanel::OnStart() {

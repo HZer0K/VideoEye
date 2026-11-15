@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <sstream>
 #include <utility>
 #include <vector>
 
+#include "core/domain/io/Utf8Path.h"
 #include "core/reporting/QcReportExporterInternal.h"
 #include "infrastructure/serialization/Json.h"
 
@@ -1565,6 +1567,26 @@ std::string BuildHtmlReport(const model::RepairResult& result) {
 RepairReportWriteResult RepairReportExporter::WriteAll(const model::RepairResult& result, const std::string& json_path,
                                                        const std::string& text_path, const std::string& html_path) {
     RepairReportWriteResult outcome;
+    // 修复引擎在终态会回收「本次新建且为空」的产物目录，而诊断报告是引擎返回之后
+    // 由界面异步落盘的 —— 失败修复的目录此刻可能已经不存在。报告写入是独立结果，
+    // 必须自己保证父目录存在，不能依赖引擎留下一个目录。
+    auto ensure_parent = [&](const std::string& path) {
+        if (path.empty())
+            return true;
+        const std::filesystem::path parent = ToNativePath(path).parent_path();
+        if (parent.empty())
+            return true;
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            outcome.error = "无法创建报告目录: " + ToUtf8String(parent) + " (" + ec.message() + ")";
+            return false;
+        }
+        return true;
+    };
+    if (!ensure_parent(json_path) || !ensure_parent(text_path) || !ensure_parent(html_path))
+        return outcome;
+
     if (!json_path.empty()) {
         const std::string json = BuildResultJson(result).ToPrettyString(2) + "\n";
         outcome.json_ok = detail::WriteUtf8File(json_path, json);

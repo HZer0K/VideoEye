@@ -25,7 +25,10 @@ struct RepairRequest {
 
     std::string source_path;
 
-    // 产物目录。为空时用源文件所在目录（若不可写则修复失败，不做静默降级）。
+    // 产物目录。为空时在源文件旁新建专用根目录 <源文件名>_repaired/，再按每次修复
+    // 单独建一层 <时间戳-run id>/ 子文件夹；修复视频、.part 临时产物、拼接文件和
+    // 三份报告全部放在该次 run 的子文件夹里（见 RepairOutputWriter::RunDirectory）。
+    // 显式指定时直接写入该目录，不再嵌套子文件夹；不可写则修复失败，不做静默降级。
     std::string output_directory;
 
     // 显式产物路径。为空时自动命名：<stem>.repaired.<runid>.<ext>。
