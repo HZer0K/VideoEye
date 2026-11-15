@@ -38,6 +38,49 @@ QString FormatCutTimestamp(double seconds) {
            QString("%1").arg(total_ms % 1000, 3, 10, QChar('0'));
 }
 
+// 柱状图上限：画布就这么宽，再多柱子只会糊成一片，悬停命中也会变慢。
+constexpr int kMaxChartBars = 600;
+
+// 切换点是离散事件，横轴必须用时间戳，否则"从这个切点到播放到哪儿"没有对应关系。
+// 点数超过上限时按时间分桶、每桶保留最强的一次：等间隔抽取会把强切点抹掉，
+// 而 MinMax 抽稀会画出屏幕上并不存在的低强度柱。
+std::vector<QPointF> BuildChartPoints(const std::vector<model::SceneChangeResult>& records) {
+    std::vector<QPointF> points;
+    if (records.empty())
+        return points;
+    points.reserve(static_cast<std::size_t>(std::min<std::size_t>(records.size(), kMaxChartBars)));
+
+    // 时间戳全部相同/不可用时退回按下标分桶，至少还能看出强度分布。
+    const double span = records.back().timestamp - records.front().timestamp;
+    const bool use_time = std::isfinite(span) && span > 1e-9;
+    const auto x_of = [&](std::size_t i) { return use_time ? records[i].timestamp : static_cast<double>(i); };
+
+    if (records.size() <= static_cast<std::size_t>(kMaxChartBars)) {
+        for (std::size_t i = 0; i < records.size(); ++i)
+            points.emplace_back(x_of(i), records[i].score);
+        return points;
+    }
+
+    const double x_begin = x_of(0);
+    const double bucket_w = (x_of(records.size() - 1) - x_begin) / kMaxChartBars;
+    std::vector<double> best_score(static_cast<std::size_t>(kMaxChartBars), -1.0);
+    std::vector<double> best_x(static_cast<std::size_t>(kMaxChartBars), 0.0);
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        int b = bucket_w > 0.0 ? static_cast<int>((x_of(i) - x_begin) / bucket_w) : 0;
+        b = std::clamp(b, 0, kMaxChartBars - 1);
+        const auto idx = static_cast<std::size_t>(b);
+        if (records[i].score > best_score[idx]) {
+            best_score[idx] = records[i].score;
+            best_x[idx] = x_of(i);
+        }
+    }
+    for (std::size_t b = 0; b < best_score.size(); ++b) {
+        if (best_score[b] >= 0.0)
+            points.emplace_back(best_x[b], best_score[b]);
+    }
+    return points;
+}
+
 } // namespace
 
 SceneChangePage::SceneChangePage(bool feature_checked, QWidget* parent)
@@ -74,20 +117,21 @@ void SceneChangePage::SetupUi() {
         layout->addWidget(row);
     }
 
-    summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"));
+    summary_label_ = new QLabel(tr("开启分析后播放视频，将在此列出检测到的镜头切换点（时间戳 + 切换强度）。"
+                                   "仅统计播放经过的区间，拖动进度条跳过的部分不会补算。"));
     summary_label_->setObjectName(QStringLiteral("HintLabel"));
     summary_label_->setWordWrap(true);
     layout->addWidget(summary_label_);
 
     // 切换强度柱状图
     chart_ = new MetricChartWidget(this);
-    chart_->SetTitle(tr("切换强度（逐切换点）"));
+    chart_->SetTitle(tr("切换强度（按时间分布）"));
     chart_->SetLegendVisible(false);
     series_ = chart_->AddBarSeries(tr("强度"), QColor("#8e24aa"));
     axis_x_ = chart_->AxisX();
     axis_y_ = chart_->AxisY();
-    axis_x_->SetLabelFormat("%d");
-    axis_x_->SetTitleText(tr("切换点序号"));
+    axis_x_->SetLabelFormat("%.0f");
+    axis_x_->SetTitleText(tr("时间（秒）"));
     axis_y_->SetTitleText(tr("强度"));
     axis_y_->SetRange(0, 1);
     chart_->setMinimumHeight(180);
@@ -154,21 +198,13 @@ std::size_t SceneChangePage::RecordIndexForRow(int row) const {
 void SceneChangePage::UpdateChart() {
     if (!series_)
         return;
-    // 柱状图每根柱子都要画一个矩形，几千根时绘制与悬停命中都会明显变慢，
-    // 所以这里不是"抽稀"而是**保留最近一段**（滚动窗口）—— 用户要看的是
-    // 刚播过的那几十秒。上限与抽稀口径都在 ui/charts/ChartDecimation.h。
-    const int start = records_.size() > static_cast<size_t>(kMaxRecentChartItems)
-                          ? static_cast<int>(records_.size() - kMaxRecentChartItems)
-                          : 0;
-    {
-        // 逐点 Append 会每根柱子投一次重绘，攒完一次性提交
-        SeriesBatch batch(series_);
-        batch.Reserve(static_cast<int>(records_.size()) - start);
-        for (int i = start; i < static_cast<int>(records_.size()); ++i) {
-            batch.Add(static_cast<double>(i), records_[i].score);
-        }
-    }
-    axis_x_->SetRange(start, std::max(start + 1, static_cast<int>(records_.size())));
+    const std::vector<QPointF> points = BuildChartPoints(records_);
+    // 逐点 Append 会每根柱子投一次重绘，攒完一次性提交。
+    SeriesBatch batch(series_);
+    batch.Reserve(static_cast<int>(points.size()));
+    for (const QPointF& p : points)
+        batch.Add(p.x(), p.y());
+    // 横轴量程交给数据自动定：这里不给 SetRange，否则换文件后旧范围会残留。
 }
 
 void SceneChangePage::UpdateSummary() {
@@ -188,6 +224,8 @@ void SceneChangePage::UpdateSummary() {
                        .arg(n)
                        .arg(QString::number(sum / n, 'f', 3))
                        .arg(QString::number(max_s, 'f', 3));
+    // 只统计已解码区间：拖过的部分没有逐帧比较，不能让人误以为这是全片结论。
+    text += tr(" | 仅统计已解码区间，跳过的部分未覆盖");
     if (n > kMaxTableRows)
         text += tr(" | 表格仅显示最近 %1 条，导出为全集").arg(kMaxTableRows);
     summary_label_->setText(text);

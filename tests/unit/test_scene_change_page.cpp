@@ -151,6 +151,8 @@ TEST(SceneChangePageTests, SummaryAggregatesCountAverageAndMax) {
     EXPECT_TRUE(text.contains(QStringLiteral("共检测到 3 个切换点")));
     EXPECT_TRUE(text.contains(QStringLiteral("0.600"))); // (0.9 + 0.4 + 0.5) / 3
     EXPECT_TRUE(text.contains(QStringLiteral("0.900")));
+    // 检测只在播放经过的区间内进行：汇总必须说清楚，否则会被当成全片结论。
+    EXPECT_TRUE(text.contains(QStringLiteral("仅统计已解码区间")));
 }
 
 // 点击表格行 = 请求定位到该切换点：面板把它转成播放器的 SeekRequested。
