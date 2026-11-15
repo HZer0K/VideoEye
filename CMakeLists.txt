@@ -1192,6 +1192,9 @@ endif()
 # 由 workflow 检测工具存在后再追加。
 set(CPACK_PACKAGE_NAME "VideoEye")
 set(CPACK_PACKAGE_VENDOR "VideoEye contributors")
+# Debian 包必须有 maintainer：CPack 在缺 CPACK_PACKAGE_CONTACT 时会 FATAL_ERROR，
+# 而 TGZ 那一步照常成功 —— 表现就是「打包到 .deb 才炸」。格式按 Debian 约定写。
+set(CPACK_PACKAGE_CONTACT "VideoEye contributors <HZer0K@users.noreply.github.com>")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
 set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")

@@ -31,6 +31,15 @@ from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# GitHub Actions 的 Windows runner 把 stdout 接到管道时用的是本地代码页（cp1252），
+# 打印中文会抛 UnicodeEncodeError 并以 1 退出 —— SBOM 其实已经写好了，却把整个
+# 发布 job 判成失败。这里固定成 UTF-8，输出内容与退出码都不再随控制台代码页变。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # CycloneDX 的许可证字段优先用 SPDX ID；拿不到就退到名字，绝不猜。
 FFMPEG_PURL_FALLBACK = "pkg:generic/ffmpeg@{version}"
 QT_PURL = "pkg:qt/qt@{version}"
