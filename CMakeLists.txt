@@ -1251,7 +1251,10 @@ else()
     # 依赖交给 dpkg-shlibdeps 自动算：写死 libavcodec60 这种名字在 Ubuntu 22.04/24.04
     # 上就是错的（那里是 58 / 60 之外的版本号），而自动推导永远跟着实际链接走。
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-    set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
+    # 与 ZIP/TGZ 统一成 VideoEye-<版本>-<平台>.deb：发布流程、Release 说明和
+    # 用户下载页都按这个名字找，DEB-DEFAULT 会生成 videoeye_<版本>_amd64.deb，
+    # 与其余产物不一致。
+    set(CPACK_DEBIAN_FILE_NAME "VideoEye-${PROJECT_VERSION}-${VIDEOEYE_PKG_PLATFORM}.deb")
     set(CPACK_DEBIAN_PACKAGE_SECTION "video")
     set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
 endif()

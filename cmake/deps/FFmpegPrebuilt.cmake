@@ -609,11 +609,14 @@ function(videoeye_install_ffmpeg)
         # install(FILES) 只会往目标目录放一个文件, 既丢掉 SONAME 名(.so.61, 加载器
         # 真正按这个名字找), 也不会带上链上的其余名字 —— 装出来的程序在装了 FFmpeg
         # 的机器上看着正常, 换台机器就 "cannot open shared object file"。
+        # \$ENV{DESTDIR} 不能省：CPack 的 DEB 生成器把 CMAKE_INSTALL_PREFIX 设成
+        # /usr、真正落盘位置交给 DESTDIR。只拼 prefix 会去写宿主机的 /usr/lib，
+        # 在 runner 上就是 Permission denied —— TGZ 因 prefix 指向暂存目录才侥幸能过。
         install(CODE "
             execute_process(
                 COMMAND \"\${CMAKE_COMMAND}\"
                         \"-DVE_LIBS=${FFMPEG_RUNTIME_FILES}\"
-                        \"-DVE_DEST=\${CMAKE_INSTALL_PREFIX}/lib\"
+                        \"-DVE_DEST=\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib\"
                         -P \"${VIDEOEYE_FFMPEG_DEPLOY_SCRIPT}\"
                 RESULT_VARIABLE _res
                 OUTPUT_VARIABLE _out
