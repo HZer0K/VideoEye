@@ -60,6 +60,10 @@ public:
     }
     void FlushPending();
 
+    // 记录一个场景切换时间点（秒）。曲线在该位置画竖线并在切镜处断线，
+    // 避免把两个镜头的幅度点连成一段，也便于判断幅度峰值是不是切镜造成的。
+    void AppendSceneChangeTimestamp(double seconds);
+
 signals:
     // 点击运动强度曲线: 请求跳到曲线上对应的时间点（秒）
     void SeekRequested(double seconds);
@@ -71,6 +75,8 @@ private:
     void SetupUi();
     void RefreshUi();
     void OnExportCsv();
+    // 导出曲线历史（时间 / 平均幅度 / 最大幅度 / 帧内块 / 总块数）
+    void OnExportMotionHistoryCsv();
     // 只重绘右侧可视化预览（表格选中行变化时也走这里，不重建整页数据）
     void RedrawVisualization();
     // 运动强度时间曲线：记录每个分析帧的 avg/max 幅度，点击可定位
@@ -106,6 +112,8 @@ private:
 
     // 运动强度历史（滚动窗口，约 10Hz × 10 分钟）与曲线坐标范围
     std::vector<MotionSample> motion_history_;
+    // 播放期场景切换时间点（升序）；曲线画竖线并在切镜处断线
+    std::vector<double> scene_change_timestamps_;
     double last_sample_timestamp_ = -1.0;
     double chart_t0_ = 0.0;
     double chart_t1_ = 1.0;

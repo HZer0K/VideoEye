@@ -520,6 +520,62 @@ TEST(MacroblockViewTests, MotionChartFollowsLabelWidth) {
     EXPECT_GT(chart->pixmap().width(), 360);
 }
 
+// 短空档（静止镜头 / 全 I 帧）不是 Seek：3s 的间隔应保留前面的曲线；
+// 只有时间回退或跨度超过阈值才清空。
+TEST(MacroblockViewTests, ShortGapKeepsMotionHistoryButBackwardJumpClears) {
+    EnsureApp();
+    MacroblockView view;
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    view.SetAnalysis(MakeMvFrame(4.0, 3.0, 9.0));
+    view.FlushPending();
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    EXPECT_FALSE(chart->pixmap().isNull());
+
+    // 时间回退 = Seek 回去，历史清空
+    view.SetAnalysis(MakeMvFrame(0.5, 1.0, 3.0));
+    view.FlushPending();
+    EXPECT_TRUE(chart->pixmap().isNull());
+}
+
+// 场景切换标记：切镜处应画出橙色竖线，便于判断幅度峰值是否由换镜头造成。
+TEST(MacroblockViewTests, SceneChangeMarkerIsDrawnOnChart) {
+    EnsureApp();
+    MacroblockView view;
+    view.SetAnalysis(MakeMvFrame(1.0, 2.0, 6.0));
+    view.FlushPending();
+    view.SetAnalysis(MakeMvFrame(2.0, 3.0, 9.0));
+    view.FlushPending();
+
+    QLabel* chart = FindChartLabel(&view);
+    ASSERT_NE(chart, nullptr);
+    ASSERT_FALSE(chart->pixmap().isNull());
+
+    view.AppendSceneChangeTimestamp(1.5); // 窗口正中
+    ASSERT_FALSE(chart->pixmap().isNull());
+
+    const QImage image = chart->pixmap().toImage();
+    // 与绘制一致的边距：左 34 / 右 8；1.5s 在 [1.0, 2.0] 的中点
+    const int left = 34;
+    const int right = image.width() - 8;
+    const int expected_x = (left + right) / 2;
+
+    bool found_marker = false;
+    for (int x = expected_x - 1; x <= expected_x + 1 && !found_marker; ++x) {
+        for (int y = 10; y < image.height() - 18; ++y) {
+            const QColor c = image.pixelColor(x, y);
+            // 橙色标记 (240,160,60)：与蓝线/黄线的色差关系不同，避免误判成折线。
+            if (c.red() > 200 && c.red() - c.green() > 55 && c.green() - c.blue() > 70) {
+                found_marker = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(found_marker);
+}
+
 // 时间戳跳变（Seek）后旧曲线不再对应当前位置：历史清空、重新累积。
 TEST(MacroblockViewTests, TimeJumpClearsMotionHistory) {
     EnsureApp();

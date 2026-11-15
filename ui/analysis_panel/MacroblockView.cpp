@@ -43,6 +43,13 @@ constexpr int kChartRightMargin = 8;
 constexpr int kChartTopMargin = 8;
 constexpr int kChartBottomAxis = 18;
 
+// 曲线历史的重置阈值：时间回退说明 Seek 回去了；向前跳超过这个跨度才视为跳转。
+// 不能用「跳变 > 1.5s」—— 长时间静止镜头 / 全 I 帧片段会连续几秒没有可记录帧，
+// 那不是 Seek，清空会白白丢掉前面的曲线。
+constexpr double kMotionHistoryGapResetSeconds = 10.0;
+// 场景切换标记的上限：长片可能有上千个切镜，超出后丢最早的。
+constexpr std::size_t kMaxSceneChangeMarks = 512;
+
 // 帧类型短名 (AVPictureType: 1=I, 2=P, 3=B)
 QString FrameTypeShortName(int frame_type) {
     switch (frame_type) {
@@ -83,7 +90,9 @@ void MacroblockView::SetupUi() {
         rl->addWidget(toggle_);
 
         rl->addWidget(MakeExportMenuButton(row, {{tr("运动矢量与块统计 CSV…"), [this]() { OnExportCsv(); },
-                                                  tr("导出当前帧的运动矢量、块大小分布与幅度分布")}}));
+                                                  tr("导出当前帧的运动矢量、块大小分布与幅度分布")},
+                                                 {tr("运动强度时序 CSV…"), [this]() { OnExportMotionHistoryCsv(); },
+                                                  tr("导出曲线历史（时间 / 平均与最大幅度 / 帧内块 / 总块数）")}}));
         layout->addWidget(row);
     }
 
@@ -220,10 +229,12 @@ void MacroblockView::Reset() {
     dirty_ = false;
     highlighted_row_ = -1;
     motion_history_.clear();
+    scene_change_timestamps_.clear();
     last_sample_timestamp_ = -1.0;
     chart_t0_ = 0.0;
     chart_t1_ = 1.0;
     chart_pixel_width_ = 0;
+    chart_pixel_height_ = 0;
 
     if (summary_label_) {
         summary_label_->setToolTip(QString());
@@ -524,10 +535,14 @@ void MacroblockView::AppendMotionHistory(const model::MacroblockFrameAnalysis& m
     sample.intra_count = ma.stats.intra_count;
     sample.total_blocks = ma.stats.total_blocks;
 
-    // 时间戳跳变 = 发生了 Seek（或长时间卡顿），旧曲线横轴与当前位置无关了，清空重来。
-    if (last_sample_timestamp_ >= 0.0 && std::abs(sample.timestamp - last_sample_timestamp_) > 1.5) {
-        motion_history_.clear();
-    } else if (!motion_history_.empty() && sample.timestamp <= motion_history_.back().timestamp + 1e-6) {
+    // 时间回退 = Seek 回去了，旧曲线横轴与当前位置无关，清空重来；
+    // 向前跳只有超过阈值才算跳转（静止镜头 / 全 I 帧的空档不该清空历史）。
+    if (last_sample_timestamp_ >= 0.0) {
+        const double delta = sample.timestamp - last_sample_timestamp_;
+        if (delta < -1e-3 || delta > kMotionHistoryGapResetSeconds)
+            motion_history_.clear();
+    }
+    if (!motion_history_.empty() && sample.timestamp <= motion_history_.back().timestamp + 1e-6) {
         // 暂停补采 / 同一帧重复投递: 替换最后一点，不重复追加。
         motion_history_.back() = sample;
         last_sample_timestamp_ = sample.timestamp;
@@ -542,6 +557,20 @@ void MacroblockView::AppendMotionHistory(const model::MacroblockFrameAnalysis& m
         motion_history_.erase(motion_history_.begin(),
                               motion_history_.begin() + static_cast<std::ptrdiff_t>(kMaxMotionSamples / 6));
     }
+}
+
+void MacroblockView::AppendSceneChangeTimestamp(double seconds) {
+    if (seconds < 0.0)
+        return;
+    // 保持升序：正常播放按时间到达，Seek 回头时可能乱序；同位置的重复投递只留一条。
+    auto it = std::lower_bound(scene_change_timestamps_.begin(), scene_change_timestamps_.end(), seconds);
+    if (it != scene_change_timestamps_.end() && std::abs(*it - seconds) < 1e-3)
+        return;
+    scene_change_timestamps_.insert(it, seconds);
+    if (scene_change_timestamps_.size() > kMaxSceneChangeMarks)
+        scene_change_timestamps_.erase(scene_change_timestamps_.begin());
+    // 曲线可能正显示着这个位置：立即重画，不必等下一帧分析数据。
+    RedrawMotionChart();
 }
 
 void MacroblockView::RedrawMotionChart() {
@@ -600,14 +629,33 @@ void MacroblockView::RedrawMotionChart() {
         return QPointF(x, y);
     };
 
+    // 场景切换标记：竖线画在曲线之前（不遮挡折线），并记录两个标记之间是否断线。
+    // 切镜两侧的幅度没有可比性，连线会把"换镜头"画成一次持续运动。
+    auto has_cut_between = [&](double from, double to) {
+        auto it = std::upper_bound(scene_change_timestamps_.begin(), scene_change_timestamps_.end(), from);
+        return it != scene_change_timestamps_.end() && *it <= to;
+    };
+    for (double cut : scene_change_timestamps_) {
+        if (cut < t0 || cut > t1)
+            continue;
+        // +0.5 让 1px 竖线落在像素中心，避免抗锯齿把整条线摊成两列半透明。
+        const double x = std::floor(to_point(cut, 0.0).x()) + 0.5;
+        painter.setPen(QPen(QColor(240, 160, 60), 1, Qt::DashLine));
+        painter.drawLine(QPointF(x, top), QPointF(x, bottom));
+    }
+
     // 最大幅度（蓝）在下、平均幅度（黄）在上，便于看出瞬时峰值与整体强度
     painter.setPen(QPen(QColor(88, 166, 255), 1.2));
     for (std::size_t i = 1; i < motion_history_.size(); ++i) {
+        if (has_cut_between(motion_history_[i - 1].timestamp, motion_history_[i].timestamp))
+            continue;
         painter.drawLine(to_point(motion_history_[i - 1].timestamp, motion_history_[i - 1].max_magnitude),
                          to_point(motion_history_[i].timestamp, motion_history_[i].max_magnitude));
     }
     painter.setPen(QPen(QColor(240, 200, 80), 1.6));
     for (std::size_t i = 1; i < motion_history_.size(); ++i) {
+        if (has_cut_between(motion_history_[i - 1].timestamp, motion_history_[i].timestamp))
+            continue;
         painter.drawLine(to_point(motion_history_[i - 1].timestamp, motion_history_[i - 1].avg_magnitude),
                          to_point(motion_history_[i].timestamp, motion_history_[i].avg_magnitude));
     }
@@ -741,6 +789,26 @@ void MacroblockView::OnExportCsv() {
             }
         },
         static_cast<int>(ma.motion_vectors.size()));
+}
+
+void MacroblockView::OnExportMotionHistoryCsv() {
+    if (motion_history_.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("还没有运动强度时序数据可导出"));
+        return;
+    }
+
+    ExportCsvStream(
+        this, tr("导出运动强度时序 CSV"), QStringLiteral("macroblock_motion_history.csv"),
+        [this](QTextStream& stream) {
+            stream << "时间戳(s),平均幅度(px),最大幅度(px),帧内块,总块数\n";
+            for (const auto& sample : motion_history_) {
+                stream << QString::number(sample.timestamp, 'f', 3) << ","
+                       << QString::number(sample.avg_magnitude, 'f', 3) << ","
+                       << QString::number(sample.max_magnitude, 'f', 3) << "," << sample.intra_count << ","
+                       << sample.total_blocks << "\n";
+            }
+        },
+        static_cast<int>(motion_history_.size()));
 }
 
 } // namespace ui

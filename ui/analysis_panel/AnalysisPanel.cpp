@@ -578,6 +578,10 @@ void AnalysisPanel::OnContainerStructureFailed(const QString& message) {
 void AnalysisPanel::OnSceneChangeDetected(const model::SceneChangeResult& result) {
     if (pages_.scene_change)
         pages_.scene_change->AppendResult(result);
+    // 运动强度曲线用切镜时间点画竖线并在切镜处断线：幅度峰值到底是真实运动
+    // 还是换镜头，只有对齐场景切换才看得出来。
+    if (pages_.macroblock)
+        pages_.macroblock->AppendSceneChangeTimestamp(result.timestamp);
 }
 
 void AnalysisPanel::OnVisualDefectFrame(const model::FrameQualityMetric& metric) {
