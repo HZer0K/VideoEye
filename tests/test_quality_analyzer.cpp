@@ -271,6 +271,9 @@ TEST(QualityAnalyzerTest, BuildSampleToneMapsPqFrame) {
 
     EXPECT_TRUE(sample.hdr);
     EXPECT_TRUE(sample.tone_mapped);
+    // 色调映射输出是 full range（0..255），limited_range 必须同步改掉，
+    // 否则曝光阈值会继续按 236/252 卡一条 0..255 的信号
+    EXPECT_FALSE(sample.limited_range);
 }
 
 } // namespace

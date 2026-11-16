@@ -446,6 +446,10 @@ void QualityAnalyzer::ApplyHdrToneMap(const AVFrame* frame, model::FrameSample& 
         for (auto& v : sample.rgb)
             v = rgb_lut[v];
     }
+    // 色调映射输出是 full range（0..255）: 曲线的黑/白端分别落到 0/255，
+    // 不再保持源帧的 16-235 摆幅。这里同步把 limited_range 改掉，否则曝光
+    // 阈值会继续按 236/252 去卡一条 0..255 的信号，口径对不上。
+    sample.limited_range = false;
     sample.tone_mapped = true;
 }
 

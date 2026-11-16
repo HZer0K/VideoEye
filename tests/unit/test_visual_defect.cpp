@@ -6,8 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -229,6 +231,27 @@ TEST(VisualDefectMetrics, BlockinessScoreSeparatesMosaicAndNatural) {
         VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(1, 0.5, Blocks(false)), nullptr, 0.0, opt);
     EXPECT_GT(mosaic.blockiness_score, opt.blockiness_score);
     EXPECT_LT(natural.blockiness_score, opt.blockiness_score);
+}
+
+// 指标统计要排除黑边: letterbox 素材的亮度均值按有效画面算，不能被上下
+// 纯黑条稀释 —— 否则闪烁/曝光判定在带黑边素材上会系统性地偏一个量级。
+TEST(VisualDefectMetrics, MetricsExcludeLetterboxBars) {
+    VisualDefectOptions opt;
+    std::vector<uint8_t> gray(static_cast<size_t>(kW) * kH, 200);
+    const int bar = 8;
+    for (int y = 0; y < bar; ++y) {
+        std::fill(gray.begin() + static_cast<std::ptrdiff_t>(y) * kW,
+                  gray.begin() + static_cast<std::ptrdiff_t>(y + 1) * kW, 0);
+        std::fill(gray.begin() + static_cast<std::ptrdiff_t>(kH - 1 - y) * kW,
+                  gray.begin() + static_cast<std::ptrdiff_t>(kH - y) * kW, 0);
+    }
+    const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(MakeSample(0, 0.0, gray), nullptr, 0.0, opt);
+    ASSERT_TRUE(m.valid);
+    ASSERT_TRUE(m.active_area.valid);
+    EXPECT_TRUE(m.active_area.letterbox);
+    // 整帧均值是 200*20/36 ≈ 111，排除黑边后应接近 200
+    EXPECT_NEAR(m.luma_mean, 200.0, 1.0);
+    EXPECT_NEAR(m.black_ratio, 0.0, 0.01);
 }
 
 TEST(VisualDefectMetrics, ColorCastNeedsRgbSample) {

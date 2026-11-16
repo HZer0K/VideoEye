@@ -39,16 +39,17 @@ bool Valid(double v) {
 
 // 单张灰度图上的块效应分数：块边界（x%bs==0）平均落差 vs 块内部（x%bs>=2）
 // 平均落差，归一化到 [0,1]。内部统计跳过紧邻边界的一列/一行，否则会把边界
-// 落差算进"内部"。返回 NaN 表示统计样本不足（尺寸/块宽不成立），调用方跳过。
-double ComputeBlockinessScore(const uint8_t* gray, int w, int h, int bs) {
-    if (!gray || w < 16 || h < 16 || bs < 2)
+// 落差算进"内部"。stride 是行跨度（可以大于 w，便于直接统计有效画面子矩形）。
+// 返回 NaN 表示统计样本不足（尺寸/块宽不成立），调用方跳过。
+double ComputeBlockinessScore(const uint8_t* gray, int stride, int w, int h, int bs) {
+    if (!gray || stride < w || w < 16 || h < 16 || bs < 2)
         return NoValue();
     long double boundary = 0.0;
     long double interior = 0.0;
     long long bc = 0;
     long long ic = 0;
     for (int y = 0; y < h; ++y) {
-        const uint8_t* row = gray + static_cast<size_t>(y) * w;
+        const uint8_t* row = gray + static_cast<size_t>(y) * stride;
         for (int x = 1; x < w; ++x) {
             const int d = std::abs(static_cast<int>(row[x]) - static_cast<int>(row[x - 1]));
             const int mod = x % bs;
@@ -62,8 +63,8 @@ double ComputeBlockinessScore(const uint8_t* gray, int w, int h, int bs) {
         }
     }
     for (int y = 1; y < h; ++y) {
-        const uint8_t* r0 = gray + static_cast<size_t>(y - 1) * w;
-        const uint8_t* r1 = r0 + w;
+        const uint8_t* r0 = gray + static_cast<size_t>(y - 1) * stride;
+        const uint8_t* r1 = r0 + stride;
         const int mod = y % bs;
         for (int x = 0; x < w; ++x) {
             const int d = std::abs(static_cast<int>(r1[x]) - static_cast<int>(r0[x]));
@@ -195,151 +196,9 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
 
     const int w = sample.width;
     const int h = sample.height;
-    const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
     const uint8_t* g = sample.gray.data();
 
-    // ---- 亮度统计（一次遍历顺带把各档像素占比数出来）----
-    // 阈值口径: 采样图保留源帧的亮度范围（见 QualityAnalyzer::ApplyNativeLumaRange），
-    // limited range 素材的合法峰值白是 235，用 full range 的 240/250 去卡会把
-    // 白底/标题卡误报成过曝。这里把高光/削波阈值按 limited range 重新标定，
-    // 只把超过 235 的 super-white（236+，多是编码过冲或压缩到死白）算作高光/削波。
-    const bool limited_range = sample.limited_range;
-    const double highlight_luma = limited_range ? 236.0 : options.highlight_luma;
-    const double clip_high_luma = limited_range ? 252.0 : options.clip_high_luma;
-    long double sum = 0.0;
-    long double sum_sq = 0.0;
-    long long cnt_black = 0;
-    long long cnt_dark = 0;
-    long long cnt_high = 0;
-    long long cnt_clip_high = 0;
-    long long cnt_clip_low = 0;
-    for (size_t i = 0; i < n; ++i) {
-        const long double v = static_cast<long double>(g[i]);
-        sum += v;
-        sum_sq += v * v;
-        if (v <= options.black_luma)
-            ++cnt_black;
-        if (v <= options.shadow_luma)
-            ++cnt_dark;
-        if (v >= highlight_luma)
-            ++cnt_high;
-        if (v >= clip_high_luma)
-            ++cnt_clip_high;
-        if (v <= options.clip_low_luma)
-            ++cnt_clip_low;
-    }
-
-    const long double mean = sum / static_cast<long double>(n);
-    long double variance = sum_sq / static_cast<long double>(n) - mean * mean;
-    if (variance < 0.0)
-        variance = 0.0;
-
-    const double inv_n = 1.0 / static_cast<double>(n);
-    m.luma_mean = static_cast<double>(mean);
-    m.luma_std = std::sqrt(static_cast<double>(variance));
-    m.black_ratio = static_cast<double>(cnt_black) * inv_n;
-    m.dark_ratio = static_cast<double>(cnt_dark) * inv_n;
-    m.highlight_ratio = static_cast<double>(cnt_high) * inv_n;
-    m.clip_high_ratio = static_cast<double>(cnt_clip_high) * inv_n;
-    m.clip_low_ratio = static_cast<double>(cnt_clip_low) * inv_n;
-
-    // HDR（PQ / HLG）没做色调映射时，码值到显示亮度是非线性的，阈值占比没有意义 ——
-    // 不置不可用就会把整片高动态范围素材判成过曝/欠曝。曝光判定依赖这些字段的
-    // Valid() 检查，置 NaN 即自动关闭，无需再改判定逻辑。
-    // 已经做过近似色调映射（tone_mapped）的帧码值已换算到 SDR 口径，照常判定。
-    // 黑场/模糊/块效应/黑边这类结构指标仍按码值算，不受影响。
-    if (sample.hdr && !sample.tone_mapped) {
-        m.highlight_ratio = NoValue();
-        m.clip_high_ratio = NoValue();
-        m.dark_ratio = NoValue();
-        m.clip_low_ratio = NoValue();
-    }
-
-    // ---- 模糊: 拉普拉斯方差 ----
-    // 清晰画面有强边缘 -> 二阶差分大且分布分散（方差大）；
-    // 模糊后高频被削掉 -> 二阶差分整体趋近 0，方差塌下去。
-    if (options.detect_blur && w >= 3 && h >= 3) {
-        long double lap_sum = 0.0;
-        long double lap_sq = 0.0;
-        long long cnt = 0;
-        for (int y = 1; y < h - 1; ++y) {
-            const uint8_t* row = g + static_cast<size_t>(y) * w;
-            const uint8_t* up = row - w;
-            const uint8_t* down = row + w;
-            for (int x = 1; x < w - 1; ++x) {
-                const int lap = 4 * static_cast<int>(row[x]) - static_cast<int>(row[x - 1]) -
-                                static_cast<int>(row[x + 1]) - static_cast<int>(up[x]) - static_cast<int>(down[x]);
-                lap_sum += lap;
-                lap_sq += static_cast<long double>(lap) * lap;
-                ++cnt;
-            }
-        }
-        if (cnt > 0) {
-            const long double mu = lap_sum / cnt;
-            long double var = lap_sq / cnt - mu * mu;
-            if (var < 0.0)
-                var = 0.0;
-            m.blur_score = static_cast<double>(var) / 1000.0;
-        }
-    }
-
-    // ---- 隔行梳齿 ----
-    // 逐行相邻的差（跨场，含时间差）远大于隔行相邻（同场）时，说明素材是隔行的。
-    // 归一化成 (full - field) / (full + field)：逐行素材这个值 <= 0，隔行有运动时接近 1。
-    if (options.detect_combing && h >= 4 && w >= 2) {
-        long double full = 0.0;
-        long double field = 0.0;
-        long long cnt = 0;
-        for (int y = 0; y + 2 < h; ++y) {
-            const uint8_t* r0 = g + static_cast<size_t>(y) * w;
-            const uint8_t* r1 = r0 + w;
-            const uint8_t* r2 = r1 + w;
-            for (int x = 0; x < w; ++x) {
-                full += std::abs(static_cast<int>(r0[x]) - static_cast<int>(r1[x]));
-                field += std::abs(static_cast<int>(r0[x]) - static_cast<int>(r2[x]));
-            }
-            cnt += w;
-        }
-        if (cnt > 0) {
-            const double fd = static_cast<double>(full / cnt);
-            const double ff = static_cast<double>(field / cnt);
-            const double denom = fd + ff;
-            m.combing_score = (denom > 1e-6) ? Clamp01((fd - ff) / denom) : 0.0;
-        }
-    }
-
-    // ---- 花屏 / 马赛克（块效应）----
-    // 采样图经过缩放，8px 编码块的周期已经被抹平（1920 源缩到 256 宽时一个块只剩
-    // 1px 多），在采样图上找块边界只会把缩放痕迹当误报。因此优先用 BuildSample
-    // 生成的 1:1 源分辨率局部裁剪图（block_probes），此时 bs 就是源像素的 block_size。
-    // 裁剪图取了中心 + 四角多块，每块各自算分再取最大：花屏/马赛克常常只出现在
-    // 画面局部（例如运动区、台标附近），只看中心会被局部损伤平均掉。
-    // 没有探针（手造样本 / 探针失败）时才退回采样图，并按 源宽/样本宽 折算 bs；
-    // 折算结果不足 2px 直接置 NoValue，绝不能进入 x % bs（bs 可能为 0，会除零崩溃）。
-    if (options.detect_blockiness) {
-        const int nominal_bs = options.block_size > 1 ? options.block_size : 8;
-        double best = NoValue();
-        if (sample.has_block_probes()) {
-            for (const auto& probe : sample.block_probes) {
-                if (!probe.valid())
-                    continue;
-                const double score = ComputeBlockinessScore(probe.gray.data(), probe.width, probe.height, nominal_bs);
-                if (Valid(score) && (!Valid(best) || score > best))
-                    best = score;
-            }
-        } else {
-            int bs = nominal_bs;
-            if (sample.source_width > w) {
-                bs = static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width));
-            }
-            // bs < 2 时块结构在采样图上已不可分辨 —— 置 NoValue，不误报
-            if (bs >= 2)
-                best = ComputeBlockinessScore(g, w, h, bs);
-        }
-        m.blockiness_score = best;
-    }
-
-    // ---- 黑边 / 有效画面区域 ----
+    // ---- 黑边 / 有效画面区域（必须先用整帧算）----
     if (options.detect_borders && w >= 16 && h >= 16) {
         std::vector<double> row_mean(static_cast<size_t>(h), 0.0);
         std::vector<double> col_mean(static_cast<size_t>(w), 0.0);
@@ -408,20 +267,204 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
         }
     }
 
+    // 之后的指标只在有效画面区域内统计: letterbox / pillarbox 的纯黑大块会把
+    // 亮度均值、锐度方差、块效应与梳齿统计拉偏（黑边与画面的交界本身就是强边缘），
+    // 让带黑边素材与全画幅素材的判定口径不一致。
+    // 整帧黑（黑场帧）或暗场被误判时 active_area 无效，退回整帧统计。
+    int rx = 0;
+    int ry = 0;
+    int rw = w;
+    int rh = h;
+    if (m.active_area.valid && m.active_area.width >= 16 && m.active_area.height >= 16) {
+        rx = m.active_area.x;
+        ry = m.active_area.y;
+        rw = m.active_area.width;
+        rh = m.active_area.height;
+    }
+    const size_t n = static_cast<size_t>(rw) * static_cast<size_t>(rh);
+
+    // ---- 亮度统计（一次遍历顺带把各档像素占比数出来）----
+    // 阈值口径: 采样图保留源帧的亮度范围（见 QualityAnalyzer::ApplyNativeLumaRange），
+    // limited range 素材的合法峰值白是 235，用 full range 的 240/250 去卡会把
+    // 白底/标题卡误报成过曝。这里把高光/削波阈值按 limited range 重新标定，
+    // 只把超过 235 的 super-white（236+，多是编码过冲或压缩到死白）算作高光/削波。
+    const bool limited_range = sample.limited_range;
+    const double highlight_luma = limited_range ? 236.0 : options.highlight_luma;
+    const double clip_high_luma = limited_range ? 252.0 : options.clip_high_luma;
+    long double sum = 0.0;
+    long double sum_sq = 0.0;
+    long long cnt_black = 0;
+    long long cnt_dark = 0;
+    long long cnt_high = 0;
+    long long cnt_clip_high = 0;
+    long long cnt_clip_low = 0;
+    for (int y = ry; y < ry + rh; ++y) {
+        const uint8_t* row = g + static_cast<size_t>(y) * w + rx;
+        for (int x = 0; x < rw; ++x) {
+            const long double v = static_cast<long double>(row[x]);
+            sum += v;
+            sum_sq += v * v;
+            if (v <= options.black_luma)
+                ++cnt_black;
+            if (v <= options.shadow_luma)
+                ++cnt_dark;
+            if (v >= highlight_luma)
+                ++cnt_high;
+            if (v >= clip_high_luma)
+                ++cnt_clip_high;
+            if (v <= options.clip_low_luma)
+                ++cnt_clip_low;
+        }
+    }
+
+    const long double mean = sum / static_cast<long double>(n);
+    long double variance = sum_sq / static_cast<long double>(n) - mean * mean;
+    if (variance < 0.0)
+        variance = 0.0;
+
+    const double inv_n = 1.0 / static_cast<double>(n);
+    m.luma_mean = static_cast<double>(mean);
+    m.luma_std = std::sqrt(static_cast<double>(variance));
+    m.black_ratio = static_cast<double>(cnt_black) * inv_n;
+    m.dark_ratio = static_cast<double>(cnt_dark) * inv_n;
+    m.highlight_ratio = static_cast<double>(cnt_high) * inv_n;
+    m.clip_high_ratio = static_cast<double>(cnt_clip_high) * inv_n;
+    m.clip_low_ratio = static_cast<double>(cnt_clip_low) * inv_n;
+
+    // HDR（PQ / HLG）没做色调映射时，码值到显示亮度是非线性的，阈值占比没有意义 ——
+    // 不置不可用就会把整片高动态范围素材判成过曝/欠曝。曝光判定依赖这些字段的
+    // Valid() 检查，置 NaN 即自动关闭，无需再改判定逻辑。
+    // 已经做过近似色调映射（tone_mapped）的帧码值已换算到 SDR 口径，照常判定。
+    // 黑场/模糊/块效应/黑边这类结构指标仍按码值算，不受影响。
+    if (sample.hdr && !sample.tone_mapped) {
+        m.highlight_ratio = NoValue();
+        m.clip_high_ratio = NoValue();
+        m.dark_ratio = NoValue();
+        m.clip_low_ratio = NoValue();
+    }
+
+    // ---- 模糊: 拉普拉斯方差 ----
+    // 清晰画面有强边缘 -> 二阶差分大且分布分散（方差大）；
+    // 模糊后高频被削掉 -> 二阶差分整体趋近 0，方差塌下去。
+    if (options.detect_blur && rw >= 3 && rh >= 3) {
+        long double lap_sum = 0.0;
+        long double lap_sq = 0.0;
+        long long cnt = 0;
+        for (int y = ry + 1; y < ry + rh - 1; ++y) {
+            const uint8_t* row = g + static_cast<size_t>(y) * w;
+            const uint8_t* up = row - w;
+            const uint8_t* down = row + w;
+            for (int x = rx + 1; x < rx + rw - 1; ++x) {
+                const int lap = 4 * static_cast<int>(row[x]) - static_cast<int>(row[x - 1]) -
+                                static_cast<int>(row[x + 1]) - static_cast<int>(up[x]) - static_cast<int>(down[x]);
+                lap_sum += lap;
+                lap_sq += static_cast<long double>(lap) * lap;
+                ++cnt;
+            }
+        }
+        if (cnt > 0) {
+            const long double mu = lap_sum / cnt;
+            long double var = lap_sq / cnt - mu * mu;
+            if (var < 0.0)
+                var = 0.0;
+            m.blur_score = static_cast<double>(var) / 1000.0;
+        }
+    }
+
+    // ---- 隔行梳齿 ----
+    // 逐行相邻的差（跨场，含时间差）远大于隔行相邻（同场）时，说明素材是隔行的。
+    // 归一化成 (full - field) / (full + field)：逐行素材这个值 <= 0，隔行有运动时接近 1。
+    if (options.detect_combing && rh >= 4 && rw >= 2) {
+        long double full = 0.0;
+        long double field = 0.0;
+        long long cnt = 0;
+        for (int y = ry; y + 2 < ry + rh; ++y) {
+            const uint8_t* r0 = g + static_cast<size_t>(y) * w + rx;
+            const uint8_t* r1 = r0 + w;
+            const uint8_t* r2 = r1 + w;
+            for (int x = 0; x < rw; ++x) {
+                full += std::abs(static_cast<int>(r0[x]) - static_cast<int>(r1[x]));
+                field += std::abs(static_cast<int>(r0[x]) - static_cast<int>(r2[x]));
+            }
+            cnt += rw;
+        }
+        if (cnt > 0) {
+            const double fd = static_cast<double>(full / cnt);
+            const double ff = static_cast<double>(field / cnt);
+            const double denom = fd + ff;
+            m.combing_score = (denom > 1e-6) ? Clamp01((fd - ff) / denom) : 0.0;
+        }
+    }
+
+    // ---- 花屏 / 马赛克（块效应）----
+    // 采样图经过缩放，8px 编码块的周期已经被抹平（1920 源缩到 256 宽时一个块只剩
+    // 1px 多），在采样图上找块边界只会把缩放痕迹当误报。因此优先用 BuildSample
+    // 生成的 1:1 源分辨率局部裁剪图（block_probes），此时 bs 就是源像素的 block_size。
+    // 裁剪图取了中心 + 四角多块，每块各自算分再取最大：花屏/马赛克常常只出现在
+    // 画面局部（例如运动区、台标附近），只看中心会被局部损伤平均掉。
+    // 没有探针（手造样本 / 探针失败）时才退回采样图，并按 源宽/样本宽 折算 bs；
+    // 折算结果不足 2px 直接置 NoValue，绝不能进入 x % bs（bs 可能为 0，会除零崩溃）。
+    if (options.detect_blockiness) {
+        const int nominal_bs = options.block_size > 1 ? options.block_size : 8;
+        double best = NoValue();
+        if (sample.has_block_probes()) {
+            for (const auto& probe : sample.block_probes) {
+                if (!probe.valid())
+                    continue;
+                const double score =
+                    ComputeBlockinessScore(probe.gray.data(), probe.width, probe.width, probe.height, nominal_bs);
+                if (Valid(score) && (!Valid(best) || score > best))
+                    best = score;
+            }
+        } else {
+            int bs = nominal_bs;
+            if (sample.source_width > w) {
+                bs = static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width));
+            }
+            // bs < 2 时块结构在采样图上已不可分辨 —— 置 NoValue，不误报
+            if (bs >= 2)
+                best = ComputeBlockinessScore(g + static_cast<size_t>(ry) * w + rx, w, rw, rh, bs);
+        }
+        m.blockiness_score = best;
+    }
+
     // ---- 色偏 ----
     // HDR 的 RGB 码值经过 PQ/HLG 传递函数，未做色调映射时 R/G/B 均值差反映的是
     // 传递曲线而不是真实白平衡，置为不可用（has_rgb 仍为真，只是不判定）。
     if (options.detect_color_cast && sample.has_rgb() && (!sample.hdr || sample.tone_mapped)) {
-        const size_t pixels = static_cast<size_t>(sample.rgb_width) * sample.rgb_height;
+        // RGB 小图与灰度采样图同比例缩放，按相同的相对区域换算，黑边不计入均值。
+        // 取整后可能落到 0 宽/高（极小区域），此时退回整幅 RGB。
+        int gx0 = 0;
+        int gy0 = 0;
+        int gx1 = sample.rgb_width;
+        int gy1 = sample.rgb_height;
+        if (rw != w || rh != h) {
+            gx0 = rx * sample.rgb_width / w;
+            gy0 = ry * sample.rgb_height / h;
+            gx1 = (rx + rw) * sample.rgb_width / w;
+            gy1 = (ry + rh) * sample.rgb_height / h;
+            if (gx1 <= gx0 || gy1 <= gy0) {
+                gx0 = 0;
+                gy0 = 0;
+                gx1 = sample.rgb_width;
+                gy1 = sample.rgb_height;
+            }
+        }
         long double sr = 0.0;
         long double sg = 0.0;
         long double sb = 0.0;
         const uint8_t* rgb = sample.rgb.data();
-        for (size_t i = 0; i < pixels; ++i) {
-            sr += rgb[i * 3 + 0];
-            sg += rgb[i * 3 + 1];
-            sb += rgb[i * 3 + 2];
+        const size_t stride = static_cast<size_t>(sample.rgb_width) * 3u;
+        for (int y = gy0; y < gy1; ++y) {
+            const uint8_t* row = rgb + static_cast<size_t>(y) * stride + static_cast<size_t>(gx0) * 3u;
+            for (int x = gx0; x < gx1; ++x) {
+                sr += row[0];
+                sg += row[1];
+                sb += row[2];
+                row += 3;
+            }
         }
+        const double pixels = static_cast<double>(gx1 - gx0) * (gy1 - gy0);
         const double mr = static_cast<double>(sr / pixels);
         const double mg = static_cast<double>(sg / pixels);
         const double mb = static_cast<double>(sb / pixels);
@@ -436,8 +479,12 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     if (previous && previous->valid() && previous->width == w && previous->height == h) {
         long double mad = 0.0;
         const uint8_t* p = previous->gray.data();
-        for (size_t i = 0; i < n; ++i) {
-            mad += std::abs(static_cast<int>(g[i]) - static_cast<int>(p[i]));
+        for (int y = ry; y < ry + rh; ++y) {
+            const uint8_t* cur_row = g + static_cast<size_t>(y) * w + rx;
+            const uint8_t* prev_row = p + static_cast<size_t>(y) * w + rx;
+            for (int x = 0; x < rw; ++x) {
+                mad += std::abs(static_cast<int>(cur_row[x]) - static_cast<int>(prev_row[x]));
+            }
         }
         m.frame_diff = static_cast<double>(mad / n) / 255.0;
         if (Valid(previous_luma_mean)) {
@@ -954,8 +1001,15 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample,
         UpdateSegmentLocked(u, sample);
     }
 
-    // 时域状态推进（赋值的 gray 是小图，拷贝成本可接受）
-    prev_sample_ = sample;
+    // 时域状态推进: 只保留帧差需要的字段。整份拷贝会把块效应探针（最多 5 块、
+    // 约 320KB）和 RGB 证据图也带进来，而上一帧只用得到降采样灰度与尺寸，
+    // 实时分析长时间运行时这是纯浪费（每帧多留几百 KB）。
+    prev_sample_ = model::FrameSample();
+    prev_sample_.frame_index = sample.frame_index;
+    prev_sample_.timestamp_seconds = sample.timestamp_seconds;
+    prev_sample_.width = sample.width;
+    prev_sample_.height = sample.height;
+    prev_sample_.gray = sample.gray;
     prev_luma_mean_ = m.luma_mean;
     has_prev_ = true;
 }

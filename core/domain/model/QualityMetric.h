@@ -123,6 +123,7 @@ struct FrameSample {
 
     // 源帧的亮度范围 / 传输特性。limited_range 时曝光阈值需要按 16-235 重新标定；
     // hdr（PQ/HLG）且 tone_mapped=false 时曝光/色偏指标不可信，置为不可用。
+    // 注意: 色调映射后的样本已转成 full range（0..255），limited_range 会被改回 false。
     bool limited_range = false;
     bool hdr = false;
     // PQ / HLG 帧已在采样后做过近似色调映射（见 QualityAnalyzer::ApplyHdrToneMap）:
