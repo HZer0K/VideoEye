@@ -23,3 +23,9 @@ target_link_libraries(media_corpus_validate
 set_target_properties(media_corpus_validate PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# Linux/macOS 上 FFmpeg 走兜底包时（Ubuntu 24.04 系统只有 6.1，CI 会用
+# cmake/ffmpeg-version.json 锁定的 8.1.3），.so 不在系统库路径里。不设 rpath
+# 的话校验器一启动就报 "libswresample.so.6: cannot open shared object file"。
+# 与 tests/CMakeLists.txt 的单测目标同口径，只设 rpath 不复制 .so。
+videoeye_set_ffmpeg_rpath(media_corpus_validate)

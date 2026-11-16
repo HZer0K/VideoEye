@@ -201,8 +201,16 @@ jobs:
         if: steps.source.outputs.mode != 'skip'
         env:
           INPUT_LIMIT: ${{ inputs.limit }}
+          FFMPEG_ROOT: ${{ steps.ffmpeg.outputs.root }}
         run: |
           set -euo pipefail
+          # 用兜底包（Ubuntu 24.04 系统 FFmpeg 6.1 不够，见 ensure-ffmpeg）编译时，
+          # 校验器的 RUNPATH 能找到直接依赖的 avformat/avcodec，但 libswresample.so.6
+          # 是 avcodec 的**间接依赖**，RUNPATH 不向下传递，需要 LD_LIBRARY_PATH 兜底。
+          # 用系统 FFmpeg 时 FFMPEG_ROOT 为空，不设置即可（系统库路径本就能找到）。
+          if [[ -n "${FFMPEG_ROOT}" ]]; then
+            export LD_LIBRARY_PATH="${FFMPEG_ROOT}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          fi
           limit="${INPUT_LIMIT:-0}"
           # format/defect 两道门禁默认开启；semantic 不传 --semantic-golden 即关闭，
           # 原因见文件头注释：CI 的 FFmpeg 版本与冻结 golden 不同，逐字段比对会假判红。
