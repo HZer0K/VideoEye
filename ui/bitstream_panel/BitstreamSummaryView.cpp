@@ -35,6 +35,17 @@ QString LevelName(const model::BitstreamAnalysisResult& result) {
         }
         return QObject::tr("未知");
     }
+    if (result.has_vp9) {
+        // VP9 没有独立参数集：level 由关键帧尺寸按 Annex A.2 推出，MP4 里也可
+        // 从 vpcC 记录拿到。两者都没有就是真未知（不是"不支持"）。
+        if (result.vp9_seq_header.present && result.vp9_seq_header.level > 0) {
+            return QString::fromStdString(result.vp9_seq_header.LevelName());
+        }
+        if (result.has_vp9_config && result.vp9_config.present && result.vp9_config.level > 0) {
+            return QString::fromStdString(result.vp9_config.LevelName());
+        }
+        return QObject::tr("未知");
+    }
     return QObject::tr("未知");
 }
 
@@ -61,10 +72,26 @@ QString DescribeCodec(const model::BitstreamAnalysisResult& result) {
     } else if (result.has_vvc && result.has_vvc_config) {
         profile = QString::fromStdString(result.vvc_config.ProfileName()) + QObject::tr(" (vvcC)");
         chroma = BitstreamChromaName(result.vvc_config.chroma_format_idc);
+    } else if (result.has_vp9 && result.vp9_seq_header.present) {
+        // VP9 的配置全在关键帧 uncompressed header 里（WebM 没有 codec private），
+        // 模型字段早就解析出来了，但摘要曾对它恒显示"未知"。
+        profile = QString::fromStdString(result.vp9_seq_header.ProfileName());
+        chroma = QString::fromStdString(result.vp9_seq_header.ChromaSubsamplingName());
+    } else if (result.has_vp9 && result.has_vp9_config && result.vp9_config.present) {
+        profile = QString::fromStdString(result.vp9_config.ProfileName()) + QObject::tr(" (vpcC)");
+        chroma = QString::fromStdString(result.vp9_config.ChromaSubsamplingName());
     }
 
-    const QString bit_depth =
-        result.bit_depth > 0 ? QObject::tr("%1bit").arg(result.bit_depth) : QObject::tr("位深未知");
+    // 位深优先用汇总字段；VP9 没填汇总字段时回退到序列头 / vpcC 自己的值。
+    int bit_depth_value = result.bit_depth;
+    if (bit_depth_value <= 0 && result.has_vp9) {
+        if (result.vp9_seq_header.present) {
+            bit_depth_value = result.vp9_seq_header.BitDepth();
+        } else if (result.has_vp9_config && result.vp9_config.present) {
+            bit_depth_value = result.vp9_config.bit_depth;
+        }
+    }
+    const QString bit_depth = bit_depth_value > 0 ? QObject::tr("%1bit").arg(bit_depth_value) : QObject::tr("位深未知");
     return QObject::tr("%1 · %2 · Level %3 · %4 · %5")
         .arg(QString::fromStdString(result.codec_name))
         .arg(profile)

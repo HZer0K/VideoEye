@@ -147,6 +147,8 @@ void ParameterSetTracker::Reset(int codec_id, int stream_index, const Options& o
     framing_decided_ = false;
     finished_ = false;
     disabled_reason_.clear();
+    change_limit_noted_ = false;
+    reference_limit_noted_ = false;
 
     timeline_ = model::ParameterTimeline{};
     timeline_.stream_index = stream_index;
@@ -531,6 +533,11 @@ void ParameterSetTracker::RegisterSet(model::ParameterSetKind kind, int id, cons
                     timeline_.changes.push_back(std::move(event));
                 } else {
                     timeline_.truncated = true;
+                    if (!change_limit_noted_) {
+                        timeline_.notes.push_back("变化事件已达上限（" + std::to_string(options_.max_changes) +
+                                                  " 条），后续变化不再记录");
+                        change_limit_noted_ = true;
+                    }
                 }
             }
         }
@@ -570,6 +577,11 @@ void ParameterSetTracker::RegisterSet(model::ParameterSetKind kind, int id, cons
         timeline_.changes.push_back(std::move(event));
     } else {
         timeline_.truncated = true;
+        if (!change_limit_noted_) {
+            timeline_.notes.push_back("变化事件已达上限（" + std::to_string(options_.max_changes) +
+                                      " 条），后续变化不再记录");
+            change_limit_noted_ = true;
+        }
     }
 }
 
@@ -583,6 +595,18 @@ void ParameterSetTracker::AddReference(model::ParameterSetKind kind, int id, boo
         }
     }
     if (stat == nullptr) {
+        // 防御：畸形流可以用海量不同参数集 id 的引用撑爆 references。与
+        // "参数集登记"一样设上限；命中后只置 truncated + 写一条 note，
+        // 已登记 id 的后续计数照常（它们仍有诊断价值）。
+        if (static_cast<int>(timeline_.references.size()) >= options_.max_references) {
+            timeline_.truncated = true;
+            if (!reference_limit_noted_) {
+                timeline_.notes.push_back("引用统计已达上限（" + std::to_string(options_.max_references) +
+                                          " 个 id），后续新 id 不再记录");
+                reference_limit_noted_ = true;
+            }
+            return;
+        }
         model::ParameterReferenceStat fresh;
         fresh.kind = kind;
         fresh.id = id;

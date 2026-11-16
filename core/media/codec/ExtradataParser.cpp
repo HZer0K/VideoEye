@@ -30,31 +30,48 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
         return ExtradataFormat::Unknown;
     }
 
-    // 检查 avcC/hvcC/av1C配置记录
-    if (size >= 11) {
-        // 检查前 4 字节是否为 box type
-        uint32_t box_type = BytesToUint32BE(data);
-
-        // avcC: "\0\0\0\rcvcC"
-        if (box_type == 0x0000000A) { // length = 10
+    // 1) 完整 box（size(4) + fourcc(4) + 记录本体）。
+    //    只校验 fourcc 与"box 长度下限 8"，**不校验 size 的具体值** ——
+    //    avcC/hvcC/vvcC/av1C/vpcC 的长度随参数集数量变化（avcC 至少 11 字节、
+    //    hvcC 至少 23 字节、vvcC 随 PTL 长短而变），旧实现把 size 写死成
+    //    10/20/25，真实记录的 size 几乎都匹配不到，这段检测形同虚设。
+    //    也不要求 box_size == size：extradata 可能是被截断的 box 片段。
+    if (size >= 8) {
+        const uint32_t box_size = BytesToUint32BE(data);
+        if (box_size >= 8) {
             if (data[4] == 'a' && data[5] == 'v' && data[6] == 'c' && data[7] == 'C') {
                 return ExtradataFormat::AvcC;
             }
-        }
-
-        // hvcC: MP4 HEVC configuration record
-        if (box_type == 0x00000014) { // length = 20
             if (data[4] == 'h' && data[5] == 'v' && data[6] == 'c' && data[7] == 'C') {
                 return ExtradataFormat::HvcC;
             }
-        }
-
-        // av1C: AV1 configuration record
-        if (box_type == 0x00000019) { // length = 25
+            if (data[4] == 'v' && data[5] == 'v' && data[6] == 'c' && data[7] == 'C') {
+                return ExtradataFormat::VvcC;
+            }
             if (data[4] == 'a' && data[5] == 'v' && data[6] == '1' && data[7] == 'C') {
                 return ExtradataFormat::Av1C;
             }
+            if (data[4] == 'v' && data[5] == 'p' && data[6] == 'c' && data[7] == 'C') {
+                return ExtradataFormat::VpcC;
+            }
         }
+    }
+
+    // 2) 配置记录本体：FFmpeg 从 MP4/WebM 取出 extradata 时已剥掉 size+fourcc。
+    //
+    //    hvcC 必须排在 avcC **之前**判：两者首字节都是 configurationVersion=1，
+    //    而且很多 HEVC 编码器把 general_profile_compatibility_flags 写成全 1，
+    //    于是 hvcC 的 byte4/byte5 也满足 avcC 的"保留位全 1"特征 —— 先判 avcC
+    //    会把 hvcC 抢走，再按 avcC 的 numSPS/numPPS 布局去读，产出垃圾 NAL。
+    //
+    //    hvcC（§8.3.2）的连续保留位是极强的判据：byte13 高 4 位、byte15/16
+    //    高 6 位、byte17/18 高 5 位全为 1。avcC 在同样偏移上是 SPS 载荷字节，
+    //    同时满足的概率可忽略（<2^-26）。少了这一条，MP4 里的 HEVC extradata
+    //    会落到 Annex B 分支（hvcC 内嵌的 SPS/PPS 常含 00 00 01），解出一堆
+    //    垃圾 NAL、一份参数集都没有 —— 表现为"帧顺序不可用 / 没解析到 PPS"。
+    if (size >= 23 && data[0] == 1 && (data[13] & 0xF0) == 0xF0 && (data[15] & 0xFC) == 0xFC &&
+        (data[16] & 0xFC) == 0xFC && (data[17] & 0xF8) == 0xF8 && (data[18] & 0xF8) == 0xF8) {
+        return ExtradataFormat::HvcC;
     }
 
     // FFmpeg 从 MP4 里取出来的 extradata 是配置记录本体，不含 box header。
@@ -80,6 +97,23 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
         }
     }
 
+    // vvcC 本体：byte0 = reserved(5)=11111 | lengthSizeMinusOne(2) | ptl_present_flag(1)
+    // → 高 5 位恒为 1（0xF8..0xFF）。avcC/hvcC 的 byte0 是 1、AnnexB 起始码
+    // byte0 是 0、av1C 的 byte0 是 0x81（&0xF8 = 0x80），都不会撞上这条。
+    // 放在 Annex B 之后，避免与"长度前缀流首字节恰好 >= 0xF8"混淆：那种情况
+    // 只有 1 字节 NAL 长度 >= 248 才会出现，且 Annex B 判据已先命中。
+    if (size >= 2 && (data[0] & 0xF8) == 0xF8) {
+        return ExtradataFormat::VvcC;
+    }
+
+    // vpcC 本体（形式 B：demuxer 剥掉 size+fourcc 但保留 version/flags=0）：
+    // [0..3]=0，byte4=profile(0..3)，byte5=level(10..62，即 Level 1.0..6.2)。
+    // 形式 A（完整 box）已在上面的 fourcc 分支处理。
+    if (size >= 8 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0 && data[4] <= 3 && data[5] >= 10 &&
+        data[5] <= 62) {
+        return ExtradataFormat::VpcC;
+    }
+
     // 检查长度前缀格式（通常 extradata 的第一个字节是 lengthSize-1）
     if (size >= 1) {
         int length_size = data[0] & 0x03;
@@ -94,34 +128,6 @@ ExtradataFormat ExtradataParser::DetectFormat(const uint8_t* data, size_t size) 
     }
 
     return ExtradataFormat::Unknown;
-}
-
-std::vector<uint8_t> ExtradataParser::ConvertAnnexBToLengthPrefix(const std::vector<uint8_t>& annex_b) {
-
-    std::vector<uint8_t> result;
-    const uint8_t* pos = annex_b.data();
-    const uint8_t* end = pos + annex_b.size();
-
-    while (pos < end) {
-        const uint8_t* start_code = FindStartCode(pos, end);
-
-        if (start_code == nullptr) {
-            // 没有更多起始码，添加剩余数据
-            result.insert(result.end(), pos, end);
-            break;
-        }
-
-        // 添加起始码之前的数据（如果有）
-        if (start_code > pos) {
-            result.insert(result.end(), pos, start_code);
-        }
-
-        // 跳过起始码
-        size_t skip = (start_code[3] == 1 && start_code[2] == 0) ? 4 : 3;
-        pos = start_code + skip;
-    }
-
-    return result;
 }
 
 std::vector<uint8_t> ExtradataParser::ConvertLengthPrefixToAnnexB(const std::vector<uint8_t>& length_prefix,
@@ -605,20 +611,32 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     const uint8_t* pos = data + 6;
 
     for (int i = 0; i < num_sps; ++i) {
-        if (pos + 4 > data + size)
-            break;
+        // 截断必须写原因并判无效：ParseWithFormat 的归一化只把"有 error_message"
+        // 的结果改成 valid=false。旧实现只 break，会返回 valid=true + 半截 NAL，
+        // 上层当解析成功，比直接判失败难查得多（vvcC 路径已是这个口径）。
+        if (pos + 4 > data + size) {
+            result.valid = false;
+            result.error_message = "avcC truncated (sps length)";
+            return result;
+        }
 
         uint16_t sps_length = (static_cast<uint16_t>(pos[0]) << 8) | pos[1];
         pos += 2;
 
-        if (pos + sps_length > data + size)
-            break;
+        if (pos + sps_length > data + size) {
+            result.valid = false;
+            result.error_message = "avcC truncated (sps payload)";
+            return result;
+        }
 
         // 统一不变量：NalUnit::data 只放 RBSP payload，**不含 NAL header**
         // （与 ExtractAnnBNalUnits / ParseH264NalUnit 的 AnnexB 路径保持一致）。
         // 上层 parser 因此无需再判断"header 在不在"。
-        if (sps_length < 1)
-            break;
+        if (sps_length < 1) {
+            result.valid = false;
+            result.error_message = "avcC truncated (empty sps)";
+            return result;
+        }
         NalUnit nal;
         nal.type = 7; // SPS
         nal.size = sps_length - 1;
@@ -631,23 +649,35 @@ ExtradataResult ExtradataParser::ParseAvcC(const uint8_t* data, size_t size) {
     }
 
     // Parse PPS
-    if (pos + 1 > data + size)
+    if (pos + 1 > data + size) {
+        result.valid = false;
+        result.error_message = "avcC truncated (num_pps missing)";
         return result;
+    }
 
     uint8_t num_pps = *pos++;
 
     for (int i = 0; i < num_pps; ++i) {
-        if (pos + 4 > data + size)
-            break;
+        if (pos + 4 > data + size) {
+            result.valid = false;
+            result.error_message = "avcC truncated (pps length)";
+            return result;
+        }
 
         uint16_t pps_length = (static_cast<uint16_t>(pos[0]) << 8) | pos[1];
         pos += 2;
 
-        if (pos + pps_length > data + size)
-            break;
+        if (pos + pps_length > data + size) {
+            result.valid = false;
+            result.error_message = "avcC truncated (pps payload)";
+            return result;
+        }
 
-        if (pps_length < 1)
-            break;
+        if (pps_length < 1) {
+            result.valid = false;
+            result.error_message = "avcC truncated (empty pps)";
+            return result;
+        }
         NalUnit nal;
         nal.type = 8; // PPS
         nal.size = pps_length - 1;
@@ -722,20 +752,38 @@ ExtradataResult ExtradataParser::ParseHvcC(const uint8_t* data, size_t size) {
     const uint8_t* end = data + size;
 
     for (int a = 0; a < num_arrays; ++a) {
-        if (end - pos < 3)
-            break; // 数组头（1B 描述 + 2B numNalus）都不够
+        // 与 vvcC 同一口径：截断就写原因并判无效，不能静默 break ——
+        // 否则上层拿到"valid=true + 半截 NAL 列表"，比直接判失败更难查。
+        if (end - pos < 3) {
+            result.valid = false;
+            result.error_message = "hvcC truncated (nal array header)";
+            return result;
+        }
         const uint8_t array_header = pos[0];
         pos += 1;
         const uint16_t num_nalus = BytesToUint16BE(pos);
         pos += 2;
 
         for (int i = 0; i < num_nalus; ++i) {
-            if (end - pos < 2)
-                break;
+            if (end - pos < 2) {
+                result.valid = false;
+                result.error_message = "hvcC truncated (nal length)";
+                return result;
+            }
             const uint16_t nal_length = BytesToUint16BE(pos);
             pos += 2;
-            if (nal_length < 3 || pos + nal_length > end)
-                break; // HEVC NAL 至少含 2 字节 header + 1 字节 payload
+            // HEVC NAL 至少含 2 字节 header + 1 字节 payload：偏小是数据非法，
+            // 越过 end 才是截断 —— 两者分开报，便于定位。
+            if (nal_length < 3) {
+                result.valid = false;
+                result.error_message = "hvcC invalid nal length";
+                return result;
+            }
+            if (pos + nal_length > end) {
+                result.valid = false;
+                result.error_message = "hvcC truncated (nal payload)";
+                return result;
+            }
 
             // NalUnit::data 只放 RBSP payload（与 avcC / AnnexB 路径一致），
             // 剥掉 2 字节 NAL header；type 从 NAL 首字节还原，而不是信 array 头

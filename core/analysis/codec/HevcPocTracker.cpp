@@ -182,14 +182,15 @@ bool HevcPocTracker::FeedExtradata(const uint8_t* data, size_t size) {
         return false;
 
     // 判据统一用"解析结果里真的出现了 32/33/34 号 NAL"，逐个候选试 ——
-    // 不能只靠 ExtradataParser::Parse 的自动识别，HEVC 上有两个坑：
+    // 不单信格式检测，HEVC 上有两个易错点：
     //   * FFmpeg 从 MP4 交出来的 extradata 是 **hvcC 记录本体**（box 头已剥掉），
-    //     首字节同样是 1、与 avcC 撞车；而 DetectFormat 里没有一条能把
-    //     hvcC 本体认出来（它只认带 box 头的形态），于是会落到 Annex B 分支。
+    //     首字节同样是 1、与 avcC 撞车。DetectFormat 现在靠 byte13/15/16/17/18
+    //     的连续保留位识别 hvcC 本体（更早的版本只认带 box 头的形态，会落到
+    //     Annex B 分支）。
     //   * hvcC 记录里嵌的 SPS/PPS 载荷本身就可能含 00 00 01，于是
-    //     "看起来像 Annex B"这条启发式也跟着误判。
-    // 结果是解析出一堆垃圾 NAL、一份参数集都没有 —— 表现出来是"帧顺序不可用"，
-    // 原因写作"没解析到 PPS"，指向完全错误的方向。
+    //     "看起来像 Annex B"这条启发式也可能误判。
+    // 所以按 AnnexB → HvcC → 自动 → 长度前缀逐个候选试，以"真出现 SPS/PPS"
+    // 为准，避免解出一堆垃圾 NAL 却把原因写成"没解析到 PPS"（指向错误方向）。
     auto collect = [](const std::vector<NalUnit>& nals) {
         for (const NalUnit& nal : nals) {
             if (nal.type == kNalSps || nal.type == kNalPps)

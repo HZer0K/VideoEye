@@ -47,8 +47,12 @@ public:
     struct Options {
         // 每流最多登记多少份参数集（防御畸形流把内存吃光）
         int max_parameter_sets = 256;
-        // 最多记录多少个变化事件（超出后置 truncated）
+        // 最多记录多少个变化事件（超出后置 truncated + note）
         int max_changes = 256;
+        // 最多登记多少个"被 slice 引用的参数集 id"（防御畸形流）。
+        // 与 max_parameter_sets 独立：references 记的是引用过的 id，可以远多于
+        // 真实传输的参数集 —— 大量不同 id 的引用正是撑爆内存的攻击面。
+        int max_references = 256;
         // 最多扫多少个包（0 = 不限）。默认不限：本类单包成本只有一次 NAL 扫描。
         int64_t max_packets = 0;
     };
@@ -141,6 +145,10 @@ private:
     Framing framing_ = Framing::Auto;
     int prefix_bytes_ = 0;
     bool framing_decided_ = false;
+
+    // 上限提示只写一次，避免超限后每个参数集/引用都往 notes 里塞一条。
+    bool change_limit_noted_ = false;
+    bool reference_limit_noted_ = false;
 
     model::ParameterTimeline timeline_;
 };

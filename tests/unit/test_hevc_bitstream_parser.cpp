@@ -525,13 +525,32 @@ TEST_F(HevcConfigRecordTest, HvcCTooSmallIsRejected) {
 }
 
 TEST_F(HevcConfigRecordTest, HvcCWithGarbageArrayBoundsIsSafe) {
-    // numOfArrays 声称 255 个数组但记录截断：不能越界、不能崩
+    // numOfArrays 声称 255 个数组但记录截断：不能越界、不能崩，
+    // 且必须**明确报截断并判无效** —— 与 vvcC 的截断口径一致。
+    // 旧实现静默 break，返回 valid=true + 半截参数集列表，上层会当成解析成功。
     std::vector<uint8_t> hvcC = BuildHvcC(kVpsMain10, kSpsMain10_1080p, kPpsMain10);
     hvcC[22] = 0xFF;
     hvcC.resize(hvcC.size() - 5); // 再截掉尾部制造"声明多、实际少"
     const videoeye::ExtradataResult result =
         videoeye::ExtradataParser::ParseWithFormat(videoeye::ExtradataFormat::HvcC, hvcC.data(), hvcC.size());
-    EXPECT_TRUE(result.valid); // 越界项被安全跳过，解析本身不算失败
+    EXPECT_FALSE(result.valid); // 截断 ⇒ 无效
+    EXPECT_FALSE(result.error_message.empty());
+}
+
+TEST_F(HevcConfigRecordTest, HvcCRecordBodyIsDetectedByParse) {
+    // 回归：FFmpeg 从 MP4 取出的 extradata 是 hvcC **记录本体**（box 头已剥掉），
+    // 首字节同样是 1、与 avcC 撞车，内嵌 SPS/PPS 又常含 00 00 01。DetectFormat
+    // 过去没有一条能认出 hvcC 本体，于是落到 Annex B 分支，解出一堆垃圾 NAL、
+    // 一份参数集都没有。现在必须靠 byte13/15/16/17/18 的连续保留位认出来。
+    const std::vector<uint8_t> hvcC = BuildHvcC(kVpsMain10, kSpsMain10_1080p, kPpsMain10);
+    const videoeye::ExtradataResult result = videoeye::ExtradataParser::Parse(hvcC.data(), hvcC.size());
+    EXPECT_EQ(result.format, videoeye::ExtradataFormat::HvcC);
+    EXPECT_TRUE(result.valid);
+    ASSERT_EQ(result.nal_units.size(), 3u);
+    EXPECT_EQ(result.nal_units[0].type, 32);
+    EXPECT_EQ(result.nal_units[1].type, 33);
+    EXPECT_EQ(result.nal_units[2].type, 34);
+    EXPECT_EQ(result.nal_units[1].data, kSpsMain10_1080p);
 }
 
 } // namespace

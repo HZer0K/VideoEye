@@ -410,6 +410,30 @@ TEST(ParameterSetTrackerTest, ChangeLimitMarksTruncated) {
                                        "「只记录了 2 次」当成「只有 2 次」";
 }
 
+// 引用统计必须有上限：畸形流可用海量不同参数集 id 撑爆 references
+TEST(ParameterSetTrackerTest, ReferenceLimitMarksTruncated) {
+    ParameterSetTracker::Options options;
+    options.max_references = 4;
+    ParameterSetTracker tracker;
+    tracker.Reset(kH264, 0, options);
+
+    const std::vector<uint8_t> sps = AnnexB(7, 3, MakeSps(0, 1280, 720));
+    tracker.Feed(sps.data(), sps.size(), 0.0, 0, 0);
+    // 10 个不同 pps_id 的 slice，全部只引用、不传输
+    int offset = 100;
+    for (int id = 0; id < 10; ++id) {
+        const std::vector<uint8_t> slice = AnnexB(5, 3, MakeSlice(0, id));
+        tracker.Feed(slice.data(), slice.size(), 0.0, id + 1, offset);
+        offset += 100;
+    }
+    tracker.Finish();
+
+    const auto& timeline = tracker.result();
+    EXPECT_EQ(timeline.references.size(), 4u) << "超过上限的 id 不得继续入表（否则畸形流可无限涨内存）";
+    EXPECT_TRUE(timeline.truncated) << "到上限必须显式置 truncated";
+    EXPECT_FALSE(timeline.notes.empty()) << "上限截断要有可读说明，不能只留一个标志";
+}
+
 // 反例：空包 / 非法指针不得崩溃（扫描器可能喂进畸形数据）
 TEST(ParameterSetTrackerTest, EmptyAndNullInputIsSafe) {
     ParameterSetTracker tracker;

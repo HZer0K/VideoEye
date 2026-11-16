@@ -54,9 +54,9 @@ public:
     // VVC NAL 单元解析（2 字节 header，type = (byte1 >> 3) & 0x1F）
     static NalUnit ParseVvcNalUnit(const uint8_t* data, size_t size);
 
-    // 转换封装格式（Annex B ↔ length-prefix）
-    static std::vector<uint8_t> ConvertAnnexBToLengthPrefix(const std::vector<uint8_t>& annex_b);
-
+    // 转换封装格式（length-prefix → Annex B）。
+    // 反向（Annex B → length-prefix）没有保留：目标前缀宽度必须由调用方给定，
+    // 旧签名没有这个参数、实现也只删了起始码没写长度，名实不符且无人调用。
     static std::vector<uint8_t> ConvertLengthPrefixToAnnexB(const std::vector<uint8_t>& length_prefix,
                                                             int prefix_bytes);
 

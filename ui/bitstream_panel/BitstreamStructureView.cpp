@@ -346,6 +346,52 @@ void BitstreamStructureView::BuildTree(const model::BitstreamAnalysisResult& res
         }
     }
 
+    // ---- VP9 ----
+    // VP9 与其它 codec 最大的差别是**没有独立参数集**：尺寸/位深/色彩全写在
+    // 每个关键帧的 uncompressed header 里。这里展示"从第一个关键帧解出的显示
+    // 配置"，MP4 的 vpcC 记录另作兜底。模型字段一直有，但结构树此前没有分支，
+    // 导致 VP9 流在该页几乎空白。
+    if (result.has_vp9) {
+        if (result.vp9_seq_header.present) {
+            const model::Vp9SequenceHeaderInfo& sh = result.vp9_seq_header;
+            QTreeWidgetItem* node = MakeNode(root, tr("VP9 关键帧配置"), QString());
+            MakeNode(node, tr("Profile"), QString::fromStdString(sh.ProfileName()));
+            MakeNode(node, tr("Level"), sh.level > 0 ? QString::fromStdString(sh.LevelName()) : tr("未知"));
+            MakeNode(node, tr("分辨率"), tr("%1x%2").arg(sh.FrameWidth()).arg(sh.FrameHeight()));
+            if (sh.render_size_different) {
+                MakeNode(node, tr("显示尺寸 (render_size)"), tr("%1x%2").arg(sh.render_width).arg(sh.render_height));
+            }
+            MakeNode(node, tr("位深"), tr("%1 bit").arg(sh.BitDepth()));
+            MakeNode(node, tr("Chroma Format"), QString::fromStdString(sh.ChromaSubsamplingName()));
+            MakeNode(node, tr("Color Space"), QString::fromStdString(sh.ColorSpaceName()));
+            MakeNode(node, tr("full_range"), BitstreamFlagText(sh.color_range_full));
+            MakeNode(node, tr("key_frame"), BitstreamFlagText(sh.key_frame));
+            MakeNode(node, tr("show_frame"), BitstreamFlagText(sh.show_frame));
+            MakeNode(node, tr("error_resilient_mode"), BitstreamFlagText(sh.error_resilient_mode));
+            MakeNode(node, tr("refresh_frame_flags"), QString::number(sh.refresh_frame_flags));
+            MakeNode(node, tr("base_q_idx"), QString::number(sh.base_q_index));
+            if (sh.has_resolution_from_vpcc) {
+                MakeNode(node, tr("分辨率来源"), tr("vpcC（未从关键帧解出尺寸）"));
+            }
+        } else {
+            MakeNode(root, tr("VP9 关键帧配置"), tr("未找到（未取到关键帧，或该流只有 vpcC）"));
+        }
+        if (result.has_vp9_config && result.vp9_config.present) {
+            const model::Vp9CodecConfigInfo& cfg = result.vp9_config;
+            QTreeWidgetItem* node = MakeNode(root, tr("VP9 vpcC 配置记录"), QString());
+            MakeNode(node, tr("Profile"), QString::fromStdString(cfg.ProfileName()));
+            MakeNode(node, tr("Level"), cfg.level > 0 ? QString::fromStdString(cfg.LevelName()) : tr("未知"));
+            MakeNode(node, tr("位深"), tr("%1 bit").arg(cfg.bit_depth));
+            MakeNode(node, tr("Chroma Format"), QString::fromStdString(cfg.ChromaSubsamplingName()));
+            MakeNode(node, tr("video_full_range"), BitstreamFlagText(cfg.video_full_range_flag));
+            if (cfg.color_description_present) {
+                MakeNode(node, tr("Color Primaries"), BitstreamPrimariesName(cfg.color_primaries));
+                MakeNode(node, tr("Transfer"), BitstreamTransferName(cfg.transfer_characteristics));
+                MakeNode(node, tr("Matrix"), BitstreamMatrixName(cfg.matrix_coefficients));
+            }
+        }
+    }
+
     root->setExpanded(true);
     structure_tree_->expandAll();
     structure_tree_->resizeColumnToContents(0);
