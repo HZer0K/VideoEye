@@ -28,8 +28,14 @@
 
 set -euo pipefail
 
-# 与 cmake/deps/FfmpegApiProbe.cmake、本地构建说明「FFmpeg 支持矩阵」保持一致
-REQUIRED_VERSION="7.1"
+# 与 cmake/deps/FfmpegApiProbe.cmake、本地构建说明「FFmpeg 支持矩阵」保持一致。
+# ⚠️ 这里必须比较 libavcodec 的库版本，不能用 FFmpeg 的"市场版本号"7.1：
+#    pkg-config --modversion libavcodec 返回的是库版本（FFmpeg 6.1 -> 60.31、
+#    7.1 -> 61.x、8.1 -> 62.x），拿它跟 "7.1" 做 sort -V 会让 60 > 7 恒成立，
+#    于是 Ubuntu 24.04 的 6.1 被误判为"够新"而跳过兜底包（真实踩坑：CI 用 6.1
+#    编译，失败类别少一类，语料门禁假判红）。阈值以 FfmpegApiProbe.cmake 的
+#    实测结论为准：libavcodec >= 61.19 对应 FFmpeg 7.1。
+REQUIRED_VERSION="61.19"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -62,10 +68,10 @@ if [[ -n "${system_version}" ]]; then
     # sort -V 做版本比较：min 排在前面说明 system >= min
     newest_first="$(printf '%s\n%s\n' "${REQUIRED_VERSION}" "${system_version}" | sort -V | head -n1)"
     if [[ "${newest_first}" == "${REQUIRED_VERSION}" ]]; then
-        log "系统 FFmpeg ${system_version} >= ${REQUIRED_VERSION}，直接用它（不下载）"
+        log "系统 libavcodec ${system_version} >= ${REQUIRED_VERSION}（FFmpeg >= 7.1），直接用它（不下载）"
         exit 0
     fi
-    log "系统 FFmpeg ${system_version} < ${REQUIRED_VERSION}，需要兜底包"
+    log "系统 libavcodec ${system_version} < ${REQUIRED_VERSION}（FFmpeg < 7.1），需要兜底包"
 else
     log "pkg-config 找不到 libavcodec，需要兜底包"
 fi
