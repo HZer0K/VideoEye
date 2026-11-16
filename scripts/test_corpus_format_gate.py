@@ -23,7 +23,7 @@ INDEX_COLS = ["path", "category", "source", "container", "codec", "duration_s",
               "resolution", "size_bytes", "parse", "defect_heuristic"]
 RESULT_COLS = ["path", "category", "idx_container", "idx_parse", "detected_format"]
 
-ROOT = "D:/Coding/Test/media"
+ROOT = "corpus-root"  # 合成数据的路径前缀，仅用于 rel_key 剥前缀，不读真实文件
 
 # 硬组：真值容器 -> (条数, 产品探测结果)
 HARD = [

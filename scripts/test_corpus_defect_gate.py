@@ -262,10 +262,46 @@ class CorpusDefectGateTests(unittest.TestCase):
         self.assert_red(out, rc, "结构有效却带失败类别")
 
     def test_rel_key_normalizes_absolute_windows_path(self) -> None:
-        self.assertEqual(gate.rel_key("D:/Coding/Test/media\\abnormal\\a.bin",
-                                     "D:/Coding/Test/media"), "abnormal/a.bin")
-        self.assertEqual(gate.rel_key("abnormal\\a.bin", "D:/Coding/Test/media"),
+        self.assertEqual(gate.rel_key("C:/corpus\\abnormal\\a.bin",
+                                     "C:/corpus"), "abnormal/a.bin")
+        self.assertEqual(gate.rel_key("abnormal\\a.bin", "C:/corpus"),
                          "abnormal/a.bin")
+
+    def test_blind_spot_normal_fail_is_reported(self) -> None:
+        """normal+fail 是口径盲区：必须被显式统计出来，不能无声无息。
+
+        三类计数各改一个事实，断言报出的数字精确 —— 防止统计退化成常数。
+        """
+        cols = RESULT_COLUMNS + ["mi_ok"]
+        blind_index = [
+            {"path": "normal/blind_open.bin", "category": "normal",
+             "defect_heuristic": "-", "parse": "fail"},
+            {"path": "normal/blind_struct.bin", "category": "normal",
+             "defect_heuristic": "-", "parse": "fail"},
+            {"path": "normal/blind_reject.bin", "category": "normal",
+             "defect_heuristic": "-", "parse": "fail"},
+        ]
+        index_path = self.root / "INDEX.tsv"
+        write_tsv(index_path, INDEX_COLUMNS, blind_index)
+        rows = [
+            # 产品能打开 / 仅结构有效 / 产品拒绝：各一条
+            {"path": str(self.root / "normal/blind_open.bin"), "struct_valid": "1",
+             "struct_failure_kind": "none", "struct_error": "", "struct_summary": "结构正常",
+             "idx_parse": "fail", "mi_ok": "1"},
+            {"path": str(self.root / "normal/blind_struct.bin"), "struct_valid": "1",
+             "struct_failure_kind": "none", "struct_error": "", "struct_summary": "结构正常",
+             "idx_parse": "fail", "mi_ok": "0"},
+            {"path": str(self.root / "normal/blind_reject.bin"), "struct_valid": "0",
+             "struct_failure_kind": "open_failed", "struct_error": "打不开",
+             "struct_summary": "", "idx_parse": "fail", "mi_ok": "0"},
+        ]
+        results_path = self.root / "results.tsv"
+        write_tsv(results_path, cols, rows)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gate.check(results_path, index_path, str(self.root), None)
+        out = buf.getvalue()
+        self.assertIn("口径落空(normal+fail) 3 条：产品能打开 1 / 仅结构有效 1 / 产品拒绝 1", out)
 
 
 if __name__ == "__main__":

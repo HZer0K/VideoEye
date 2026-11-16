@@ -1,0 +1,231 @@
+# ============================================================
+# 真实语料解析门禁（nightly + 手动触发）
+#
+# 背景: scripts/validate_corpus.py + 三道门禁（format / defect / semantic）
+# 已经把"能打开 / 报得对 / 说得清打不开是哪一种 / 认成什么格式"四个层面的
+# 判据做全了，但此前只在本地手动跑 —— build.yml 里只有门禁脚本的*自测*
+# （合成数据），真语料一次都没进过 CI。没人定期跑的门禁等于没有门禁。
+#
+# ❗ 刻意的取舍: 不进 PR 流程。
+#   * 语料树 7.3 GB / 4429 个文件，不在仓库里，PR 里下载解压要几分钟；
+#   * 全量扫描 + 三道门禁又要几分钟，且结果受 runner 的 I/O 抖动影响；
+#   * PR 侧由 build.yml 的门禁自测 + 容器/码流单测兜底，见 tests/CMakeLists.txt。
+#   这里只做 nightly + 按需手动，红线由值班的人第二天看。
+#
+# 语料来源（二选一，按优先级）:
+#   1. VIDEOEYE_CORPUS_URL  — repository variable，指向一个 tar.zst / tar.gz /
+#      zip 归档，下载后解压到 $RUNNER_TEMP/corpus。归档根目录须含 INDEX.tsv。
+#   2. VIDEOEYE_CORPUS_ROOT — repository variable，指向自托管 runner 上已
+#      挂载的语料目录。此路径**不会**随仓库分发，需要一台能访问语料的 runner。
+#
+# runner 由 CORPUS_RUNNER_LABEL 变量决定（默认 ubuntu-latest）：
+#   - 走 URL 下载：保持默认 github-hosted 即可；
+#   - 走本地挂载：在能访问语料的 Linux 机器（WSL 也行）装 self-hosted runner，
+#     把 CORPUS_RUNNER_LABEL 设为该 runner 的 label（如 self-hosted），
+#     再把 VIDEOEYE_CORPUS_ROOT 设为语料在该机器上的路径（WSL 下如
+#     /mnt/d/Coding/Test/media）。这样无需上传 7.3 GB 语料即可真跑。
+# 两者都没配置时，本 job 明确标记 SKIP 并在 summary 里说明原因，绝不静默通过 ——
+# "语料没到位"和"门禁通过"必须能被一眼区分。
+#
+# 语义门禁（corpus_semantic_gate.py）在 CI 上**默认关闭**：它逐字段比对
+# truth_* 真值，而 golden 是用 Windows FFmpeg 8.1.3（libavformat 62.12.103）
+# 冻结的，CI 系统 FFmpeg 版本不同会让真值漂移判红 —— 那是环境噪音，不是产品回归。
+# 语义门禁继续由本地 --update-golden / --check 维护（需与产品同版本 FFmpeg）。
+# 本 job 跑的是与 FFmpeg 版本无关的两道硬判据：格式探测真值 + 负样本诊断。
+# ============================================================
+
+name: Corpus gate
+
+on:
+  schedule:
+    - cron: '43 3 * * *'  # 每天 03:43 UTC，避开 perf-benchmark 的 02:17
+  workflow_dispatch:
+    inputs:
+      corpus_url:
+        description: '语料归档 URL（覆盖 repository variable；留空则用已配置的值）'
+        required: false
+        default: ''
+      limit:
+        description: '只跑前 N 条（0=全量；非 0 仅供调试，会因覆盖守护必然判红）'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corpus-gate
+  cancel-in-progress: false
+
+jobs:
+  corpus-gate:
+    name: Real-corpus gate
+    runs-on: ${{ vars.CORPUS_RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 先决定语料从哪来。没有来源就走 SKIP 分支，不能让后续步骤在空目录上空转。
+      - name: Resolve corpus source
+        id: source
+        env:
+          INPUT_CORPUS_URL: ${{ inputs.corpus_url }}
+          VAR_CORPUS_URL: ${{ vars.VIDEOEYE_CORPUS_URL }}
+          VAR_CORPUS_ROOT: ${{ vars.VIDEOEYE_CORPUS_ROOT }}
+        run: |
+          set -euo pipefail
+          url="${INPUT_CORPUS_URL:-$VAR_CORPUS_URL}"
+          root="$VAR_CORPUS_ROOT"
+          if [ -n "$url" ]; then
+            echo "mode=download" >> "$GITHUB_OUTPUT"
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "将从 URL 下载语料归档（URL 已配置，明细不打印以免泄露查询参数）"
+          elif [ -n "$root" ] && [ -f "$root/INDEX.tsv" ]; then
+            echo "mode=mount" >> "$GITHUB_OUTPUT"
+            echo "root=$root" >> "$GITHUB_OUTPUT"
+            echo "使用已挂载语料: $root"
+          else
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 VIDEOEYE_CORPUS_URL / VIDEOEYE_CORPUS_ROOT，或挂载路径缺 INDEX.tsv；真实语料门禁本次 SKIP（不是通过）"
+          fi
+
+      # self-hosted runner 由用户自行维护，可能是 Windows / macOS；本 job 全程
+      # bash + apt，非 Linux 会给出难懂的报错。提前明确失败，别让人猜。
+      - name: Assert Linux runner
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          if [ "$(uname -s)" != "Linux" ]; then
+            echo "::error::语料门禁 job 需要 Linux runner（WSL 也可）；当前是 $(uname -s)"
+            exit 1
+          fi
+          echo "Linux runner OK: $(uname -srm)"
+
+      - name: Skip notice
+        if: steps.source.outputs.mode == 'skip'
+        run: |
+          {
+            echo "## 真实语料门禁：SKIP"
+            echo ""
+            echo "未配置语料来源，本轮**没有运行**真语料门禁。这不代表通过。"
+            echo ""
+            echo "启用方式（二选一，无需改代码）："
+            echo "- **推荐（零上传）**：在能访问语料的 Linux 机器（WSL 亦可）装 self-hosted runner，"
+            echo "  仓库 Settings → Variables 设 \`CORPUS_RUNNER_LABEL=<该 runner 的 label>\`"
+            echo "  和 \`VIDEOEYE_CORPUS_ROOT=<语料路径>\`（如 /mnt/d/Coding/Test/media）。"
+            echo "- 或保持 github-hosted，设 \`VIDEOEYE_CORPUS_URL\` 指向语料归档"
+            echo "  （tar.zst/tar.gz/zip，根目录含 INDEX.tsv）供下载。"
+            echo ""
+            echo "PR 侧由 build.yml 的门禁自测与单测兜底；真语料门禁需要上述配置才会真正执行。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 以下步骤只在语料来源就绪时执行 ------------------------------------------
+      - name: Install dependencies
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config ninja-build \
+            qt6-base-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libswresample-dev \
+            zstd unzip
+
+      - name: Ensure FFmpeg >= 7.1
+        if: steps.source.outputs.mode != 'skip'
+        id: ffmpeg
+        uses: ./.github/actions/ensure-ffmpeg
+
+      - name: Configure validator
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+          cmake --preset linux-release \
+            -DVIDEOEYE_BUILD_CORPUS_VALIDATOR=ON \
+            ${{ steps.ffmpeg.outputs.cmake_args }}
+
+      - name: Build validator
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+          cmake --build --preset linux-release --target media_corpus_validate --parallel "$(nproc)"
+          test -x build/release/bin/media_corpus_validate
+
+      - name: Download corpus archive
+        if: steps.source.outputs.mode == 'download'
+        env:
+          CORPUS_URL: ${{ steps.source.outputs.url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/corpus"
+          curl -fL --retry 3 --connect-timeout 30 "$CORPUS_URL" \
+            -o "$RUNNER_TEMP/corpus.tar"
+          case "$CORPUS_URL" in
+            *.tar.zst|*.tzst|*zst*) tar --zstd -xf "$RUNNER_TEMP/corpus.tar" -C "$RUNNER_TEMP/corpus" ;;
+            *.tar.gz|*.tgz|*gz*)   tar -xzf "$RUNNER_TEMP/corpus.tar" -C "$RUNNER_TEMP/corpus" ;;
+            *.zip)                 unzip -q "$RUNNER_TEMP/corpus.tar" -d "$RUNNER_TEMP/corpus" ;;
+            *)                     echo "::error::无法识别语料归档格式: $CORPUS_URL"; exit 1 ;;
+          esac
+          echo "VIDEOEYE_CORPUS_ROOT=$RUNNER_TEMP/corpus" >> "$GITHUB_ENV"
+
+      - name: Use mounted corpus
+        if: steps.source.outputs.mode == 'mount'
+        env:
+          CORPUS_ROOT: ${{ steps.source.outputs.root }}
+        run: echo "VIDEOEYE_CORPUS_ROOT=$CORPUS_ROOT" >> "$GITHUB_ENV"
+
+      - name: Assert corpus index present
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+          if [ ! -f "$VIDEOEYE_CORPUS_ROOT/INDEX.tsv" ]; then
+            echo "::error::语料根目录缺 INDEX.tsv: $VIDEOEYE_CORPUS_ROOT（门禁无法比对真值）"
+            exit 1
+          fi
+          echo "INDEX.tsv 行数: $(wc -l < "$VIDEOEYE_CORPUS_ROOT/INDEX.tsv")"
+
+      # 门禁自检: 用"误收上限=0 且强制跑一遍"之外的手段证明门禁会判红。
+      # 这里用一个必然失败的真值容器白名单缺失来让 format 门禁报错 ——
+      # 更稳妥的是直接跑三道门禁的 self-test（合成数据、秒级），它们逐条验证
+      # 判据能被精确打破，见 tests/CMakeLists.txt 的 *GateSelfTests。
+      - name: Self-check gates reject regressions
+        if: steps.source.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+          python3 scripts/test_corpus_format_gate.py
+          python3 scripts/test_corpus_defect_gate.py
+          python3 scripts/test_corpus_semantic_gate.py
+
+      - name: Run real-corpus gate
+        if: steps.source.outputs.mode != 'skip'
+        env:
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          limit="${INPUT_LIMIT:-0}"
+          # format/defect 两道门禁默认开启；semantic 不传 --semantic-golden 即关闭，
+          # 原因见文件头注释：CI 的 FFmpeg 版本与冻结 golden 不同，逐字段比对会假判红。
+          # 可用性判据（成功率/超时/误收/清单拒绝）仍由 validate_corpus.py 全程判红。
+          python3 scripts/validate_corpus.py \
+            --tool build/release/bin/media_corpus_validate \
+            --jobs 8 \
+            --limit "$limit"
+
+      - name: Summarize result
+        if: always() && steps.source.outputs.mode != 'skip'
+        run: |
+          {
+            echo "## 真实语料门禁"
+            echo ""
+            echo "- 语料来源: ${{ steps.source.outputs.mode }}"
+            echo "- validate_corpus.py 退出状态见本 job 状态；明细在门禁日志与上传的 results.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results table
+        if: always() && steps.source.outputs.mode != 'skip'
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-validation-results
+          path: build/corpus_validation/results.tsv
+          if-no-files-found: warn

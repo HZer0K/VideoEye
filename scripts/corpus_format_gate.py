@@ -32,14 +32,20 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHITELIST = REPO_ROOT / "tests" / "corpus" / "format_gate_whitelist.json"
-DEFAULT_INDEX = "D:/Coding/Test/media/INDEX.tsv"
-DEFAULT_ROOT = "D:/Coding/Test/media"
+# 语料树属于外部环境，不随仓库分发；统一从 VIDEOEYE_CORPUS_ROOT 注入，
+# 单一入口避免"脚本里写死一台机器的路径"。INDEX 默认在语料根目录下，
+# 允许 VIDEOEYE_CORPUS_INDEX 单独覆盖。
+DEFAULT_ROOT = os.environ.get("VIDEOEYE_CORPUS_ROOT", "").strip()
+DEFAULT_INDEX = os.environ.get("VIDEOEYE_CORPUS_INDEX", "").strip() or (
+    str(Path(DEFAULT_ROOT) / "INDEX.tsv") if DEFAULT_ROOT else ""
+)
 
 # 硬组：真值容器 -> 可接受的 FormatDetector::FormatName 集合。
 # 同族别名（mp4/mov、matroska/webm）不算错，见 validate_corpus.py 的历史口径。
@@ -251,6 +257,9 @@ def main() -> int:
     parser.add_argument("--whitelist", default=str(DEFAULT_WHITELIST),
                         help="例外白名单 JSON，形如 {\"exceptions\": {\"<相对路径>\": \"原因\"}}")
     args = parser.parse_args()
+    if not args.root or not args.index:
+        parser.error("缺少语料路径：请传 --root/--index，或设置环境变量 VIDEOEYE_CORPUS_ROOT"
+                     "（INDEX.tsv 默认在该目录下，可用 VIDEOEYE_CORPUS_INDEX 单独指定）")
     wl = Path(args.whitelist) if args.whitelist else None
     return check(Path(args.results), Path(args.index), args.root, wl)
 

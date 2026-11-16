@@ -32,12 +32,13 @@ print，而且只认 11 种容器，1957 条带真值的样本根本不在视野
 这条按 23 个字段逐样本判红、校验真值未漂移，且带覆盖守护防止"没有事实实时也一路绿"。
 ⚠️ 真值来自校验工具输出的 truth_* 列，所以不能用 --no-truth 生成的旧结果表跑语义门禁。
 
-用法：
+用法（语料树属于外部环境，路径由参数或环境变量注入）：
+  export VIDEOEYE_CORPUS_ROOT=/path/to/media      # PowerShell: $env:VIDEOEYE_CORPUS_ROOT=...
   python scripts/validate_corpus.py \
-      --index D:/Coding/Test/media/INDEX.tsv \
-      --root  D:/Coding/Test/media \
       --semantic-golden tests/corpus/semantic_golden.json \
       --ffprobe-sample 100
+  # --root 缺省取 VIDEOEYE_CORPUS_ROOT，--index 缺省取 <root>/INDEX.tsv；
+  # 也可用 --root/--index 显式覆盖，或用 VIDEOEYE_CORPUS_INDEX 单独指定 INDEX。
 
 工具默认从 build/test-release/bin 找；没有时先构建：
   cmake --preset win-test-release -DVIDEOEYE_BUILD_CORPUS_VALIDATOR=ON
@@ -277,8 +278,8 @@ def ffprobe_crosscheck(rows: list[dict], sample: int, ffprobe: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="真实语料解析回归门禁")
-    parser.add_argument("--index", required=True, help="语料自带的 INDEX.tsv")
-    parser.add_argument("--root", required=True, help="语料根目录")
+    parser.add_argument("--index", default="", help="语料自带的 INDEX.tsv（缺省取 VIDEOEYE_CORPUS_ROOT/INDEX.tsv）")
+    parser.add_argument("--root", default="", help="语料根目录（缺省取 VIDEOEYE_CORPUS_ROOT）")
     parser.add_argument("--tool", default=str(default_tool_path()), help="media_corpus_validate 路径")
     parser.add_argument("--out", default=str(REPO_ROOT / "build" / "corpus_validation" / "results.tsv"))
     parser.add_argument("--jobs", type=int, default=8)
@@ -306,6 +307,17 @@ def main() -> int:
                         default=str(REPO_ROOT / "tests" / "corpus" / "format_gate_whitelist.json"),
                         help="格式门禁的例外白名单 JSON")
     args = parser.parse_args()
+
+    # 语料路径：CLI 优先，其次环境变量，再次 <root>/INDEX.tsv。
+    # 与三个 gate 脚本统一口径，避免把机器相关路径写死在脚本里。
+    if not args.root:
+        args.root = os.environ.get("VIDEOEYE_CORPUS_ROOT", "").strip()
+    if not args.index:
+        args.index = os.environ.get("VIDEOEYE_CORPUS_INDEX", "").strip() or (
+            str(Path(args.root) / "INDEX.tsv") if args.root else ""
+        )
+    if not args.root or not args.index:
+        parser.error("缺少语料路径：请传 --root/--index，或设置环境变量 VIDEOEYE_CORPUS_ROOT")
 
     out_path = run_validator(args)
     rows = load_rows(out_path)

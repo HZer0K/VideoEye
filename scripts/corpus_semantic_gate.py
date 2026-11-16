@@ -38,16 +38,14 @@ FFmpeg 版本，噪音消失。
 用法
 ----
   # 生成/更新真值快照（需要先跑一轮带 truth_* 列的全量 validator）
+  export VIDEOEYE_CORPUS_ROOT=/path/to/media
   python scripts/corpus_semantic_gate.py --update-golden \
-      --index D:/Coding/Test/media/INDEX.tsv \
-      --root  D:/Coding/Test/media \
       --results build/corpus_validation/results.tsv --samples 240
 
   # 日常校验（秒级，不打开任何媒体文件）
   python scripts/corpus_semantic_gate.py --check \
-      --index D:/Coding/Test/media/INDEX.tsv \
-      --root  D:/Coding/Test/media \
       --results build/corpus_validation/results.tsv
+  # --root/--index 可显式传入；缺省取 VIDEOEYE_CORPUS_ROOT 与 <root>/INDEX.tsv。
 
   # 也可以由 validate_corpus.py --semantic-golden <path> 在一轮里顺带跑。
 
@@ -59,6 +57,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import random
 import sys
 from collections import Counter
@@ -534,7 +533,7 @@ def main() -> int:
     mode.add_argument("--update-golden", action="store_true",
                       help="从结果表的 truth_* 列冻结真值快照")
     mode.add_argument("--check", action="store_true", help="按冻结真值校验结果表")
-    parser.add_argument("--index", help="语料 INDEX.tsv")
+    parser.add_argument("--index", default="", help="语料 INDEX.tsv")
     parser.add_argument("--root", default="", help="语料根目录")
     parser.add_argument("--results", help="media_corpus_validate 输出的 TSV（需含 truth_* 列）")
     parser.add_argument("--golden", default=str(DEFAULT_GOLDEN), help="真值快照 JSON")
@@ -547,8 +546,17 @@ def main() -> int:
     parser.add_argument("--max-rotation-swaps", type=int, default=12)
     args = parser.parse_args()
 
+    # 语料路径可从环境变量注入（CLI 优先）；INDEX 默认在语料根目录下。
+    # 三个门禁脚本统一读 VIDEOEYE_CORPUS_ROOT / VIDEOEYE_CORPUS_INDEX。
+    if not args.root:
+        args.root = os.environ.get("VIDEOEYE_CORPUS_ROOT", "").strip()
+    if not args.index:
+        args.index = os.environ.get("VIDEOEYE_CORPUS_INDEX", "").strip() or (
+            str(Path(args.root) / "INDEX.tsv") if args.root else ""
+        )
     if not args.index or not args.results or not args.root:
-        parser.error("--index / --results / --root 都是必填")
+        parser.error("--index / --results / --root 都是必填；语料路径也可由"
+                     " VIDEOEYE_CORPUS_ROOT 环境变量提供")
     return update_golden(args) if args.update_golden else check(args)
 
 

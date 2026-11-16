@@ -27,14 +27,18 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHITELIST = REPO_ROOT / "tests" / "corpus" / "defect_gate_whitelist.json"
-DEFAULT_INDEX = "D:/Coding/Test/media/INDEX.tsv"
-DEFAULT_ROOT = "D:/Coding/Test/media"
+# 语料树属于外部环境，统一从 VIDEOEYE_CORPUS_ROOT 注入，见 corpus_format_gate.py。
+DEFAULT_ROOT = os.environ.get("VIDEOEYE_CORPUS_ROOT", "").strip()
+DEFAULT_INDEX = os.environ.get("VIDEOEYE_CORPUS_INDEX", "").strip() or (
+    str(Path(DEFAULT_ROOT) / "INDEX.tsv") if DEFAULT_ROOT else ""
+)
 
 # 与 core/domain/model/ContainerStructureInfo.h 的 ContainerFailureKindName 一一对应。
 KNOWN_KINDS = {
@@ -96,17 +100,18 @@ def check(results: Path, index: Path, root: str, whitelist_path: Path | None) ->
         return 1
 
     index_rows = load_tsv(index)
-    defects = {}
+    index_by_key: dict[str, dict] = {}
     for item in index_rows:
         key = rel_key(item.get("path", ""), root)
         if key:
-            defects[key] = item.get("defect_heuristic", "") or "-"
+            index_by_key[key] = item
 
     by_group: dict[str, list[dict]] = defaultdict(list)
     abnormal = 0
     for row in rows:
         key = rel_key(row.get("path", ""), root)
-        group = defects.get(key, "-")
+        item = index_by_key.get(key, {})
+        group = item.get("defect_heuristic", "") or "-"
         if group != "-":
             abnormal += 1
             by_group[group].append(row)
@@ -192,6 +197,23 @@ def check(results: Path, index: Path, root: str, whitelist_path: Path | None) ->
     if stale:
         failures.append(f"白名单失效（这些行本来就没违反判据）: {sorted(stale)[:8]}")
 
+    # ---- 6. 口径落空样本（只报告，不判红）-------------------------------
+    # INDEX 的 parse 列是 ffprobe（制作语料时的版本）的结论，不是产品的真值。
+    # category=normal 但 parse=fail 的样本既没有缺陷标注（不进分组判据），
+    # 又在格式门禁里被 parse!=ok 跳过 —— 是一道隐形的盲区。
+    # 这里把它们按产品的真实结论显性化：其中 mi_ok=1 的是"产品比老 ffprobe
+    # 多认出的格式"（如 HEIF/USAC/IAMF），数量突变由 validate_corpus.py 的
+    # max_false-accept 阈值守着；此处只让运维看见，避免盲区变成黑箱。
+    blind = [r for r in rows
+             if (index_by_key.get(rel_key(r.get("path", ""), root), {}).get("category") == "normal"
+                 and (index_by_key.get(rel_key(r.get("path", ""), root), {}).get("parse") == "fail"))]
+    blind_open = [r for r in blind if r.get("mi_ok") == "1"]
+    blind_struct_only = [r for r in blind if r.get("struct_valid") == "1" and r.get("mi_ok") != "1"]
+    blind_rejected = [r for r in blind if r.get("struct_valid") != "1"]
+    print(f"[defect] 口径落空(normal+fail) {len(blind)} 条：产品能打开 {len(blind_open)} / "
+          f"仅结构有效 {len(blind_struct_only)} / 产品拒绝 {len(blind_rejected)}"
+          "（只报告；这些是 INDEX 的 ffprobe 口径与产品的差异，误收由主脚本阈值守）")
+
     # ---- 输出 -----------------------------------------------------------
     print(f"[defect] 结果 {len(rows)} 行，异常标注 {abnormal} 行，"
           f"成功 {len(valid_rows)} / 失败 {len(invalid_rows)}")
@@ -218,6 +240,9 @@ def main() -> int:
     parser.add_argument("--whitelist", default=str(DEFAULT_WHITELIST),
                         help="例外白名单 JSON，形如 {\"exceptions\": {\"<相对路径>\": \"原因\"}}")
     args = parser.parse_args()
+    if not args.root or not args.index:
+        parser.error("缺少语料路径：请传 --root/--index，或设置环境变量 VIDEOEYE_CORPUS_ROOT"
+                     "（INDEX.tsv 默认在该目录下，可用 VIDEOEYE_CORPUS_INDEX 单独指定）")
     wl = Path(args.whitelist) if args.whitelist else None
     return check(Path(args.results), Path(args.index), args.root, wl)
 
