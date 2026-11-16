@@ -623,9 +623,11 @@ TEST(VisualDefectMetrics, BlockinessUsesOneToOneProbeAtHighResolution) {
     FrameSample with_probe = MakeSample(0, 0.0, Blocks(false));
     with_probe.source_width = 1920;
     with_probe.source_height = 1080;
-    with_probe.block_width = bw;
-    with_probe.block_height = bh;
-    with_probe.block_gray = probe;
+    FrameSample::BlockProbeRegion region;
+    region.width = bw;
+    region.height = bh;
+    region.gray = std::move(probe);
+    with_probe.block_probes.push_back(std::move(region));
 
     const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(with_probe, nullptr, 0.0, opt);
     ASSERT_TRUE(m.valid);
@@ -679,6 +681,57 @@ TEST(VisualDefectMetrics, HdrDisablesExposureAndColorCast) {
     EXPECT_TRUE(std::isnan(m_hdr.color_cast_score));
     // 结构类指标不受影响
     EXPECT_FALSE(std::isnan(m_hdr.blur_score));
+}
+
+// 做过近似色调映射的 HDR 帧，码值已是 SDR 显示口径，曝光/色偏判定要恢复 ——
+// 否则色调映射白做了，HDR 素材永远漏检过曝与色偏。
+TEST(VisualDefectMetrics, ToneMappedHdrRestoresExposureAndColorCast) {
+    VisualDefectOptions opt;
+    const auto white = Solid(253);
+    const auto rgb = Rgb(210, 100, 100);
+
+    FrameSample mapped = MakeSample(0, 0.0, white, &rgb);
+    mapped.hdr = true;
+    mapped.tone_mapped = true;
+    const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(mapped, nullptr, 0.0, opt);
+    EXPECT_FALSE(std::isnan(m.highlight_ratio));
+    EXPECT_FALSE(std::isnan(m.dark_ratio));
+    EXPECT_FALSE(std::isnan(m.color_cast_score));
+}
+
+// 多区域探针: 取各块分数的最大值。中心块是平坦区（分数接近 0），
+// 只有角落块带 8px 块结构 —— 只看中心会漏掉这种局部花屏。
+TEST(VisualDefectMetrics, MultiRegionProbeTakesWorstBlock) {
+    VisualDefectOptions opt;
+    const int bw = 128;
+    const int bh = 128;
+
+    FrameSample sample = MakeSample(0, 0.0, Solid(128));
+    sample.source_width = 1920;
+    sample.source_height = 1080;
+
+    FrameSample::BlockProbeRegion flat;
+    flat.width = bw;
+    flat.height = bh;
+    flat.gray.assign(static_cast<size_t>(bw) * bh, 128);
+    sample.block_probes.push_back(std::move(flat));
+
+    FrameSample::BlockProbeRegion blocks;
+    blocks.width = bw;
+    blocks.height = bh;
+    blocks.gray.resize(static_cast<size_t>(bw) * bh);
+    for (int y = 0; y < bh; ++y) {
+        for (int x = 0; x < bw; ++x) {
+            blocks.gray[static_cast<size_t>(y) * bw + x] =
+                static_cast<uint8_t>(30 + (((x / 8) * 37 + (y / 8) * 91) % 200));
+        }
+    }
+    sample.block_probes.push_back(std::move(blocks));
+
+    const auto m = VisualDefectAnalyzer::ComputeFrameMetrics(sample, nullptr, 0.0, opt);
+    ASSERT_TRUE(m.valid);
+    ASSERT_FALSE(std::isnan(m.blockiness_score));
+    EXPECT_GT(m.blockiness_score, opt.blockiness_score);
 }
 
 TEST(VisualDefectAnalyzer, SamplesAreTrimmedInBatchesAndFlagged) {

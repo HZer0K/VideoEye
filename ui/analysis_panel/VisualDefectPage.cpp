@@ -10,6 +10,7 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QStringList>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -250,6 +251,7 @@ void VisualDefectPage::AppendFrame(const model::FrameQualityMetric& metric) {
     if (samples_.size() > kMaxQualitySamples) {
         const std::size_t drop = kMaxQualitySamples / 5;
         samples_.erase(samples_.begin(), samples_.begin() + static_cast<long>(drop));
+        samples_trimmed_ = true;
         PerfMetrics::GetInstance().RecordCount("quality_samples_trimmed", static_cast<long long>(drop));
     }
     dirty_ = true;
@@ -262,6 +264,7 @@ void VisualDefectPage::AppendDefect(model::VisualDefect defect) {
     if (records_.size() > kMaxDefectRecords) {
         const std::size_t drop = records_.size() - kMaxDefectRecords;
         records_.erase(records_.begin(), records_.begin() + static_cast<long>(drop));
+        defects_trimmed_ = true;
     }
     TrimEvidenceFrames();
     dirty_ = true;
@@ -300,6 +303,8 @@ void VisualDefectPage::ResetAll() {
     // 以前漏了这一步: 重新开始一次分析后，"证据图已释放"的旧提示还留着，
     // 新采集的证据图若是空的会被误报成"被限额释放"。
     evidence_trimmed_ = false;
+    samples_trimmed_ = false;
+    defects_trimmed_ = false;
     table_rows_ = 0;
     table_first_id_ = -1;
     if (luma_chart_)
@@ -358,14 +363,28 @@ void VisualDefectPage::UpdateSummary() {
         summary_label_->setToolTip(QString());
     }
 
+    // 本地列表被上限裁剪时必须明示: 否则用户会把"只保留最近 N 个采样/缺陷"
+    // 误读成"分析漏了数据"。采样上限见 kMaxQualitySamples，缺陷上限见
+    // kMaxDefectRecords（报告侧另有独立的截断标记）。
+    QString trim_note;
+    if (samples_trimmed_ || defects_trimmed_) {
+        QStringList parts;
+        if (samples_trimmed_)
+            parts << tr("采样指标仅留最近 %1 个").arg(kMaxQualitySamples);
+        if (defects_trimmed_)
+            parts << tr("缺陷记录仅留最近 %1 条").arg(kMaxDefectRecords);
+        trim_note = tr("；本地列表已达上限（%1）").arg(parts.join(tr("，")));
+    }
+
     summary_label_->setText(
-        tr("已分析 %1 帧，缺陷 %2 条（其中警告及以上 %3 条）；有效画面区域: %4%5%6")
+        tr("已分析 %1 帧，缺陷 %2 条（其中警告及以上 %3 条）；有效画面区域: %4%5%6%7")
             .arg(analyzed_frames_)
             .arg(records_.size())
             .arg(warning_or_above)
             .arg(area_text)
             .arg(dropped_frames_ > 0 ? tr("；播放压力大，已丢弃 %1 个分析帧").arg(dropped_frames_) : QString())
-            .arg(vmaf_note));
+            .arg(vmaf_note)
+            .arg(trim_note));
 }
 
 void VisualDefectPage::UpdateCharts() {

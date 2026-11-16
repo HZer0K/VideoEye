@@ -102,17 +102,32 @@ struct FrameSample {
     int source_height = 0;
     std::vector<uint8_t> gray; // width * height，GRAY8，无行对齐
 
-    // 源分辨率中心裁剪（1:1，不缩放）的灰度小图，仅用于块效应检测。
+    // 源分辨率 1:1 裁剪（不缩放）的灰度小图，仅用于块效应检测。
     // 8x8 编码块在 256 宽的降采样图上只剩 1px 多，周期结构已被抹平；
-    // 用 1:1 的局部裁剪才能保住块边界，让 block_size 真正按源像素生效。
-    int block_width = 0;
-    int block_height = 0;
-    std::vector<uint8_t> block_gray;
+    // 只有 1:1 的局部裁剪才能保住块边界，让 block_size 真正按源像素生效。
+    struct BlockProbeRegion {
+        int x = 0; // 左上角在源帧中的坐标（便于复现/排查）
+        int y = 0;
+        int width = 0;
+        int height = 0;
+        std::vector<uint8_t> gray; // width * height，GRAY8，无行对齐
+
+        bool valid() const {
+            return width >= 16 && height >= 16 &&
+                   gray.size() == static_cast<size_t>(width) * static_cast<size_t>(height);
+        }
+    };
+    // 中心 + 四角最多 5 块: 马赛克/花屏常只出现在画面局部，只看中心会被
+    // 局部损伤拉低甚至完全漏掉。每块 <= 256x256，合计约 320KB，随采样帧释放。
+    std::vector<BlockProbeRegion> block_probes;
 
     // 源帧的亮度范围 / 传输特性。limited_range 时曝光阈值需要按 16-235 重新标定；
-    // hdr（PQ/HLG）不做色调映射时曝光/色偏指标不可信，置为不可用。
+    // hdr（PQ/HLG）且 tone_mapped=false 时曝光/色偏指标不可信，置为不可用。
     bool limited_range = false;
     bool hdr = false;
+    // PQ / HLG 帧已在采样后做过近似色调映射（见 QualityAnalyzer::ApplyHdrToneMap）:
+    // 样本码值已换算到 SDR 显示口径，曝光/色偏判定可以照常进行。
+    bool tone_mapped = false;
 
     int rgb_width = 0;
     int rgb_height = 0;
@@ -126,9 +141,12 @@ struct FrameSample {
         return width > 0 && height > 0 && gray.size() == static_cast<size_t>(width) * static_cast<size_t>(height);
     }
 
-    bool has_block_gray() const {
-        return block_width >= 16 && block_height >= 16 &&
-               block_gray.size() == static_cast<size_t>(block_width) * static_cast<size_t>(block_height);
+    bool has_block_probes() const {
+        for (const auto& probe : block_probes) {
+            if (probe.valid())
+                return true;
+        }
+        return false;
     }
 
     bool has_rgb() const {

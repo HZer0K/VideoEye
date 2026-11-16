@@ -1,8 +1,10 @@
 #include "core/analysis/quality/QualityAnalyzer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 extern "C" {
 #include <libavutil/pixdesc.h>
@@ -212,6 +214,10 @@ bool QualityAnalyzer::BuildSample(const AVFrame* frame, int gray_width, int rgb_
             error.clear();
         }
     }
+
+    // PQ / HLG 帧在采样后做一次近似色调映射，把码值换算到 SDR 显示口径；
+    // 曝光/色偏判定据此恢复（VisualDefectAnalyzer 按 tone_mapped 判断）。
+    ApplyHdrToneMap(frame, out);
     return true;
 }
 
@@ -255,9 +261,7 @@ bool QualityAnalyzer::ScaleToGray(const AVFrame* frame, int width, int height, s
 }
 
 bool QualityAnalyzer::BuildBlockProbe(const AVFrame* frame, model::FrameSample& out, std::string& error) {
-    out.block_width = 0;
-    out.block_height = 0;
-    out.block_gray.clear();
+    out.block_probes.clear();
     if (!frame || frame->width < 16 || frame->height < 16 || frame->format < 0 || !frame->data[0])
         return false;
 
@@ -266,56 +270,183 @@ bool QualityAnalyzer::BuildBlockProbe(const AVFrame* frame, model::FrameSample& 
     if (!desc)
         return false;
 
-    // 取源分辨率中心 384x384（不足则取整帧），1:1 不缩放，保住 8x8 编码块周期。
-    const int crop_w = std::min(frame->width, 384) & ~1;
-    const int crop_h = std::min(frame->height, 384) & ~1;
+    // 单块上限 256x256: 够覆盖 8px 编码块的几十个周期，5 块合计约 320KB。
+    // 裁剪边长与起点都对齐到 16: 8/16 两种编码块的边界相位都保持与源帧一致
+    // （x % bs == 0 才是真实块边界）。
+    constexpr int kMaxSize = 256;
+    constexpr int kAlign = 16;
+    const int crop_w = std::min(frame->width, kMaxSize) / kAlign * kAlign;
+    const int crop_h = std::min(frame->height, kMaxSize) / kAlign * kAlign;
     if (crop_w < 16 || crop_h < 16)
         return false;
-    const int x0 = ((frame->width - crop_w) / 2) & ~1;
-    const int y0 = ((frame->height - crop_h) / 2) & ~1;
 
-    const uint8_t* src_data[4] = {nullptr, nullptr, nullptr, nullptr};
-    int src_linesize[4] = {0, 0, 0, 0};
-    for (int plane = 0; plane < 4; ++plane) {
-        if (!frame->data[plane])
-            continue;
-        int comp = -1;
-        for (int c = 0; c < desc->nb_components; ++c) {
-            if (desc->comp[c].plane == plane) {
-                comp = c;
-                break;
+    const auto align_down = [](int v) { return v / kAlign * kAlign; };
+    const int center_x = align_down((frame->width - crop_w) / 2);
+    const int center_y = align_down((frame->height - crop_h) / 2);
+    const int left = 0;
+    const int top = 0;
+    const int right = align_down(frame->width - crop_w);
+    const int bottom = align_down(frame->height - crop_h);
+
+    // 中心 + 四角。画面不够大（两倍裁剪边长都放不下）时只取中心 ——
+    // 否则各块大面积重叠，5 次统计几乎是同一片像素，白费 CPU。
+    std::vector<std::pair<int, int>> origins;
+    origins.emplace_back(center_x, center_y);
+    if (frame->width >= crop_w * 2 && frame->height >= crop_h * 2) {
+        origins.emplace_back(left, top);
+        origins.emplace_back(right, top);
+        origins.emplace_back(left, bottom);
+        origins.emplace_back(right, bottom);
+    }
+
+    for (const auto& origin : origins) {
+        const int x0 = origin.first;
+        const int y0 = origin.second;
+        const uint8_t* src_data[4] = {nullptr, nullptr, nullptr, nullptr};
+        int src_linesize[4] = {0, 0, 0, 0};
+        for (int plane = 0; plane < 4; ++plane) {
+            if (!frame->data[plane])
+                continue;
+            int comp = -1;
+            for (int c = 0; c < desc->nb_components; ++c) {
+                if (desc->comp[c].plane == plane) {
+                    comp = c;
+                    break;
+                }
             }
+            if (comp < 0)
+                continue;
+            const int shift_w = (plane == 1 || plane == 2) ? desc->log2_chroma_w : 0;
+            const int shift_h = (plane == 1 || plane == 2) ? desc->log2_chroma_h : 0;
+            const int step = desc->comp[comp].step > 0 ? desc->comp[comp].step : 1;
+            src_data[plane] = frame->data[plane] + static_cast<ptrdiff_t>(y0 >> shift_h) * frame->linesize[plane] +
+                              static_cast<ptrdiff_t>(x0 >> shift_w) * step;
+            src_linesize[plane] = frame->linesize[plane];
         }
-        if (comp < 0)
-            continue;
-        const int shift_w = (plane == 1 || plane == 2) ? desc->log2_chroma_w : 0;
-        const int shift_h = (plane == 1 || plane == 2) ? desc->log2_chroma_h : 0;
-        const int step = desc->comp[comp].step > 0 ? desc->comp[comp].step : 1;
-        src_data[plane] = frame->data[plane] + static_cast<ptrdiff_t>(y0 >> shift_h) * frame->linesize[plane] +
-                          static_cast<ptrdiff_t>(x0 >> shift_w) * step;
-        src_linesize[plane] = frame->linesize[plane];
-    }
 
-    std::vector<uint8_t> gray(static_cast<size_t>(crop_w) * crop_h);
-    SwsContext* sws =
-        sws_getContext(crop_w, crop_h, src_fmt, crop_w, crop_h, AV_PIX_FMT_GRAY8, SWS_POINT, nullptr, nullptr, nullptr);
-    if (!sws) {
-        error = "Failed to create sws context (block probe)";
+        std::vector<uint8_t> gray(static_cast<size_t>(crop_w) * crop_h);
+        SwsContext* sws = sws_getContext(crop_w, crop_h, src_fmt, crop_w, crop_h, AV_PIX_FMT_GRAY8, SWS_POINT, nullptr,
+                                         nullptr, nullptr);
+        if (!sws) {
+            error = "Failed to create sws context (block probe)";
+            continue;
+        }
+        ApplyNativeLumaRange(sws, frame);
+        uint8_t* dst_data[4] = {gray.data(), nullptr, nullptr, nullptr};
+        const int dst_linesize[4] = {crop_w, 0, 0, 0};
+        const int ret = sws_scale(sws, src_data, src_linesize, 0, crop_h, dst_data, dst_linesize);
+        sws_freeContext(sws);
+        if (ret < 0) {
+            error = "Failed to scale block probe";
+            continue;
+        }
+        model::FrameSample::BlockProbeRegion region;
+        region.x = x0;
+        region.y = y0;
+        region.width = crop_w;
+        region.height = crop_h;
+        region.gray = std::move(gray);
+        out.block_probes.push_back(std::move(region));
+    }
+    if (out.block_probes.empty()) {
+        if (error.empty())
+            error = "Failed to build block probe";
         return false;
     }
-    ApplyNativeLumaRange(sws, frame);
-    uint8_t* dst_data[4] = {gray.data(), nullptr, nullptr, nullptr};
-    const int dst_linesize[4] = {crop_w, 0, 0, 0};
-    const int ret = sws_scale(sws, src_data, src_linesize, 0, crop_h, dst_data, dst_linesize);
-    sws_freeContext(sws);
-    if (ret < 0) {
-        error = "Failed to scale block probe";
-        return false;
-    }
-    out.block_width = crop_w;
-    out.block_height = crop_h;
-    out.block_gray = std::move(gray);
     return true;
+}
+
+namespace {
+
+// ---- HDR 近似色调映射 ----
+// PQ(SMPTE2084) / HLG(ARIB STD-B67) 的码值不是显示亮度，直接套 SDR 的曝光/色偏
+// 阈值会把整片高动态范围素材判成过曝/欠曝。这里在采样后套一条静态曲线:
+//   码值 -> 归一化 -> 逆传递函数得线性亮度 -> 以 203nit 为参考白做 Reinhard
+//   -> BT.1886 gamma 编码回 8bit
+// 这是"近似"而不是标准 HDR->SDR 转换（没有逐帧峰值/元数据，也没有色域映射），
+// 目的是让阈值判定可用，不是产出可用于交付的 SDR 画面。
+constexpr double kSdrReferenceWhiteNits = 203.0;
+constexpr double kHlgNominalPeakNits = 1000.0;
+
+// ST 2084 逆向 EOTF: 码值 -> 绝对亮度（cd/m^2，0..10000）
+double PqToNits(double encoded) {
+    constexpr double m1 = 2610.0 / 16384.0;
+    constexpr double m2 = 2523.0 / 4096.0 * 128.0;
+    constexpr double c1 = 3424.0 / 4096.0;
+    constexpr double c2 = 2413.0 / 4096.0 * 32.0;
+    constexpr double c3 = 2392.0 / 4096.0 * 32.0;
+    const double e = std::clamp(encoded, 0.0, 1.0);
+    const double p = std::pow(e, 1.0 / m2);
+    const double y = std::pow(std::max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+    return 10000.0 * std::clamp(y, 0.0, 1.0);
+}
+
+// ARIB STD-B67 逆向 OETF: 码值 -> 场景线性（0..1）
+double HlgToSceneLinear(double encoded) {
+    constexpr double a = 0.17883277;
+    constexpr double b = 0.28466892;
+    constexpr double c = 0.55991073;
+    const double e = std::clamp(encoded, 0.0, 1.0);
+    if (e <= 0.5)
+        return e * e / 3.0;
+    return (std::exp((e - c) / a) + b) / 12.0;
+}
+
+// 线性亮度 -> SDR 码值: 以参考白做 Reinhard 压缩，再按 BT.1886 (gamma 2.4) 编码
+double ToneMapNitsToCode(double nits) {
+    const double x = std::max(0.0, nits) / kSdrReferenceWhiteNits;
+    const double mapped = x / (1.0 + x);
+    return std::clamp(std::pow(mapped, 1.0 / 2.4) * 255.0, 0.0, 255.0);
+}
+
+// 256 项查找表，按源帧实际采用的亮度范围归一化（limited 16-235 / full 0-255）
+std::array<uint8_t, 256> BuildToneMapLut(AVColorTransferCharacteristic trc, bool limited_range) {
+    std::array<uint8_t, 256> lut{};
+    const double lo = limited_range ? 16.0 : 0.0;
+    const double span = limited_range ? 219.0 : 255.0;
+    for (int v = 0; v < 256; ++v) {
+        const double e = std::clamp((static_cast<double>(v) - lo) / span, 0.0, 1.0);
+        double nits = 0.0;
+        if (trc == AVCOL_TRC_SMPTE2084) {
+            nits = PqToNits(e);
+        } else {
+            // HLG 的 OOTF 系统 gamma 取 1.2（BT.2100 对 1000nit 参考显示器的取值）
+            nits = kHlgNominalPeakNits * std::pow(HlgToSceneLinear(e), 1.2);
+        }
+        lut[static_cast<size_t>(v)] = static_cast<uint8_t>(std::lround(ToneMapNitsToCode(nits)));
+    }
+    return lut;
+}
+
+} // namespace
+
+void QualityAnalyzer::ApplyHdrToneMap(const AVFrame* frame, model::FrameSample& sample) {
+    if (!frame)
+        return;
+    const AVColorTransferCharacteristic trc = frame->color_trc;
+    if (trc != AVCOL_TRC_SMPTE2084 && trc != AVCOL_TRC_ARIB_STD_B67)
+        return;
+    if (!sample.valid())
+        return;
+
+    // 灰度图与块效应探针走同一亮度范围口径（ApplyNativeLumaRange 配置的 srcRange），
+    // 必须用同一张 LUT，否则两者的块边界判据会不一致。
+    const auto gray_lut = BuildToneMapLut(trc, sample.limited_range);
+    for (auto& v : sample.gray)
+        v = gray_lut[v];
+    for (auto& probe : sample.block_probes) {
+        if (!probe.valid())
+            continue;
+        for (auto& v : probe.gray)
+            v = gray_lut[v];
+    }
+    if (sample.has_rgb()) {
+        // ScaleToRgb24 没配 dstRange，sws 输出 RGB24 时按 full range 展开
+        const auto rgb_lut = BuildToneMapLut(trc, false);
+        for (auto& v : sample.rgb)
+            v = rgb_lut[v];
+    }
+    sample.tone_mapped = true;
 }
 
 bool QualityAnalyzer::ScaleToRgb24(const AVFrame* frame, int width, int height, std::vector<uint8_t>& out,

@@ -59,9 +59,10 @@ public:
     // 把任意像素格式的 AVFrame 降采样成视觉分析用的快照（GRAY8 + 可选 RGB24 小图）。
     // gray_width / rgb_width 为目标宽度，高度按原比例推算（最小 2 行）。
     // capture_rgb=false 时 out.rgb 为空，省一次 sws_scale（只要不看色偏/证据图就够用）。
-    // build_block_probe=true 时额外生成一块 1:1 的源分辨率中心裁剪灰度图，
+    // build_block_probe=true 时额外生成最多 5 块（中心 + 四角）1:1 源分辨率裁剪灰度图，
     // 供块效应检测使用（降采样图会把 8px 编码块周期抹平）。
-    // 同时记录源帧的 limited_range / hdr 标记，供曝光阈值与不可用判定使用。
+    // 同时记录源帧的 limited_range / hdr 标记，供曝光阈值与不可用判定使用；
+    // PQ / HLG 帧在采样后还会做一次近似色调映射（见 ApplyHdrToneMap）。
     static bool BuildSample(const AVFrame* frame, int gray_width, int rgb_width, bool capture_rgb,
                             model::FrameSample& out, std::string& error, bool build_block_probe = false);
 
@@ -74,8 +75,12 @@ public:
     static bool VmafSupported();
 
 private:
-    // 1:1 源分辨率中心裁剪灰度图，专供块效应检测（保住 8x8 编码块周期）
+    // 1:1 源分辨率局部裁剪灰度图（中心 + 四角，最多 5 块），专供块效应检测
     static bool BuildBlockProbe(const AVFrame* frame, model::FrameSample& out, std::string& error);
+
+    // PQ / HLG 帧的近似色调映射: 把 gray / rgb / block 探针的码值从 HDR 传递曲线
+    // 换算到 SDR 显示口径，使曝光与色偏阈值重新有意义（非标准 HDR->SDR 转换）。
+    static void ApplyHdrToneMap(const AVFrame* frame, model::FrameSample& sample);
 
     struct GrayPlane {
         int width = 0;

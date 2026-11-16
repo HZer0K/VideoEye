@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <string>
 
 #include "core/analysis/quality/QualityAnalyzer.h"
 
@@ -157,6 +159,118 @@ TEST(QualityAnalyzerTest, CompareSamplesLeavesVmafEmptyWhenUnsupported) {
     EXPECT_NEAR(metrics.psnr_nb, 28.1308036087, 1e-6);
     EXPECT_FALSE(metrics.vmaf.has_value());
     EXPECT_FALSE(videoeye::QualityAnalyzer::VmafSupported());
+}
+
+// yuv420p 帧: Y 平面恒定 luma，色度填 128（中性），可声明亮度范围与传输特性。
+// 直接喂 QualityAnalyzer::BuildSample，验证真实 AVFrame 路径上的范围保持 / HDR 标记。
+class YuvFrameGuard {
+public:
+    YuvFrameGuard(int width, int height, uint8_t luma, AVColorRange range,
+                  AVColorTransferCharacteristic trc = AVCOL_TRC_BT709)
+        : frame_(av_frame_alloc()) {
+        if (!frame_)
+            return;
+        frame_->format = AV_PIX_FMT_YUV420P;
+        frame_->width = width;
+        frame_->height = height;
+        frame_->color_range = range;
+        frame_->color_trc = trc;
+        if (av_frame_get_buffer(frame_, 32) < 0) {
+            av_frame_free(&frame_);
+            return;
+        }
+        if (av_frame_make_writable(frame_) < 0) {
+            av_frame_free(&frame_);
+            return;
+        }
+        const int cw = (width + 1) / 2;
+        const int ch = (height + 1) / 2;
+        for (int y = 0; y < height; ++y)
+            std::memset(frame_->data[0] + y * frame_->linesize[0], luma, static_cast<size_t>(width));
+        for (int y = 0; y < ch; ++y) {
+            std::memset(frame_->data[1] + y * frame_->linesize[1], 128, static_cast<size_t>(cw));
+            std::memset(frame_->data[2] + y * frame_->linesize[2], 128, static_cast<size_t>(cw));
+        }
+    }
+
+    ~YuvFrameGuard() {
+        av_frame_free(&frame_);
+    }
+
+    AVFrame* get() const {
+        return frame_;
+    }
+
+private:
+    AVFrame* frame_ = nullptr;
+};
+
+// limited range（MPEG）的合法峰值白 235 必须在采样后仍是 235。
+// 若 sws 把 limited 展开成 full，235 会变成 255，曝光判定就会把白底/标题卡
+// 误报成削波 —— 这条用例就是那个口径错位的回归。
+TEST(QualityAnalyzerTest, BuildSampleKeepsLimitedRangeLuma) {
+    YuvFrameGuard frame(320, 180, 235, AVCOL_RANGE_MPEG);
+    ASSERT_NE(frame.get(), nullptr);
+
+    videoeye::model::FrameSample sample;
+    std::string error;
+    ASSERT_TRUE(videoeye::QualityAnalyzer::BuildSample(frame.get(), 64, 64, false, sample, error)) << error;
+
+    EXPECT_TRUE(sample.limited_range);
+    EXPECT_EQ(sample.source_width, 320);
+    EXPECT_EQ(sample.source_height, 180);
+    ASSERT_TRUE(sample.valid());
+    for (uint8_t v : sample.gray)
+        EXPECT_NEAR(v, 235, 1);
+}
+
+// full range（JPEG）的 238 不能按 limited 口径压到 235 附近
+TEST(QualityAnalyzerTest, BuildSampleKeepsFullRangeLuma) {
+    YuvFrameGuard frame(320, 180, 238, AVCOL_RANGE_JPEG);
+    ASSERT_NE(frame.get(), nullptr);
+
+    videoeye::model::FrameSample sample;
+    std::string error;
+    ASSERT_TRUE(videoeye::QualityAnalyzer::BuildSample(frame.get(), 64, 64, false, sample, error)) << error;
+
+    EXPECT_FALSE(sample.limited_range);
+    for (uint8_t v : sample.gray)
+        EXPECT_NEAR(v, 238, 1);
+}
+
+// 块效应探针: 4K 帧要生成中心 + 四角共 5 块、每块 <= 256x256 的 1:1 裁剪，
+// 既保住 8px 块周期，又不让单帧快照无限增长。
+TEST(QualityAnalyzerTest, BuildSampleBuildsMultiRegionBlockProbes) {
+    YuvFrameGuard frame(3840, 2160, 128, AVCOL_RANGE_MPEG);
+    ASSERT_NE(frame.get(), nullptr);
+
+    videoeye::model::FrameSample sample;
+    std::string error;
+    ASSERT_TRUE(videoeye::QualityAnalyzer::BuildSample(frame.get(), 64, 64, false, sample, error, true)) << error;
+
+    ASSERT_TRUE(sample.has_block_probes());
+    EXPECT_EQ(sample.block_probes.size(), 5u);
+    for (const auto& probe : sample.block_probes) {
+        EXPECT_TRUE(probe.valid());
+        EXPECT_LE(probe.width, 256);
+        EXPECT_LE(probe.height, 256);
+        // 块边界相位必须对齐到 8px 编码块
+        EXPECT_EQ(probe.x % 8, 0);
+        EXPECT_EQ(probe.y % 8, 0);
+    }
+}
+
+// PQ 帧要被标记为 hdr 并做近似色调映射（tone_mapped），否则曝光/色偏会被永久关闭
+TEST(QualityAnalyzerTest, BuildSampleToneMapsPqFrame) {
+    YuvFrameGuard frame(320, 180, 180, AVCOL_RANGE_MPEG, AVCOL_TRC_SMPTE2084);
+    ASSERT_NE(frame.get(), nullptr);
+
+    videoeye::model::FrameSample sample;
+    std::string error;
+    ASSERT_TRUE(videoeye::QualityAnalyzer::BuildSample(frame.get(), 64, 64, false, sample, error)) << error;
+
+    EXPECT_TRUE(sample.hdr);
+    EXPECT_TRUE(sample.tone_mapped);
 }
 
 } // namespace

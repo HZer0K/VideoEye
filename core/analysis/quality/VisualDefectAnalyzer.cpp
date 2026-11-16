@@ -37,6 +37,53 @@ bool Valid(double v) {
     return std::isfinite(v);
 }
 
+// 单张灰度图上的块效应分数：块边界（x%bs==0）平均落差 vs 块内部（x%bs>=2）
+// 平均落差，归一化到 [0,1]。内部统计跳过紧邻边界的一列/一行，否则会把边界
+// 落差算进"内部"。返回 NaN 表示统计样本不足（尺寸/块宽不成立），调用方跳过。
+double ComputeBlockinessScore(const uint8_t* gray, int w, int h, int bs) {
+    if (!gray || w < 16 || h < 16 || bs < 2)
+        return NoValue();
+    long double boundary = 0.0;
+    long double interior = 0.0;
+    long long bc = 0;
+    long long ic = 0;
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* row = gray + static_cast<size_t>(y) * w;
+        for (int x = 1; x < w; ++x) {
+            const int d = std::abs(static_cast<int>(row[x]) - static_cast<int>(row[x - 1]));
+            const int mod = x % bs;
+            if (mod == 0) {
+                boundary += d;
+                ++bc;
+            } else if (mod >= 2) {
+                interior += d;
+                ++ic;
+            }
+        }
+    }
+    for (int y = 1; y < h; ++y) {
+        const uint8_t* r0 = gray + static_cast<size_t>(y - 1) * w;
+        const uint8_t* r1 = r0 + w;
+        const int mod = y % bs;
+        for (int x = 0; x < w; ++x) {
+            const int d = std::abs(static_cast<int>(r1[x]) - static_cast<int>(r0[x]));
+            if (mod == 0) {
+                boundary += d;
+                ++bc;
+            } else if (mod >= 2) {
+                interior += d;
+                ++ic;
+            }
+        }
+    }
+    if (bc <= 0 || ic <= 0)
+        return NoValue();
+    const double b = static_cast<double>(boundary / bc);
+    const double i = static_cast<double>(interior / ic);
+    const double denom = b + i;
+    return (denom > 1e-6) ? Clamp01((b - i) / denom) : 0.0;
+}
+
 // 分数方向: true = 越小越严重（模糊、帧差），false = 越大越严重
 bool IsReverseScore(model::VisualDefectType type) {
     return type == model::VisualDefectType::Blur || type == model::VisualDefectType::FreezeFrame;
@@ -199,8 +246,9 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     // HDR（PQ / HLG）没做色调映射时，码值到显示亮度是非线性的，阈值占比没有意义 ——
     // 不置不可用就会把整片高动态范围素材判成过曝/欠曝。曝光判定依赖这些字段的
     // Valid() 检查，置 NaN 即自动关闭，无需再改判定逻辑。
+    // 已经做过近似色调映射（tone_mapped）的帧码值已换算到 SDR 口径，照常判定。
     // 黑场/模糊/块效应/黑边这类结构指标仍按码值算，不受影响。
-    if (sample.hdr) {
+    if (sample.hdr && !sample.tone_mapped) {
         m.highlight_ratio = NoValue();
         m.clip_high_ratio = NoValue();
         m.dark_ratio = NoValue();
@@ -261,73 +309,34 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     }
 
     // ---- 花屏 / 马赛克（块效应）----
-    // 块边界处的像素落差明显大于块内部落差时，画面就是被 8x8 块切过的。
-    // 内部统计跳过紧邻边界的一列/一行（x%bs == 1），否则会把边界落差算进"内部"。
-    //
     // 采样图经过缩放，8px 编码块的周期已经被抹平（1920 源缩到 256 宽时一个块只剩
     // 1px 多），在采样图上找块边界只会把缩放痕迹当误报。因此优先用 BuildSample
-    // 生成的 1:1 源分辨率中心裁剪图（block_gray），此时 bs 就是源像素的 block_size。
+    // 生成的 1:1 源分辨率局部裁剪图（block_probes），此时 bs 就是源像素的 block_size。
+    // 裁剪图取了中心 + 四角多块，每块各自算分再取最大：花屏/马赛克常常只出现在
+    // 画面局部（例如运动区、台标附近），只看中心会被局部损伤平均掉。
     // 没有探针（手造样本 / 探针失败）时才退回采样图，并按 源宽/样本宽 折算 bs；
     // 折算结果不足 2px 直接置 NoValue，绝不能进入 x % bs（bs 可能为 0，会除零崩溃）。
     if (options.detect_blockiness) {
         const int nominal_bs = options.block_size > 1 ? options.block_size : 8;
-        const uint8_t* bg = g;
-        int bw = w;
-        int bh = h;
-        int bs = nominal_bs;
-        const bool probe = sample.has_block_gray();
-        if (probe) {
-            bg = sample.block_gray.data();
-            bw = sample.block_width;
-            bh = sample.block_height;
-        } else if (sample.source_width > w) {
-            bs = static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width));
-        }
-
-        if (bw >= 16 && bh >= 16 && bs >= 2) {
-            long double boundary = 0.0;
-            long double interior = 0.0;
-            long long bc = 0;
-            long long ic = 0;
-            for (int y = 0; y < bh; ++y) {
-                const uint8_t* row = bg + static_cast<size_t>(y) * bw;
-                for (int x = 1; x < bw; ++x) {
-                    const int d = std::abs(static_cast<int>(row[x]) - static_cast<int>(row[x - 1]));
-                    const int mod = x % bs;
-                    if (mod == 0) {
-                        boundary += d;
-                        ++bc;
-                    } else if (mod >= 2) {
-                        interior += d;
-                        ++ic;
-                    }
-                }
-            }
-            for (int y = 1; y < bh; ++y) {
-                const uint8_t* r0 = bg + static_cast<size_t>(y - 1) * bw;
-                const uint8_t* r1 = r0 + bw;
-                const int mod = y % bs;
-                for (int x = 0; x < bw; ++x) {
-                    const int d = std::abs(static_cast<int>(r1[x]) - static_cast<int>(r0[x]));
-                    if (mod == 0) {
-                        boundary += d;
-                        ++bc;
-                    } else if (mod >= 2) {
-                        interior += d;
-                        ++ic;
-                    }
-                }
-            }
-            if (bc > 0 && ic > 0) {
-                const double b = static_cast<double>(boundary / bc);
-                const double i = static_cast<double>(interior / ic);
-                const double denom = b + i;
-                m.blockiness_score = (denom > 1e-6) ? Clamp01((b - i) / denom) : 0.0;
+        double best = NoValue();
+        if (sample.has_block_probes()) {
+            for (const auto& probe : sample.block_probes) {
+                if (!probe.valid())
+                    continue;
+                const double score = ComputeBlockinessScore(probe.gray.data(), probe.width, probe.height, nominal_bs);
+                if (Valid(score) && (!Valid(best) || score > best))
+                    best = score;
             }
         } else {
-            // 折算后一个块不足 2px，块结构在采样图上已不可分辨 —— 置 NoValue，不误报
-            m.blockiness_score = NoValue();
+            int bs = nominal_bs;
+            if (sample.source_width > w) {
+                bs = static_cast<int>(nominal_bs * static_cast<double>(w) / static_cast<double>(sample.source_width));
+            }
+            // bs < 2 时块结构在采样图上已不可分辨 —— 置 NoValue，不误报
+            if (bs >= 2)
+                best = ComputeBlockinessScore(g, w, h, bs);
         }
+        m.blockiness_score = best;
     }
 
     // ---- 黑边 / 有效画面区域 ----
@@ -402,7 +411,7 @@ model::FrameQualityMetric VisualDefectAnalyzer::ComputeFrameMetrics(const model:
     // ---- 色偏 ----
     // HDR 的 RGB 码值经过 PQ/HLG 传递函数，未做色调映射时 R/G/B 均值差反映的是
     // 传递曲线而不是真实白平衡，置为不可用（has_rgb 仍为真，只是不判定）。
-    if (options.detect_color_cast && sample.has_rgb() && !sample.hdr) {
+    if (options.detect_color_cast && sample.has_rgb() && (!sample.hdr || sample.tone_mapped)) {
         const size_t pixels = static_cast<size_t>(sample.rgb_width) * sample.rgb_height;
         long double sr = 0.0;
         long double sg = 0.0;
@@ -827,8 +836,10 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample,
 
     // HDR 的码值亮度不是显示亮度，dark_ratio 虽已置 NaN，但 luma_mean 还要给黑场/闪烁用，
     // 这里必须显式排除，否则暗部场景的 PQ 码值会被当成"欠曝"。
+    // 做过近似色调映射后码值已是 SDR 口径，恢复判定。
+    const bool hdr_unmapped = sample.hdr && !sample.tone_mapped;
     const bool under_hit =
-        options_.detect_exposure && !sample.hdr && !black_hit && Valid(m.dark_ratio) &&
+        options_.detect_exposure && !hdr_unmapped && !black_hit && Valid(m.dark_ratio) &&
         (m.dark_ratio >= options_.under_exposure_dark_ratio || m.luma_mean <= options_.under_exposure_luma_mean);
 
     const bool cast_hit =
