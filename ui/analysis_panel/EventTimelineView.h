@@ -59,16 +59,15 @@ public:
     void FlushPendingUiUpdates();
 
 signals:
-    // 视图内部功能开关变化（0/1/2 = Event/Sync/Timeline），由 AnalysisPanel 接回
-    // feature_enabled_ 映射并转发 AnalysisFeatureToggled 信号。
-    void FeatureToggled(int feature, bool enabled);
+    // 双击行跳转播放位置（事件用其时间戳；同步样本用音频时间戳）。
+    void SeekRequested(double seconds);
 
 private:
     // 内部数据记录（原 AnalysisPanel 的同名结构体，移入本视图）。
     // 必须先于下面用到它们的方法声明。
     struct AnalysisEventRecord {
         int index = 0;
-        QString severity;
+        model::AnalysisEventSeverity severity = model::AnalysisEventSeverity::Info;
         QString type;
         int stream_index = -1;
         qint64 pts = 0;
@@ -99,17 +98,17 @@ private:
     // 表格、CSV 与摘要统一走这里；分类判断只比较枚举，不再比较翻译文本。
     static QString CategoryDisplayName(model::TimelineEventCategory category);
 
+    // 级别枚举 -> 显示文本（"错误"/"警告"/"信息"）。
+    // 统计只比较枚举，显示文本仅用于表格/CSV，避免语言切换后统计错档。
+    static QString SeverityDisplayName(model::AnalysisEventSeverity severity);
+
+    // 列表被上限裁剪后的提示后缀；未裁剪时返回空串（摘要文本保持原样）。
+    static QString TrimNote(bool trimmed, int max_count);
+
     // 建页（取代 AnalysisPanel::SetupEventAnalysisTab 内部的三段 Setup）
     void SetupEventTab();
     void SetupSyncTab();
     void SetupTimelineTab();
-
-    // 按注入的钩子刷新页头聚合勾选框（屏蔽信号，不触发用户操作语义）。
-    void SyncTogglesFromHooks();
-
-    void RebuildEventTable();
-    void RebuildSyncTable();
-    void RebuildTimelineTable();
 
     void UpdateEventSummary();
     void UpdateSyncSummary();
@@ -187,6 +186,17 @@ private:
     bool timeline_table_dirty_ = false;
     bool timeline_summary_dirty_ = false;
     size_t timeline_table_synced_record_count_ = 0;
+
+    // 列表被上限裁剪的标记：摘要里明示"仅保留最近 N 条"，否则会被误读成分析漏了数据。
+    bool event_records_trimmed_ = false;
+    bool sync_records_trimmed_ = false;
+    bool timeline_records_trimmed_ = false;
+
+    // 同步样本的全时段累计：表格只保留最近 kMaxSyncRecords 条，摘要必须按全时段统计，
+    // 否则长视频里"平均/最大偏移"会悄悄退化成"最近一分钟"。
+    size_t sync_total_sample_count_ = 0;
+    double sync_abs_sum_ms_ = 0.0;
+    double sync_max_abs_ms_ = 0.0;
 };
 
 } // namespace ui

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/player/Decoders.h"
 #include "core/player/RealtimeAnalysisController.h"
 
 extern "C" {
@@ -87,8 +88,29 @@ public:
         return controller.AnalyzeSceneChangeFrame(frame_data, frame_index);
     }
 
+    // 统一时间轴：直接喂一帧视频帧（携带关键帧包标志），验证"关键帧标记只受
+    // Timeline 开关控制"，不再依赖 PlaybackSession。
+    static void FeedVideoFrame(RealtimeAnalysisController& controller, model::FrameData& frame_data,
+                               const AVPacket* packet, VideoDecoder& decoder, int video_stream_index, double timestamp,
+                               bool catching_up = false) {
+        VideoFrameContext ctx;
+        ctx.frame = &frame_data;
+        ctx.packet = packet;
+        ctx.decoder = &decoder;
+        ctx.video_stream_index = video_stream_index;
+        ctx.timestamp_seconds = timestamp;
+        ctx.catching_up = catching_up;
+        controller.OnVideoFrame(ctx);
+    }
+
     static void SetSceneChangeEnabled(RealtimeAnalysisController& controller, bool enabled) {
         controller.SetSceneChangeAnalysisEnabled(enabled);
+    }
+
+    // 统一时间轴：直接喂一帧音频帧上下文（enqueued=false 会在时间轴发射后提前返回，
+    // 因此不需要真实的 PCM 数据）。
+    static void FeedAudioFrame(RealtimeAnalysisController& controller, const AudioFrameContext& ctx) {
+        controller.OnAudioFrame(ctx);
     }
 };
 
@@ -472,6 +494,80 @@ TEST_F(RealtimeAnalysisControllerTest, SceneChangeReenableDiscardsBaselineSoNoPh
 
     EXPECT_TRUE(RealtimeAnalysisControllerTestAccess::FeedSceneChange(controller_, white.get(), 3, 60.04));
     EXPECT_EQ(cuts, 2);
+}
+
+// 统一时间轴的关键帧标记只受 Timeline 开关控制，不依赖帧类型分析开关。
+//
+// 回归：以前关键帧 TimelineEvent 挂在 "IsFrameTypeAnalysisEnabled()" 分支里，
+// 而「事件与时间轴」页的聚合开关只打开 Event/SyncSample/Timeline —— 用户打开本页
+// 后，统一时间轴里"视频关键帧"这一路永远没有数据。
+TEST_F(RealtimeAnalysisControllerTest, KeyframeTimelineEventOnlyNeedsTimelineSwitch) {
+    analysis_.SetTimelineAnalysisEnabled(true);
+    ASSERT_FALSE(analysis_.IsFrameTypeAnalysisEnabled()) << "本用例要覆盖：帧类型分析关闭时关键帧仍应进入时间轴";
+
+    std::vector<videoeye::model::TimelineEvent> events;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::TimelineEventReady,
+                     [&events](const videoeye::model::TimelineEvent& event) { events.push_back(event); });
+
+    AVPacket packet{};
+    packet.flags = AV_PKT_FLAG_KEY;
+    videoeye::model::FrameData frame_data;
+    frame_data.width = frame_->width;
+    frame_data.height = frame_->height;
+    frame_data.format = frame_->format;
+    frame_data.data[0] = frame_->data[0];
+    frame_data.linesize[0] = frame_->linesize[0];
+    frame_data.timestamp = 1.25;
+
+    // 只需 GetLastPictureType()，不必真正初始化解码器。
+    videoeye::player::VideoDecoder decoder;
+    RealtimeAnalysisControllerTestAccess::FeedVideoFrame(controller_, frame_data, &packet, decoder, 0, 1.25);
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events.front().category, videoeye::model::TimelineEventCategory::VideoKeyframe);
+    EXPECT_NEAR(events.front().timestamp_seconds, 1.25, 1e-9);
+    EXPECT_EQ(events.front().label, "关键帧 #0");
+
+    // 关闭 Timeline 后不再产出关键帧标记（其余开关状态不变）。
+    analysis_.SetTimelineAnalysisEnabled(false);
+    RealtimeAnalysisControllerTestAccess::FeedVideoFrame(controller_, frame_data, &packet, decoder, 0, 2.0);
+    EXPECT_EQ(events.size(), 1u);
+}
+
+// 统一时间轴的音频采样标签不能出现 "#-1"。
+//
+// 回归：以前标签用的是"音频帧"分析开关里的 audio_frame_index_，关掉音频帧分析后
+// 该计数器不动，而时间轴采样计数器照常递增 -> 第 100 帧的标签永远是 "音频帧 #-1"。
+// 现在时间轴帧号独立计数，与音频帧开关解耦。
+TEST_F(RealtimeAnalysisControllerTest, AudioTimelineLabelCountsFramesIndependentlyOfAudioFrameSwitch) {
+    analysis_.SetTimelineAnalysisEnabled(true);
+    ASSERT_FALSE(analysis_.IsAudioFrameAnalysisEnabled()) << "本用例要覆盖：音频帧开关关闭时时间轴标签仍正确";
+
+    std::vector<videoeye::model::TimelineEvent> events;
+    int audio_frame_infos = 0;
+    auto& bus = controller_.bus();
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::TimelineEventReady,
+                     [&events](const videoeye::model::TimelineEvent& event) { events.push_back(event); });
+    QObject::connect(&bus, &videoeye::player::AnalysisBus::AudioFrameInfoReady,
+                     [&audio_frame_infos](int, qint64, double, int, int, int, int) { ++audio_frame_infos; });
+
+    videoeye::player::AudioFrameContext ctx;
+    ctx.audio_stream_index = 0;
+    ctx.frame_pts = 0;
+    ctx.sample_count = 0;
+    ctx.enqueued = false; // 在时间轴发射之后提前返回，不需要 PCM
+    for (int i = 0; i < 100; ++i) {
+        ctx.timestamp_seconds = i * 0.02;
+        RealtimeAnalysisControllerTestAccess::FeedAudioFrame(controller_, ctx);
+    }
+
+    // 每 100 帧产出一条音频采样时间轴事件，标签是当前帧号（第 100 帧为 #99）。
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events.front().category, videoeye::model::TimelineEventCategory::AudioSample);
+    EXPECT_EQ(events.front().label, "音频帧 #99") << "音频帧分析关闭时标签不能退化成 #-1";
+    EXPECT_NEAR(events.front().timestamp_seconds, 1.98, 1e-9);
+    EXPECT_EQ(audio_frame_infos, 0) << "音频帧开关关闭时不应产出逐帧明细";
 }
 
 } // namespace

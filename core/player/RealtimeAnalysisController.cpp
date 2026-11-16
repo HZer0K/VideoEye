@@ -112,14 +112,14 @@ void RealtimeAnalysisController::InstallHooks() {
 // 四个出口统一做两件事: 开关没开就不发（省掉填结构的开销），
 // 以及推进各自的序号（界面上列表的行号必须连续且从 0 起）。
 
-void RealtimeAnalysisController::EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index,
-                                                   qint64 pts, double timestamp_seconds, const QString& summary,
-                                                   const QString& detail) {
+void RealtimeAnalysisController::EmitAnalysisEvent(model::AnalysisEventSeverity severity, const QString& type,
+                                                   int stream_index, qint64 pts, double timestamp_seconds,
+                                                   const QString& summary, const QString& detail) {
     if (!analysis_.IsEventAnalysisEnabled())
         return;
     model::AnalysisEvent event_info;
     event_info.index = analysis_event_index_++;
-    event_info.severity = severity.toStdString();
+    event_info.severity = severity;
     event_info.type = type.toStdString();
     event_info.stream_index = stream_index;
     event_info.pts = pts;
@@ -201,6 +201,7 @@ void RealtimeAnalysisController::ResetForNewMedia() {
     timeline_event_index_ = 0;
     audio_visualization_index_ = 0;
     audio_timeline_sample_counter_ = 0;
+    audio_timeline_frame_index_ = 0;
     last_packet_ts_by_stream_.clear();
     missing_packet_ts_reported_.clear();
     missing_audio_pts_reported_.clear();
@@ -561,7 +562,7 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
     if (!std::isfinite(packet_ts_sec)) {
         if (!missing_packet_ts_reported_[packet->stream_index]) {
             missing_packet_ts_reported_[packet->stream_index] = true;
-            EmitAnalysisEvent(tr("警告"), tr("缺失时间戳"), packet->stream_index,
+            EmitAnalysisEvent(model::AnalysisEventSeverity::Warning, tr("缺失时间戳"), packet->stream_index,
                               static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec, tr("数据包缺少有效时间戳"),
                               tr("该流存在 PTS/DTS 缺失的数据包，后续同步与定位可能不准确。"));
         }
@@ -570,12 +571,12 @@ void RealtimeAnalysisController::OnPacket(const PacketContext& ctx) {
         if (it != last_packet_ts_by_stream_.end()) {
             const double delta_sec = packet_ts_sec - it->second;
             if (delta_sec < -0.001) {
-                EmitAnalysisEvent(tr("错误"), tr("时间戳回退"), packet->stream_index,
+                EmitAnalysisEvent(model::AnalysisEventSeverity::Error, tr("时间戳回退"), packet->stream_index,
                                   static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec,
                                   tr("检测到非单调递增的包时间戳"),
                                   tr("当前时间戳早于上一包，可能存在封装异常、乱序或损坏。"));
             } else if (delta_sec > 2.0) {
-                EmitAnalysisEvent(tr("警告"), tr("时间戳跳变"), packet->stream_index,
+                EmitAnalysisEvent(model::AnalysisEventSeverity::Warning, tr("时间戳跳变"), packet->stream_index,
                                   static_cast<qint64>(ctx.raw_timestamp), packet_ts_sec, tr("检测到较大的包时间戳跳变"),
                                   tr("相邻包时间差超过 2 秒，可能出现断流、裁切或时间基异常。"));
             }
@@ -598,8 +599,9 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
 
     if (frame_data.width <= 0 || frame_data.height <= 0 || !frame_data.data[0]) {
         LOG_WARN("跳过无效帧数据");
-        EmitAnalysisEvent(tr("错误"), tr("无效视频帧"), ctx.video_stream_index, static_cast<qint64>(frame_data.pts),
-                          frame_data.timestamp, tr("检测到无效视频帧"), tr("视频帧的宽高或数据指针无效，已被跳过。"));
+        EmitAnalysisEvent(model::AnalysisEventSeverity::Error, tr("无效视频帧"), ctx.video_stream_index,
+                          static_cast<qint64>(frame_data.pts), frame_data.timestamp, tr("检测到无效视频帧"),
+                          tr("视频帧的宽高或数据指针无效，已被跳过。"));
         return;
     }
 
@@ -607,21 +609,22 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
     // 帧表与运动矢量面板共用这个号，中途开启分析或 Seek 之后两边才不会各算各的。
     const int frame_index = ctx.catching_up ? -1 : decoded_video_frame_index_++;
 
+    // 显示时间戳（坏值时用 pts / 包 pts 兜底）：帧表与统一时间轴共用。
+    double ts = frame_data.timestamp;
+    const bool is_key_frame = (packet && (packet->flags & AV_PKT_FLAG_KEY) != 0);
+    if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx && ctx.video_stream_index >= 0) {
+        AVStream* vs = format_ctx->streams[ctx.video_stream_index];
+        if (vs && vs->time_base.den != 0) {
+            int64_t pts = frame_data.pts;
+            if (pts == AV_NOPTS_VALUE && packet && packet->pts != AV_NOPTS_VALUE)
+                pts = packet->pts;
+            if (pts != AV_NOPTS_VALUE)
+                ts = pts * av_q2d(vs->time_base);
+        }
+    }
+
     // 帧类型分析 (精确帧定位的追赶阶段跳过, 见 ctx.catching_up)
     if (!ctx.catching_up && analysis_.IsFrameTypeAnalysisEnabled()) {
-        double ts = frame_data.timestamp;
-        const int emitted_index = frame_index;
-        const bool is_key_frame = (packet && (packet->flags & AV_PKT_FLAG_KEY) != 0);
-        if ((ts == 0.0 || std::isnan(ts) || std::isinf(ts)) && format_ctx && ctx.video_stream_index >= 0) {
-            AVStream* vs = format_ctx->streams[ctx.video_stream_index];
-            if (vs && vs->time_base.den != 0) {
-                int64_t pts = frame_data.pts;
-                if (pts == AV_NOPTS_VALUE && packet && packet->pts != AV_NOPTS_VALUE)
-                    pts = packet->pts;
-                if (pts != AV_NOPTS_VALUE)
-                    ts = pts * av_q2d(vs->time_base);
-            }
-        }
         emit bus_.VideoFrameInfoReady(frame_index, static_cast<int>(ctx.decoder->GetLastPictureType()), is_key_frame,
                                       static_cast<qint64>(frame_data.pts), ts);
         // 时间轴与同步诊断（decode 层 frame 时间：best_effort / repeat_pict）
@@ -649,10 +652,14 @@ void RealtimeAnalysisController::OnVideoFrame(const VideoFrameContext& ctx) {
             timing.display_ms = ts * 1000.0;
             emit bus_.FrameTimingReady(timing);
         }
-        if (is_key_frame) {
-            EmitTimelineEvent(model::TimelineEventCategory::VideoKeyframe, ts,
-                              QStringLiteral("关键帧 #%1").arg(emitted_index));
-        }
+    }
+
+    // 统一时间轴的关键帧标记只受 Timeline 开关控制：不能挂在帧类型分析下面，
+    // 否则只打开「事件与时间轴」页（聚合开关不含帧类型分析）时，图例里的
+    // "视频关键帧"永远没有数据。
+    if (!ctx.catching_up && is_key_frame) {
+        EmitTimelineEvent(model::TimelineEventCategory::VideoKeyframe, ts,
+                          QStringLiteral("关键帧 #%1").arg(frame_index));
     }
 
     // 宏块分析 (运动矢量 / 块统计)
@@ -707,8 +714,8 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
 
     if (ctx.frame_pts == AV_NOPTS_VALUE && !missing_audio_pts_reported_[ctx.audio_stream_index]) {
         missing_audio_pts_reported_[ctx.audio_stream_index] = true;
-        EmitAnalysisEvent(tr("警告"), tr("音频帧缺失PTS"), ctx.audio_stream_index, ctx.frame_pts, ts,
-                          tr("检测到缺少 PTS 的音频帧"),
+        EmitAnalysisEvent(model::AnalysisEventSeverity::Warning, tr("音频帧缺失PTS"), ctx.audio_stream_index,
+                          ctx.frame_pts, ts, tr("检测到缺少 PTS 的音频帧"),
                           tr("音频帧将退回使用包时间戳或当前位置，可能影响精确同步分析。"));
     }
 
@@ -716,10 +723,13 @@ void RealtimeAnalysisController::OnAudioFrame(const AudioFrameContext& ctx) {
         emit bus_.AudioFrameInfoReady(audio_frame_index_++, ctx.frame_pts, ts, ctx.decoder->GetLastFrameSampleCount(),
                                       ctx.sample_rate, ctx.channels, ctx.byte_count);
     }
+    // 统一时间轴的音频采样序号独立计数：它不依赖"音频帧"分析开关，
+    // 否则只开时间轴时音频帧号永远停在第 0 帧（标签出现 #-1）。
+    const int timeline_frame_index = audio_timeline_frame_index_++;
     ++audio_timeline_sample_counter_;
     if (audio_timeline_sample_counter_ % 100 == 0) {
         EmitTimelineEvent(model::TimelineEventCategory::AudioSample, ts,
-                          QStringLiteral("音频帧 #%1").arg(audio_frame_index_ - 1));
+                          QStringLiteral("音频帧 #%1").arg(timeline_frame_index));
     }
     if (analysis_.IsAnalysisEnabled()) {
         analysis_.stream_analyzer().AnalyzeAudioFrame();

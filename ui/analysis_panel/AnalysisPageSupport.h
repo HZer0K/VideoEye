@@ -156,6 +156,35 @@ inline void TrimRecords(std::vector<T>& records, std::size_t& synced_count, QTab
     table_dirty = true;
 }
 
+// 增量裁剪：保留最近 max_count 条，但只移除表头对应的行，不清空整表。
+//
+// 同步样本在播放期按"视频帧 + 音频帧"各发一次（约 70 条/秒），撞上 5000 条上限后
+// 每次 Append 都会命中裁剪。若沿用 TrimRecords 的"setRowCount(0) + 下次整表重填"，
+// 等于每次刷新都重建 5000 行 QTableWidgetItem，UI 线程会被持续吃掉。
+// 这里只删除最旧的 N 行并同步递减已同步行数，其余行保持不动。
+//
+// 调用方需维持不变式：表格现有行数 == synced_count（Flush 之后成立）。
+template <typename T>
+inline void TrimRecordsIncremental(std::vector<T>& records, std::size_t& synced_count, QTableWidget* table,
+                                   std::size_t max_count) {
+    if (records.size() <= max_count)
+        return;
+    const std::size_t remove_count = records.size() - max_count;
+    records.erase(records.begin(), records.begin() + remove_count);
+    if (table) {
+        const std::size_t rows = std::min(remove_count, synced_count);
+        if (rows > 0) {
+            const bool updates_enabled = table->updatesEnabled();
+            table->setUpdatesEnabled(false);
+            for (std::size_t i = 0; i < rows; ++i) {
+                table->removeRow(0);
+            }
+            table->setUpdatesEnabled(updates_enabled);
+        }
+    }
+    synced_count = (synced_count > remove_count) ? (synced_count - remove_count) : 0;
+}
+
 // 大表批量填充: 先关掉刷新与重绘, 一次性预分配行数, 比逐行 insertRow 快一个量级
 // (insertRow 每次都要移动后续行, 1 万行时是 O(n^2))。
 class TableBatch {

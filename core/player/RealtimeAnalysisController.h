@@ -124,7 +124,7 @@ private:
     void OnEndOfStream();
 
     // --- 四类"计数 + 填结构 + 发信号"的统一出口 ---
-    void EmitAnalysisEvent(const QString& severity, const QString& type, int stream_index, qint64 pts,
+    void EmitAnalysisEvent(model::AnalysisEventSeverity severity, const QString& type, int stream_index, qint64 pts,
                            double timestamp_seconds, const QString& summary, const QString& detail = QString());
     void EmitSyncSample(double audio_timestamp_seconds, double video_timestamp_seconds, bool audio_anchor);
     void EmitTimelineEvent(model::TimelineEventCategory category, double timestamp_seconds, const QString& label,
@@ -190,6 +190,8 @@ private:
     std::chrono::steady_clock::time_point visual_defect_last_stats_emit_{};
     double last_audio_level_ = 0.0; // 最近一帧音频的 RMS（冻结帧判定要排除静音段）
     int audio_frame_index_ = 0;
+    // 时间轴音频采样用的逐帧计数：不受"音频帧"分析开关影响。
+    int audio_timeline_frame_index_ = 0;
     int packet_index_ = 0;
     int timeline_packet_index_ = 0;
     int analysis_event_index_ = 0;

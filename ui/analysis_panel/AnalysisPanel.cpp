@@ -541,6 +541,10 @@ void AnalysisPanel::WireAnalysisPages() {
     });
     connect(pages_.diagnostics, &DiagnosticsPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
 
+    // ---- 事件与时间轴 ----
+    // 双击行跳到该事件 / 样本的时间点，与其它页一样只转发意图，不直接操作播放器。
+    connect(pages_.event_timeline, &EventTimelineView::SeekRequested, this, &AnalysisPanel::SeekRequested);
+
     // ---- 报告与批量 QC ----
     // 该页自带后台线程，状态冒泡给主窗口状态栏。
     connect(pages_.reporting, &ui::ReportingPanel::StatusMessage, this, &AnalysisPanel::StatusMessage);

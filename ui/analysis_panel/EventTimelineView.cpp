@@ -58,6 +58,16 @@ EventTimelineView::EventTimelineView(QWidget* parent) : QWidget(parent) {
                                      tr("播放时实时采集异常事件、音视频同步样本与统一时间轴。部分开启时显示为半选；"
                                         "点击可一键全开或全关。"),
                                      kFeatureCount));
+        // 清空：与帧表/包表的"清空"同口径，只清本地已采集列表，不影响正在进行的采集
+        // （控制器侧的序号继续递增，新数据不会被旧数据污染）。
+        auto* clear_button = new QPushButton(tr("清空"), row);
+        clear_button->setToolTip(tr("清空本页已采集的异常事件、同步样本与时间轴数据（不影响正在进行的采集）"));
+        connect(clear_button, &QPushButton::clicked, this, [this]() {
+            ResetAnalysisEventList();
+            ResetSyncSampleList();
+            ResetTimelineEventList();
+        });
+        rl->addWidget(clear_button);
         rl->addWidget(MakeExportMenuButton(
             row, {{tr("异常事件 CSV"), [this]() { OnExportEventCsv(); }, tr("导出异常事件列表")},
                   {tr("同步分析 CSV"), [this]() { OnExportSyncCsv(); }, tr("导出音视频同步样本与偏移")},
@@ -78,12 +88,6 @@ void EventTimelineView::SetFeatureHooks(std::function<bool(int)> is_enabled,
     toggle_.SetHooks(std::move(is_enabled), std::move(set_enabled), kFeatureCount);
 }
 
-void EventTimelineView::SyncTogglesFromHooks() {
-    // 控件建得比钩子早，注入后必须补一次回写，否则界面显示"已启用"而面板里其实是关的
-    // —— 数据处理被静默过滤，界面毫无提示。
-    toggle_.SyncFromHooks();
-}
-
 // ---------------------------------------------------------------------------
 // 建页
 // ---------------------------------------------------------------------------
@@ -97,6 +101,7 @@ void EventTimelineView::SetupEventTab() {
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     // 采集开关统一在页头（聚合三项），子页只留摘要 —— 子页不再挂同名勾选框。
     event_summary_label_ = new QLabel(tr("总事件数: 0 | 错误: 0 | 警告: 0 | 信息: 0"), event_tab_);
+    event_summary_label_->setObjectName(QStringLiteral("HintLabel"));
     toolbar_layout->addWidget(event_summary_label_, 1);
     layout->addLayout(toolbar_layout);
 
@@ -104,7 +109,8 @@ void EventTimelineView::SetupEventTab() {
     QVBoxLayout* table_layout = new QVBoxLayout(table_group);
 
     event_table_ = new QTableWidget(0, 8, table_group);
-    event_table_->setHorizontalHeaderLabels({"序号", "级别", "类型", "流索引", "时间戳(s)", "PTS", "摘要", "详情"});
+    event_table_->setHorizontalHeaderLabels(
+        {tr("序号"), tr("级别"), tr("类型"), tr("流索引"), tr("时间戳(s)"), tr("PTS"), tr("摘要"), tr("详情")});
     event_table_->verticalHeader()->setVisible(false);
     event_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     event_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -121,6 +127,13 @@ void EventTimelineView::SetupEventTab() {
     event_table_->setColumnWidth(6, 200);
     event_table_->setMinimumWidth(550);
     event_table_->setMinimumHeight(120);
+    // 双击跳到该事件发生的位置：异常事件最有用的动作就是"过去看看"。
+    // 行与 analysis_event_records_ 严格一一对应（裁剪时同步删行），直接用行号取时间戳。
+    connect(event_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row >= 0 && static_cast<size_t>(row) < analysis_event_records_.size()) {
+            emit SeekRequested(analysis_event_records_[static_cast<size_t>(row)].timestamp_seconds);
+        }
+    });
 
     table_layout->addWidget(event_table_);
     layout->addWidget(table_group);
@@ -137,6 +150,7 @@ void EventTimelineView::SetupSyncTab() {
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     // 采集开关统一在页头（聚合三项），子页只留摘要。
     sync_summary_label_ = new QLabel(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"), sync_tab_);
+    sync_summary_label_->setObjectName(QStringLiteral("HintLabel"));
     toolbar_layout->addWidget(sync_summary_label_, 1);
     layout->addLayout(toolbar_layout);
 
@@ -153,7 +167,8 @@ void EventTimelineView::SetupSyncTab() {
     QGroupBox* table_group = new QGroupBox(tr("同步样本"), sync_tab_);
     QVBoxLayout* table_layout = new QVBoxLayout(table_group);
     sync_table_ = new QTableWidget(0, 5, table_group);
-    sync_table_->setHorizontalHeaderLabels({"序号", "音频时间(s)", "视频时间(s)", "差值(ms)", "锚点"});
+    sync_table_->setHorizontalHeaderLabels(
+        {tr("序号"), tr("音频时间(s)"), tr("视频时间(s)"), tr("差值(ms)"), tr("锚点")});
     sync_table_->verticalHeader()->setVisible(false);
     sync_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     sync_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -166,6 +181,12 @@ void EventTimelineView::SetupSyncTab() {
     sync_table_->setColumnWidth(3, 120);
     sync_table_->setMinimumWidth(360);
     sync_table_->setMinimumHeight(120);
+    // 双击跳到该同步样本的时间；取音频时间戳，偏移异常时优先看"声音在哪"。
+    connect(sync_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row >= 0 && static_cast<size_t>(row) < sync_sample_records_.size()) {
+            emit SeekRequested(sync_sample_records_[static_cast<size_t>(row)].audio_timestamp_seconds);
+        }
+    });
     table_layout->addWidget(sync_table_);
     layout->addWidget(table_group);
 
@@ -189,7 +210,8 @@ void EventTimelineView::SetupTimelineTab() {
 
     QHBoxLayout* toolbar_layout = new QHBoxLayout();
     // 采集开关统一在页头（聚合三项），子页只留摘要。
-    timeline_summary_label_ = new QLabel(tr("事件数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
+    timeline_summary_label_ = new QLabel(tr("总数: 0 | 视频关键帧: 0 | 音频采样: 0 | 异常事件: 0"), timeline_tab_);
+    timeline_summary_label_->setObjectName(QStringLiteral("HintLabel"));
     toolbar_layout->addWidget(timeline_summary_label_, 1);
     layout->addLayout(toolbar_layout);
 
@@ -205,7 +227,7 @@ void EventTimelineView::SetupTimelineTab() {
     QGroupBox* table_group = new QGroupBox(tr("时间轴事件"), timeline_tab_);
     QVBoxLayout* table_layout = new QVBoxLayout(table_group);
     timeline_table_ = new QTableWidget(0, 5, table_group);
-    timeline_table_->setHorizontalHeaderLabels({"序号", "类别", "时间戳(s)", "标签", "详情"});
+    timeline_table_->setHorizontalHeaderLabels({tr("序号"), tr("类别"), tr("时间戳(s)"), tr("标签"), tr("详情")});
     timeline_table_->verticalHeader()->setVisible(false);
     timeline_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     timeline_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -218,6 +240,12 @@ void EventTimelineView::SetupTimelineTab() {
     timeline_table_->setColumnWidth(3, 200);
     timeline_table_->setMinimumWidth(400);
     timeline_table_->setMinimumHeight(120);
+    // 双击跳到该时间轴标记的位置（关键帧/音频采样/异常事件通用）。
+    connect(timeline_table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row >= 0 && static_cast<size_t>(row) < timeline_event_records_.size()) {
+            emit SeekRequested(timeline_event_records_[static_cast<size_t>(row)].timestamp_seconds);
+        }
+    });
     table_layout->addWidget(timeline_table_);
     layout->addWidget(table_group);
 
@@ -243,12 +271,14 @@ void EventTimelineView::SetupTimelineTab() {
 // ---------------------------------------------------------------------------
 
 void EventTimelineView::ResetAnalysisEventList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Event)))
-        return;
+    // 清空列表不受采集开关约束：控制器换媒体时无条件发 Reset，
+    // 这里若按开关提前返回，"A 文件采集过 -> 关开关 -> 换 B -> 再开开关"
+    // 会把 B 的数据接在 A 的旧行后面。按开关过滤只发生在 Append*。
     analysis_event_records_.clear();
     event_table_synced_record_count_ = 0;
     event_table_dirty_ = false;
-    event_summary_dirty_ = true;
+    event_summary_dirty_ = false;
+    event_records_trimmed_ = false;
     if (event_table_) {
         event_table_->setRowCount(0);
     }
@@ -264,7 +294,7 @@ void EventTimelineView::AppendAnalysisEvent(const model::AnalysisEvent& event_in
 
     AnalysisEventRecord record;
     record.index = event_info.index;
-    record.severity = QString::fromStdString(event_info.severity);
+    record.severity = event_info.severity;
     record.type = QString::fromStdString(event_info.type);
     record.stream_index = event_info.stream_index;
     record.pts = event_info.pts;
@@ -275,18 +305,24 @@ void EventTimelineView::AppendAnalysisEvent(const model::AnalysisEvent& event_in
     analysis_event_records_.push_back(record);
     event_table_dirty_ = true;
     event_summary_dirty_ = true;
-    TrimRecords(analysis_event_records_, event_table_synced_record_count_, event_table_, event_table_dirty_,
-                kMaxEventRecords);
+    if (analysis_event_records_.size() > kMaxEventRecords) {
+        event_records_trimmed_ = true;
+    }
+    // 增量裁剪：到上限后只移除表头一行，不再整表清空重填（见 AnalysisPageSupport.h）。
+    TrimRecordsIncremental(analysis_event_records_, event_table_synced_record_count_, event_table_, kMaxEventRecords);
 }
 
 void EventTimelineView::ResetSyncSampleList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Sync)))
-        return;
+    // 同上：清空无条件执行，开关只管收不收新数据。
     sync_sample_records_.clear();
     sync_table_synced_record_count_ = 0;
     sync_table_dirty_ = false;
-    sync_summary_dirty_ = true;
+    sync_summary_dirty_ = false;
+    sync_records_trimmed_ = false;
     sync_chart_values_.clear();
+    sync_total_sample_count_ = 0;
+    sync_abs_sum_ms_ = 0.0;
+    sync_max_abs_ms_ = 0.0;
     if (sync_table_) {
         sync_table_->setRowCount(0);
     }
@@ -316,19 +352,28 @@ void EventTimelineView::AppendSyncSample(const model::SyncSample& sample) {
     record.diff_ms = sample.diff_ms;
     record.audio_anchor = sample.audio_anchor;
 
+    // 全时段累计（含随后被裁剪掉的旧样本），摘要不能用"本地保留窗口"冒充全程。
+    ++sync_total_sample_count_;
+    const double abs_diff = std::abs(record.diff_ms);
+    sync_abs_sum_ms_ += abs_diff;
+    sync_max_abs_ms_ = std::max(sync_max_abs_ms_, abs_diff);
+
     sync_sample_records_.push_back(record);
     sync_table_dirty_ = true;
     sync_summary_dirty_ = true;
-    TrimRecords(sync_sample_records_, sync_table_synced_record_count_, sync_table_, sync_table_dirty_, kMaxSyncRecords);
+    if (sync_sample_records_.size() > kMaxSyncRecords) {
+        sync_records_trimmed_ = true;
+    }
+    TrimRecordsIncremental(sync_sample_records_, sync_table_synced_record_count_, sync_table_, kMaxSyncRecords);
 }
 
 void EventTimelineView::ResetTimelineEventList() {
-    if (!is_enabled_ || !is_enabled_(static_cast<int>(ViewFeature::Timeline)))
-        return;
+    // 同上：清空无条件执行，开关只管收不收新数据。
     timeline_event_records_.clear();
     timeline_table_synced_record_count_ = 0;
     timeline_table_dirty_ = false;
-    timeline_summary_dirty_ = true;
+    timeline_summary_dirty_ = false;
+    timeline_records_trimmed_ = false;
     if (timeline_table_) {
         timeline_table_->setRowCount(0);
     }
@@ -367,8 +412,11 @@ void EventTimelineView::AppendTimelineEvent(const model::TimelineEvent& event) {
     timeline_event_records_.push_back(record);
     timeline_table_dirty_ = true;
     timeline_summary_dirty_ = true;
-    TrimRecords(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_, timeline_table_dirty_,
-                kMaxTimelineRecords);
+    if (timeline_event_records_.size() > kMaxTimelineRecords) {
+        timeline_records_trimmed_ = true;
+    }
+    TrimRecordsIncremental(timeline_event_records_, timeline_table_synced_record_count_, timeline_table_,
+                           kMaxTimelineRecords);
 }
 
 QString EventTimelineView::CategoryDisplayName(model::TimelineEventCategory category) {
@@ -383,47 +431,29 @@ QString EventTimelineView::CategoryDisplayName(model::TimelineEventCategory cate
     return tr("事件");
 }
 
+QString EventTimelineView::SeverityDisplayName(model::AnalysisEventSeverity severity) {
+    switch (severity) {
+    case model::AnalysisEventSeverity::Error:
+        return tr("错误");
+    case model::AnalysisEventSeverity::Warning:
+        return tr("警告");
+    case model::AnalysisEventSeverity::Info:
+        break;
+    }
+    return tr("信息");
+}
+
+QString EventTimelineView::TrimNote(bool trimmed, int max_count) {
+    if (!trimmed)
+        return QString();
+    // 与画面质量页同一口径：列表被上限裁剪时必须明示，
+    // 否则用户会把"只保留最近 N 条"误读成"分析漏了数据"。
+    return tr("；本地列表已达上限（仅保留最近 %1 条）").arg(max_count);
+}
+
 // ---------------------------------------------------------------------------
-// 重建 / 摘要 / 导出 / 刷新
+// 摘要 / 导出 / 刷新
 // ---------------------------------------------------------------------------
-
-void EventTimelineView::RebuildEventTable() {
-    if (!event_table_)
-        return;
-    event_table_->setUpdatesEnabled(false);
-    event_table_->setRowCount(0);
-    for (const auto& record : analysis_event_records_) {
-        AppendEventRowToTable(record);
-    }
-    event_table_->setUpdatesEnabled(true);
-    event_table_synced_record_count_ = analysis_event_records_.size();
-}
-
-void EventTimelineView::RebuildSyncTable() {
-    if (!sync_table_)
-        return;
-    sync_table_->setUpdatesEnabled(false);
-    sync_table_->setRowCount(0);
-    for (const auto& record : sync_sample_records_) {
-        AppendSyncRowToTable(record);
-    }
-    sync_table_->setUpdatesEnabled(true);
-    sync_table_synced_record_count_ = sync_sample_records_.size();
-    UpdateSyncChart();
-}
-
-void EventTimelineView::RebuildTimelineTable() {
-    if (!timeline_table_)
-        return;
-    timeline_table_->setUpdatesEnabled(false);
-    timeline_table_->setRowCount(0);
-    for (const auto& record : timeline_event_records_) {
-        AppendTimelineRowToTable(record);
-    }
-    timeline_table_->setUpdatesEnabled(true);
-    timeline_table_synced_record_count_ = timeline_event_records_.size();
-    UpdateTimelineChart();
-}
 
 void EventTimelineView::UpdateEventSummary() {
     if (!event_summary_label_)
@@ -433,43 +463,42 @@ void EventTimelineView::UpdateEventSummary() {
     int warning_count = 0;
     int info_count = 0;
     for (const auto& record : analysis_event_records_) {
-        if (record.severity == tr("错误")) {
+        if (record.severity == model::AnalysisEventSeverity::Error) {
             error_count++;
-        } else if (record.severity == tr("警告")) {
+        } else if (record.severity == model::AnalysisEventSeverity::Warning) {
             warning_count++;
         } else {
             info_count++;
         }
     }
 
-    event_summary_label_->setText(tr("总事件数: %1 | 错误: %2 | 警告: %3 | 信息: %4")
+    event_summary_label_->setText(tr("总事件数: %1 | 错误: %2 | 警告: %3 | 信息: %4%5")
                                       .arg(analysis_event_records_.size())
                                       .arg(error_count)
                                       .arg(warning_count)
-                                      .arg(info_count));
+                                      .arg(info_count)
+                                      .arg(TrimNote(event_records_trimmed_, static_cast<int>(kMaxEventRecords))));
 }
 
 void EventTimelineView::UpdateSyncSummary() {
     if (!sync_summary_label_)
         return;
 
-    if (sync_sample_records_.empty()) {
-        sync_summary_label_->setText(tr("样本数: 0 | 平均偏移: 0.00 ms | 最大偏移: 0.00 ms"));
+    const QString trim_note = TrimNote(sync_records_trimmed_, static_cast<int>(kMaxSyncRecords));
+    if (sync_total_sample_count_ == 0) {
+        // 零样本时也沿用同一套文案，避免出现两套标签。
+        sync_summary_label_->setText(
+            tr("样本数: 0 | 全时段平均偏移: 0.00 ms | 全时段最大偏移: 0.00 ms%1").arg(trim_note));
         return;
     }
 
-    double abs_sum = 0.0;
-    double max_abs = 0.0;
-    for (const auto& record : sync_sample_records_) {
-        const double abs_diff = std::abs(record.diff_ms);
-        abs_sum += abs_diff;
-        max_abs = std::max(max_abs, abs_diff);
-    }
-
-    sync_summary_label_->setText(tr("样本数: %1 | 平均偏移: %2 ms | 最大偏移: %3 ms")
+    const double mean_abs = sync_abs_sum_ms_ / static_cast<double>(sync_total_sample_count_);
+    sync_summary_label_->setText(tr("样本数: %1（本地保留 %2 条） | 全时段平均偏移: %3 ms | 全时段最大偏移: %4 ms%5")
+                                     .arg(sync_total_sample_count_)
                                      .arg(sync_sample_records_.size())
-                                     .arg(abs_sum / static_cast<double>(sync_sample_records_.size()), 0, 'f', 2)
-                                     .arg(max_abs, 0, 'f', 2));
+                                     .arg(mean_abs, 0, 'f', 2)
+                                     .arg(sync_max_abs_ms_, 0, 'f', 2)
+                                     .arg(trim_note));
 }
 
 void EventTimelineView::UpdateTimelineSummary() {
@@ -493,11 +522,13 @@ void EventTimelineView::UpdateTimelineSummary() {
         }
     }
 
-    timeline_summary_label_->setText(tr("事件数: %1 | 视频关键帧: %2 | 音频采样: %3 | 异常事件: %4")
-                                         .arg(timeline_event_records_.size())
-                                         .arg(video_count)
-                                         .arg(audio_count)
-                                         .arg(event_count));
+    timeline_summary_label_->setText(
+        tr("总数: %1 | 视频关键帧: %2 | 音频采样: %3 | 异常事件: %4%5")
+            .arg(timeline_event_records_.size())
+            .arg(video_count)
+            .arg(audio_count)
+            .arg(event_count)
+            .arg(TrimNote(timeline_records_trimmed_, static_cast<int>(kMaxTimelineRecords))));
 }
 
 void EventTimelineView::OnExportEventCsv() {
@@ -512,9 +543,10 @@ void EventTimelineView::OnExportEventCsv() {
         [this](QTextStream& out) {
             out << "index,severity,type,stream_index,timestamp_seconds,pts,summary,detail\n";
             for (const auto& record : analysis_event_records_) {
-                out << record.index << ',' << '"' << record.severity << '"' << ',' << '"' << record.type << '"' << ','
-                    << record.stream_index << ',' << QString::number(record.timestamp_seconds, 'f', 6) << ','
-                    << record.pts << ',' << '"' << record.summary << '"' << ',' << '"' << record.detail << '"' << '\n';
+                out << record.index << ',' << '"' << SeverityDisplayName(record.severity) << '"' << ',' << '"'
+                    << record.type << '"' << ',' << record.stream_index << ','
+                    << QString::number(record.timestamp_seconds, 'f', 6) << ',' << record.pts << ',' << '"'
+                    << record.summary << '"' << ',' << '"' << record.detail << '"' << '\n';
             }
         },
         static_cast<int>(analysis_event_records_.size()));
@@ -566,7 +598,7 @@ void EventTimelineView::AppendEventRowToTable(const AnalysisEventRecord& record)
     event_table_->insertRow(row);
     auto cell = [&](int col, const QString& text) { event_table_->setItem(row, col, new QTableWidgetItem(text)); };
     cell(0, QString::number(record.index));
-    cell(1, record.severity);
+    cell(1, SeverityDisplayName(record.severity));
     cell(2, record.type);
     cell(3, QString::number(record.stream_index));
     cell(4, QString::number(record.timestamp_seconds, 'f', 6));
@@ -676,20 +708,22 @@ void EventTimelineView::UpdateTimelineChart() {
 void EventTimelineView::FlushPendingEventTableUpdates() {
     if (!event_table_)
         return;
+    // 跟随策略与帧表/包表一致：只有用户本来就停在底部时才继续跟随，
+    // 往上翻看历史时把控制权交还给用户，不再每 120ms 拽回底部。
+    const bool pinned = IsTablePinnedToBottom(event_table_);
     event_table_->setUpdatesEnabled(false);
     for (size_t i = event_table_synced_record_count_; i < analysis_event_records_.size(); ++i) {
         AppendEventRowToTable(analysis_event_records_[i]);
     }
     event_table_->setUpdatesEnabled(true);
     event_table_synced_record_count_ = analysis_event_records_.size();
-    if (event_table_->rowCount() > 0) {
-        event_table_->scrollToBottom();
-    }
+    FollowTableBottom(event_table_, pinned);
 }
 
 void EventTimelineView::FlushPendingSyncTableUpdates() {
     if (!sync_table_)
         return;
+    const bool pinned = IsTablePinnedToBottom(sync_table_);
     sync_table_->setUpdatesEnabled(false);
     for (size_t i = sync_table_synced_record_count_; i < sync_sample_records_.size(); ++i) {
         AppendSyncRowToTable(sync_sample_records_[i]);
@@ -697,14 +731,13 @@ void EventTimelineView::FlushPendingSyncTableUpdates() {
     sync_table_->setUpdatesEnabled(true);
     sync_table_synced_record_count_ = sync_sample_records_.size();
     UpdateSyncChart();
-    if (sync_table_->rowCount() > 0) {
-        sync_table_->scrollToBottom();
-    }
+    FollowTableBottom(sync_table_, pinned);
 }
 
 void EventTimelineView::FlushPendingTimelineTableUpdates() {
     if (!timeline_table_)
         return;
+    const bool pinned = IsTablePinnedToBottom(timeline_table_);
     timeline_table_->setUpdatesEnabled(false);
     for (size_t i = timeline_table_synced_record_count_; i < timeline_event_records_.size(); ++i) {
         AppendTimelineRowToTable(timeline_event_records_[i]);
@@ -712,9 +745,7 @@ void EventTimelineView::FlushPendingTimelineTableUpdates() {
     timeline_table_->setUpdatesEnabled(true);
     timeline_table_synced_record_count_ = timeline_event_records_.size();
     UpdateTimelineChart();
-    if (timeline_table_->rowCount() > 0) {
-        timeline_table_->scrollToBottom();
-    }
+    FollowTableBottom(timeline_table_, pinned);
 }
 
 void EventTimelineView::FlushPendingUiUpdates() {
