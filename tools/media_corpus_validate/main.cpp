@@ -124,6 +124,19 @@ std::string Escape(std::string value) {
     return value;
 }
 
+// INDEX.tsv 的 path 由 Windows 生成，用反斜杠做分隔符。std::filesystem::path
+// 在 Windows 上把 '\' 当分隔符，但在 Linux 上它只是普通字符 —— 直接 root / path
+// 会拼出 "root/abnormal\foo.mp4" 这种不存在的单文件名，导致 4429 个样本全部
+// not_found（WSL self-hosted runner 上的真实现象）。统一成 '/' 后两种平台都能
+// 正确解析：Windows 的 path 接受 '/'，Linux 的 path 原生用 '/'。
+std::string NormalizeIndexRelPath(std::string p) {
+    for (char& c : p) {
+        if (c == '\\')
+            c = '/';
+    }
+    return p;
+}
+
 std::vector<IndexRow> LoadIndex(const std::string& index_path, const std::string& root) {
     std::vector<IndexRow> rows;
     std::ifstream in(index_path, std::ios::binary);
@@ -140,7 +153,7 @@ std::vector<IndexRow> LoadIndex(const std::string& index_path, const std::string
         if (fields.size() < 9)
             continue;
         IndexRow row;
-        row.path = (std::filesystem::path(root) / fields[0]).string();
+        row.path = (std::filesystem::path(root) / NormalizeIndexRelPath(fields[0])).string();
         row.category = fields[1];
         // INDEX.tsv 列为: path, category, source, container, codec, duration_s,
         // resolution, size_bytes, parse, defect_heuristic
