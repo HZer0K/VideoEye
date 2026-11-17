@@ -14,8 +14,16 @@ namespace detail {
 
 namespace {
 
-// ---- container.missing_video 辅助 ----
+// ---- container.missing_video / missing_audio 辅助 ----
 //
+// 流媒体清单（HLS/DASH）不是被 demux 的单一文件：真正的音视频在各分片里，
+// 清单结果天然没有流表（VideoStreamCount/AudioStreamCount 都是 0）。拿"未检测到
+// 视频/音频流"去扣分会把**每一份合法清单**都误报成缺轨（满分被扣到 90）。
+// 闸门与 QC 层其余部分保持一致，用 DimensionExecuted(Streaming) 这条唯一口径。
+bool IsStreamingManifest(const model::AnalysisResult& result) {
+    return result.DimensionExecuted(model::AnalysisDimension::Streaming);
+}
+
 // 纯音频封装（以及带内嵌封面的 m4a/mp3）没有视频轨是正常的：
 // 拿"未检测到视频流"去扣 5 分只会污染批量 QC 的评分与结论。
 // 扩展名优先（用户拖进来的文件一定有），拿不到时再看解复用器名。
@@ -122,13 +130,14 @@ std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rul
         // 纯音频文件本来就没有视频轨，不该在这里扣分（Warning 是 -5 分）。
         // 判断依据是扩展名/解复用器：批量 QC 里混进 mp3、m4a 很常见，
         // 而"视频文件丢了视频轨"仍然会命中。
-        if (result.VideoStreamCount() == 0 && !IsAudioOnlyContainer(result)) {
+        // 流媒体清单同样豁免：它没有 demux 流表，缺轨判定对它不成立（见 IsStreamingManifest）。
+        if (result.VideoStreamCount() == 0 && !IsAudioOnlyContainer(result) && !IsStreamingManifest(result)) {
             issues.push_back(make_issue(1.0, "未检测到视频流。"));
         }
         return issues;
     }
     if (rule.id == "container.missing_audio") {
-        if (result.AudioStreamCount() == 0) {
+        if (result.AudioStreamCount() == 0 && !IsStreamingManifest(result)) {
             issues.push_back(make_issue(1.0, "未检测到音频流。"));
         }
         return issues;

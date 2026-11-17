@@ -662,9 +662,23 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     }
 
     if (result.DimensionExecuted(model::AnalysisDimension::Streaming)) {
+        const model::StreamingPackageResult& pkg = result.streaming_package;
         JsonValue streaming = JsonValue::MakeObject();
-        streaming.Set("manifest_kind", JText(result.streaming_package.manifest_path.empty() ? "" : "local"));
-        streaming.Set("variant_count", JNumber(static_cast<double>(result.streaming_package.variants.size())));
+        // kind 用枚举名（hls/dash）。以前这里写死 "local"：既不是清单类型，也区分不出
+        // HLS/DASH，报告被当引用时下游无从判断。
+        streaming.Set("manifest_kind", JText(model::ToString(pkg.kind)));
+        streaming.Set("valid", JsonValue(pkg.valid));
+        streaming.Set("live", JsonValue(pkg.IsLive()));
+        // 码率阶梯对 HLS/DASH 都成立；variant 只对 HLS 有意义，DASH 用 representation。
+        // 以前只记 variants.size()，对任何 DASH 包都恒为 0，看起来像"没有码率层"。
+        streaming.Set("ladder_count", JNumber(static_cast<double>(pkg.ladder.size())));
+        streaming.Set("variant_count", JNumber(static_cast<double>(pkg.variants.size())));
+        streaming.Set("representation_count", JNumber(static_cast<double>(pkg.representations.size())));
+        // 抽查范围必须跟着数据走，否则下游把抽样结论当全量（与流媒体面板导出口径一致）。
+        streaming.Set("segments_total", JNumber(static_cast<double>(pkg.TotalSegments())));
+        streaming.Set("segments_probed", JNumber(static_cast<double>(pkg.ProbedSegments())));
+        streaming.Set("segment_probe_complete", JsonValue(pkg.SegmentProbeComplete()));
+        streaming.Set("output_truncated", JsonValue(pkg.truncated));
         metrics.Set("streaming", streaming);
     }
 

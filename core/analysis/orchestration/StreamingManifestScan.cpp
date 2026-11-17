@@ -5,6 +5,7 @@
 #include "core/analysis/streaming/DashManifestAnalyzer.h"
 #include "core/analysis/streaming/HlsManifestAnalyzer.h"
 #include "core/analysis/streaming/SegmentQcAnalyzer.h"
+#include "core/analysis/streaming/StreamingDimension.h"
 #include "core/media/streaming/ManifestText.h"
 #include "infrastructure/logging/Logger.h"
 #include "infrastructure/logging/ScopedTimer.h"
@@ -92,6 +93,14 @@ void StreamingManifestScan::Run(const std::string& file_path, const AnalysisOpti
     }
     result.seekable = true;
     result.scan_status = model::AnalysisStatus::Complete;
+
+    // 收尾必须自己把 Streaming 维度落进 dimensions 表：本路径**不经过** AnalysisResultAssembler
+    // （引擎在打开任何 IO 之前就分流到这里并 return），而 QC 规则 / JSON 导出 / 流媒体面板
+    // 一律以 DimensionExecuted(Streaming) 为闸门 —— 不落表，闸门恒为 false，一份有问题的
+    // 清单它的所有流媒体问题都会被当成"没跑过"而整体丢弃。构造口径与装配器共用同一个函数。
+    model::DimensionStatus streaming_status = BuildStreamingDimensionStatus(pkg);
+    streaming_status.MarkConclusive();
+    result.SetDimension(streaming_status);
 
     LOG_INFO("流媒体清单分析完成: kind=" + std::to_string(static_cast<int>(pkg.kind)) +
              " ladder=" + std::to_string(pkg.ladder.size()) + " segments=" + std::to_string(pkg.TotalSegments()) +

@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "core/analysis/streaming/StreamingDimension.h"
 #include "infrastructure/logging/Logger.h"
 
 namespace videoeye {
@@ -598,24 +599,11 @@ DimensionStatus BuildTsTransportStatus(const DimensionContext& ctx) {
 DimensionStatus BuildStreamingStatus(const DimensionContext& ctx) {
     if (!ctx.options.analyze_streaming_package)
         return model::MakeSkippedDimension(AnalysisDimension::Streaming, "流媒体包分析选项已关闭");
-    const model::StreamingPackageResult& package = ctx.result.streaming_package;
     if (!ctx.result.streaming_analyzed)
         return model::MakeSkippedDimension(AnalysisDimension::Streaming, "输入不是 HLS/DASH 清单");
-    DimensionStatus status;
-    status.dimension = AnalysisDimension::Streaming;
-    status.executed = true;
-    status.capability = !package.valid      ? AnalysisCapability::Failed
-                        : package.truncated ? AnalysisCapability::Partial
-                                            : AnalysisCapability::Supported;
-    status.scope_unit = "码率层";
-    status.units_scanned = static_cast<int64_t>(package.ladder.size());
-    status.units_total = status.units_scanned;
-    status.has_coverage = true;
-    status.coverage_ratio = 1.0;
-    status.failure_reason = package.error_message;
-    if (package.truncated)
-        status.notes.push_back("清单读取被截断（事件/分片列表不完整）");
-    return status;
+    // "已执行"这一支的构造口径与流媒体清单路径（StreamingManifestScan，不经过本装配器）
+    // 共用同一个函数，免得两条路径各写一遍、改一处漏一处。
+    return BuildStreamingDimensionStatus(ctx.result.streaming_package);
 }
 
 // 容器体检（AVI / FLV / ASF / OGG / MKV / MXF / MPEG-PS）。

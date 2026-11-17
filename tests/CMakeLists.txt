@@ -1033,6 +1033,20 @@ target_link_libraries(test_streaming_qc_rules PRIVATE VideoEyeAnalysisPackage Vi
 add_test(NAME StreamingQcRulesTests COMMAND test_streaming_qc_rules)
 
 # =================================================
+# 测试 19a：流媒体清单 → QC 报告 端到端回归（真实 AnalysisEngine 路径）
+# 说明: 清单分支不经过 AnalysisResultAssembler，必须自己落 Streaming 维度，否则
+#       DimensionExecuted(Streaming) 恒 false：流媒体问题进不了报告（①），合法清单
+#       还被 container.missing_video/audio 误报扣分（②）。本测试用真实引擎跑临时
+#       清单 + QcRuleEngine::Evaluate，把这条链整个钉住。需要引擎（VideoEyeAnalysis）
+#       与规则（VideoEyeQcRules）同时在位，与 test_audio_qc_rules 同构。
+# =================================================
+videoeye_add_test(test_streaming_qc_report
+    unit/test_streaming_qc_report.cpp
+)
+target_link_libraries(test_streaming_qc_report PRIVATE VideoEyeAnalysis VideoEyeQcRules)
+add_test(NAME StreamingQcReportTests COMMAND test_streaming_qc_report)
+
+# =================================================
 # 测试 19b：MPEG-TS 传输层 QC 规则（container.ts.* 前缀分支）
 # 说明: 规则只读 AnalysisResult::ts_transport，样本全部手工构造 —— 不需要真实
 #       TS 文件。「解析器算得对不对」在 test_container_structure_analyzers 里测，
