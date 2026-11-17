@@ -64,6 +64,25 @@ std::string MakeBytes(size_t n) {
     return std::string(n, '\0');
 }
 
+// 结构有效的 MPEG-TS 占位：若干个 NULL 包（PID 0x1FFF，同步字节 0x47 + 188 步长）。
+//
+// 这些用例只验清单 / 跨分片逻辑，分片本体不需要真视频。但 SegmentQcAnalyzer 现在会
+// 真的逐包扫 TS（ProbeTsSegment），占位必须是"解析得动"的 TS —— 否则会被判成容器解析
+// 失败而凭空多出 Error。NULL 包没有视频 PES，首帧实证拿不到证据，关键帧结论保持清单
+// 给的 Declared，与"不解析 TS 内容"时代的 issue 画像完全一致。
+std::string MakeMinimalTs(size_t packets) {
+    std::string out;
+    out.reserve(packets * 188);
+    for (size_t i = 0; i < packets; ++i) {
+        out.push_back('\x47');                               // sync_byte
+        out.push_back('\x1F');                               // PID=0x1FFF 高字节（NULL 包）
+        out.push_back('\xFF');                               // PID 低字节
+        out.push_back(static_cast<char>(0x10 | (i & 0x0F))); // payload-only + 递增 CC
+        out.append(184, '\xFF');                             // NULL 包载荷填充
+    }
+    return out;
+}
+
 int CountAtLeast(const StreamingPackageResult& result, IssueSeverity severity) {
     int n = 0;
     for (const auto& issue : result.issues) {
@@ -109,8 +128,8 @@ bool WriteValidHlsVodPackage(const fs::path& root) {
             return false;
         for (int i = 0; i < 3; ++i) {
             const std::string name = "seg" + std::to_string(i) + ".ts";
-            // 分片本体只要存在即可：本阶段不解析 TS 内容（那是 TsStructureAnalyzer 的活）
-            if (!WriteFile(root / dir / name, MakeBytes(2048)))
+            // 分片本体是结构有效的 TS 占位（NULL 包）：探测层解析得动、但无视频首帧证据
+            if (!WriteFile(root / dir / name, MakeMinimalTs(11)))
                 return false;
         }
     }
@@ -141,7 +160,7 @@ bool WriteHlsPackageWithSegmentCount(const fs::path& root, int count) {
     if (!WriteFile(root / "v0" / "index.m3u8", body))
         return false;
     for (int i = 0; i < count; ++i) {
-        if (!WriteFile(root / "v0" / ("seg" + std::to_string(i) + ".ts"), MakeBytes(512)))
+        if (!WriteFile(root / "v0" / ("seg" + std::to_string(i) + ".ts"), MakeMinimalTs(3)))
             return false;
     }
     return true;
@@ -1125,7 +1144,7 @@ bool WriteHlsPlaylistPackage(const fs::path& root, int segment_count, const std:
     if (!WriteFile(root / "index.m3u8", text))
         return false;
     for (int i : existing) {
-        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), MakeBytes(2048)))
+        if (!WriteFile(root / ("seg" + std::to_string(i) + ".ts"), MakeMinimalTs(11)))
             return false;
     }
     return true;

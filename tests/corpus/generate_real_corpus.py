@@ -94,6 +94,54 @@ def run_ffmpeg(ffmpeg, args, suffix):
         os.unlink(tmp.name)
 
 
+# ---------------------------------------------------------------------------
+# 流媒体包（目录形态：清单 + init + 分片）
+#
+# 与上面单文件样本的区别：HLS / DASH 包不是一个文件，而是一整个目录（manifest +
+# 初始化段 + 若干媒体分片）。run_ffmpeg 那套"写临时文件再读回字节"用不上 ——
+# 这里让 ffmpeg 直接把全套文件写进目标目录，再用语义 check 校验目录结构。
+#
+# 为什么要真实包：合成清单（手写 m3u8/mpd + 空字节分片）能测"清单解析对不对"，
+# 但测不到 fMP4 分片探测层 —— tfdt 时间轴连续性、trun/tfhd sample_flags 的关键帧
+# 实证（KeyframeEvidence::SyncFlag），这些只有真 ffmpeg 编出来的分片才带。
+# ---------------------------------------------------------------------------
+
+PACKAGES = {}
+
+# 真实流媒体包共用的编码参数：10fps / 2s / -g 10 → 每秒一个 IDR，分片各自以关键帧
+# 起头，正好能验"分片首帧可独立解码"的实证探测（而不是 TS 那种约定值）。
+STREAM_VIDEO = "testsrc2=size=160x96:rate=10:duration=2"
+STREAM_AUDIO = "sine=frequency=440:sample_rate=48000:duration=2"
+STREAM_CODECS = ["-c:v", "libx264", "-preset", "ultrafast",
+                 "-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
+                 "-c:a", "aac", "-b:a", "32k"]
+
+
+def register_package(rel_dir, manifest, build, check):
+    """注册一个目录形态的真实样本。
+
+    rel_dir  相对 CORPUS_DIR 的包目录（如 streaming/real_hls_fmp4）
+    manifest 包内清单文件名，用来判断"这个包在不在磁盘上"
+    build    build(ffmpeg, outdir)：把整套包写进 outdir
+    check    check(outdir)：返回问题列表（空 = 合格）
+    """
+    PACKAGES[rel_dir] = {"manifest": manifest, "build": build, "check": check}
+
+
+def package_present(rel_dir):
+    spec = PACKAGES[rel_dir]
+    return os.path.exists(os.path.join(CORPUS_DIR, rel_dir, spec["manifest"]))
+
+
+def run_ffmpeg_out(ffmpeg, args, out_path):
+    """跑 ffmpeg，产物直接落到 out_path（多文件包不能用 run_ffmpeg 的单文件临时产物）。"""
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"] + args + [out_path]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg 失败: %s"
+                           % proc.stderr.decode("utf-8", "replace"))
+
+
 def build_ts(ffmpeg):
     """MPEG-TS：H.264 + AAC，ffmpeg 会写全 PAT / PMT / PCR / 连续计数。"""
     return run_ffmpeg(ffmpeg, [
@@ -598,6 +646,222 @@ def build_av1_altref(ffmpeg):
                 os.unlink(path)
 
 
+def _fresh_dir(outdir):
+    """清空并重建包目录：避免上一次生成的陈旧分片混进来（分片数变化时尤其要命）。"""
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
+    os.makedirs(outdir)
+
+
+def build_hls_fmp4_package(ffmpeg, outdir):
+    """HLS fMP4（CMAF）单码率包：media.m3u8 + init.mp4 + seg0/1.m4s。
+
+    -hls_segment_type fmp4 让分片走 fMP4 而不是传统 TS；EXT-X-MAP 指向 init.mp4。
+    这是真实世界最常见的 fMP4 流媒体形态，正好喂给 SegmentQcAnalyzer 的 fMP4 探测层。
+    """
+    _fresh_dir(outdir)
+    run_ffmpeg_out(ffmpeg, [
+        "-f", "lavfi", "-i", STREAM_VIDEO,
+        "-f", "lavfi", "-i", STREAM_AUDIO,
+    ] + STREAM_CODECS + [
+        "-f", "hls", "-hls_time", "1", "-hls_segment_type", "fmp4",
+        "-hls_flags", "independent_segments",
+        "-hls_fmp4_init_filename", "init.mp4",
+        "-hls_segment_filename", os.path.join(outdir, "seg%d.m4s"),
+    ], os.path.join(outdir, "media.m3u8"))
+
+
+def build_dash_fmp4_package(ffmpeg, outdir):
+    """DASH fMP4 包：manifest.mpd + 每路 init_$RepresentationID$.m4s + seg_$RepresentationID$_$Number$.m4s。
+
+    用 RepresentationID 命名，避免视频/音频两个 AdaptationSet 的分片互相覆盖
+    （都用 init.m4s / seg$Number$.m4s 时音频会把视频的分片冲掉）。
+    """
+    _fresh_dir(outdir)
+    run_ffmpeg_out(ffmpeg, [
+        "-f", "lavfi", "-i", STREAM_VIDEO,
+        "-f", "lavfi", "-i", STREAM_AUDIO,
+    ] + STREAM_CODECS + [
+        "-f", "dash", "-seg_duration", "1",
+        "-use_template", "1", "-use_timeline", "1",
+        "-init_seg_name", "init_$RepresentationID$.m4s",
+        "-media_seg_name", "seg_$RepresentationID$_$Number$.m4s",
+    ], os.path.join(outdir, "manifest.mpd"))
+
+
+def _fmp4_box_names(data):
+    return set(name for name, _s, _e in mp4_top_level_boxes(data))
+
+
+def _read_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def check_hls_fmp4_package(outdir):
+    """语义校验 HLS fMP4 包：清单是 VOD + 带 EXT-X-MAP，init 是 fMP4 头，分片是 moof+mdat。"""
+    manifest = os.path.join(outdir, "media.m3u8")
+    if not os.path.exists(manifest):
+        return ["%s: 缺 media.m3u8" % outdir]
+    problems = []
+    text = _read_bytes(manifest).decode("utf-8", "replace")
+    if not text.startswith("#EXTM3U"):
+        problems.append("media.m3u8 不是 HLS 清单（缺 #EXTM3U 头）")
+    if "#EXT-X-MAP" not in text:
+        problems.append("media.m3u8 缺 EXT-X-MAP（fMP4 初始化段引用）")
+    if "#EXT-X-ENDLIST" not in text:
+        problems.append("media.m3u8 缺 EXT-X-ENDLIST（不是 VOD）")
+    if text.count("#EXTINF") < 2:
+        problems.append("media.m3u8 只有 %d 个分片，测不到跨分片时间轴连续性"
+                        % text.count("#EXTINF"))
+    init = os.path.join(outdir, "init.mp4")
+    if not os.path.exists(init):
+        problems.append("缺 init.mp4 初始化段")
+    elif not {b"ftyp", b"moov"} <= _fmp4_box_names(_read_bytes(init)):
+        problems.append("init.mp4 不是 fMP4 初始化段（缺 ftyp/moov）")
+    segs = sorted(f for f in os.listdir(outdir)
+                  if f.startswith("seg") and f.endswith(".m4s"))
+    if len(segs) < 2:
+        problems.append("HLS 包只有 %d 个 .m4s 分片" % len(segs))
+    for s in segs:
+        if not {b"moof", b"mdat"} <= _fmp4_box_names(_read_bytes(os.path.join(outdir, s))):
+            problems.append("%s 不是 fMP4 媒体分片（缺 moof/mdat）" % s)
+            break
+    return problems
+
+
+def check_dash_fmp4_package(outdir):
+    """语义校验 DASH fMP4 包：MPD 带 SegmentTemplate + 视频/音频两路，init/分片是 fMP4。"""
+    manifest = os.path.join(outdir, "manifest.mpd")
+    if not os.path.exists(manifest):
+        return ["%s: 缺 manifest.mpd" % outdir]
+    problems = []
+    text = _read_bytes(manifest).decode("utf-8", "replace")
+    if "<MPD" not in text:
+        problems.append("manifest.mpd 缺 <MPD> 根节点")
+    if "SegmentTemplate" not in text:
+        problems.append("manifest.mpd 缺 SegmentTemplate（分片模板）")
+    if text.count("<Representation") < 2:
+        problems.append("manifest.mpd 只有 %d 个 Representation（应含视频+音频两路）"
+                        % text.count("<Representation"))
+    inits = sorted(f for f in os.listdir(outdir)
+                   if f.startswith("init_") and f.endswith(".m4s"))
+    if not inits:
+        problems.append("缺 init_*.m4s 初始化段")
+    for f in inits:
+        if not {b"ftyp", b"moov"} <= _fmp4_box_names(_read_bytes(os.path.join(outdir, f))):
+            problems.append("%s 不是 fMP4 初始化段（缺 ftyp/moov）" % f)
+            break
+    segs = sorted(f for f in os.listdir(outdir)
+                  if f.startswith("seg_") and f.endswith(".m4s"))
+    if len(segs) < 2:
+        problems.append("DASH 包只有 %d 个 seg_*.m4s 分片" % len(segs))
+    for s in segs:
+        if not {b"moof", b"mdat"} <= _fmp4_box_names(_read_bytes(os.path.join(outdir, s))):
+            problems.append("%s 不是 fMP4 媒体分片（缺 moof/mdat）" % s)
+            break
+    return problems
+
+
+def _ts_sync_ok(data):
+    """MPEG-TS 结构合格：长度是 188 的整数倍，且每个包首字节都是同步字节 0x47。"""
+    if len(data) == 0 or len(data) % 188 != 0:
+        return False
+    return all(data[i] == 0x47 for i in range(0, len(data), 188))
+
+
+def build_hls_ts_package(ffmpeg, outdir):
+    """HLS MPEG-TS 单码率包（关键帧对齐）：media.m3u8 + seg0/1.ts。
+
+    STREAM_CODECS 的 -g 10 配 10fps → 每秒一个 IDR，-hls_time 1 让每个分片各自以 IDR
+    起头。这是 TS 分片首帧实证（SyncFlag）的正样本：探测层应扫到段首 IDR 而非沿用约定值。
+    """
+    _fresh_dir(outdir)
+    run_ffmpeg_out(ffmpeg, [
+        "-f", "lavfi", "-i", STREAM_VIDEO,
+        "-f", "lavfi", "-i", STREAM_AUDIO,
+    ] + STREAM_CODECS + [
+        "-f", "hls", "-hls_time", "1",
+        "-hls_flags", "independent_segments",
+        "-hls_segment_filename", os.path.join(outdir, "seg%d.ts"),
+    ], os.path.join(outdir, "media.m3u8"))
+
+
+def build_hls_ts_misaligned_package(ffmpeg, outdir):
+    """HLS MPEG-TS 单码率包（mid-GOP 切档负样本）：media.m3u8 + seg0/1.ts。
+
+    -g 20 配 10fps / 2s → 整段只有 frame0 一个 IDR；-hls_flags split_by_time 强制按时间
+    而非关键帧切档，于是 seg1 从 frame10（P 帧）起头 —— 段首不是随机访问点。
+    这正是"某码率层切档后首帧花屏"的实物：探测层应把 seg1 判成 NotSync 并报 Error。
+    """
+    _fresh_dir(outdir)
+    misaligned_codecs = ["-c:v", "libx264", "-preset", "ultrafast",
+                         "-g", "20", "-keyint_min", "20", "-sc_threshold", "0",
+                         "-c:a", "aac", "-b:a", "32k"]
+    run_ffmpeg_out(ffmpeg, [
+        "-f", "lavfi", "-i", STREAM_VIDEO,
+        "-f", "lavfi", "-i", STREAM_AUDIO,
+    ] + misaligned_codecs + [
+        "-f", "hls", "-hls_time", "1",
+        "-hls_flags", "split_by_time",
+        "-hls_segment_filename", os.path.join(outdir, "seg%d.ts"),
+    ], os.path.join(outdir, "media.m3u8"))
+
+
+def check_hls_ts_package(outdir):
+    """语义校验 HLS TS 包：清单是 VOD + 声明独立分片，分片是结构合格的 MPEG-TS。"""
+    manifest = os.path.join(outdir, "media.m3u8")
+    if not os.path.exists(manifest):
+        return ["%s: 缺 media.m3u8" % outdir]
+    problems = []
+    text = _read_bytes(manifest).decode("utf-8", "replace")
+    if not text.startswith("#EXTM3U"):
+        problems.append("media.m3u8 不是 HLS 清单（缺 #EXTM3U 头）")
+    if "#EXT-X-ENDLIST" not in text:
+        problems.append("media.m3u8 缺 EXT-X-ENDLIST（不是 VOD）")
+    if "#EXT-X-INDEPENDENT-SEGMENTS" not in text:
+        problems.append("media.m3u8 缺 EXT-X-INDEPENDENT-SEGMENTS（关键帧对齐包应声明独立分片）")
+    if text.count("#EXTINF") < 2:
+        problems.append("media.m3u8 只有 %d 个分片" % text.count("#EXTINF"))
+    segs = sorted(f for f in os.listdir(outdir)
+                  if f.startswith("seg") and f.endswith(".ts"))
+    if len(segs) < 2:
+        problems.append("HLS TS 包只有 %d 个 .ts 分片" % len(segs))
+    for s in segs:
+        if not _ts_sync_ok(_read_bytes(os.path.join(outdir, s))):
+            problems.append("%s 不是结构合格的 MPEG-TS（同步字节/包长不对）" % s)
+            break
+    return problems
+
+
+def check_hls_ts_misaligned_package(outdir):
+    """语义校验 mid-GOP 负样本包：清单是 VOD，至少两个结构合格的 TS 分片。
+
+    段首是否真为非 IDR 由 C++ 探测层回归（NotSync）判定，这里只保证实物结构合格。
+    """
+    manifest = os.path.join(outdir, "media.m3u8")
+    if not os.path.exists(manifest):
+        return ["%s: 缺 media.m3u8" % outdir]
+    problems = []
+    text = _read_bytes(manifest).decode("utf-8", "replace")
+    if not text.startswith("#EXTM3U"):
+        problems.append("media.m3u8 不是 HLS 清单（缺 #EXTM3U 头）")
+    if "#EXT-X-ENDLIST" not in text:
+        problems.append("media.m3u8 缺 EXT-X-ENDLIST（不是 VOD）")
+    if text.count("#EXTINF") < 2:
+        problems.append("media.m3u8 只有 %d 个分片（mid-GOP 切档需要至少两段）"
+                        % text.count("#EXTINF"))
+    segs = sorted(f for f in os.listdir(outdir)
+                  if f.startswith("seg") and f.endswith(".ts"))
+    if len(segs) < 2:
+        problems.append("HLS TS 负样本包只有 %d 个 .ts 分片" % len(segs))
+    for s in segs:
+        if not _ts_sync_ok(_read_bytes(os.path.join(outdir, s))):
+            problems.append("%s 不是结构合格的 MPEG-TS（同步字节/包长不对）" % s)
+            break
+    return problems
+
+
 register("container/real_h264_aac.ts", "ts", build=build_ts)
 register("container/real_h264_aac.m2ts", "m2ts", derived="container/real_h264_aac.ts")
 register("container/real_mpeg4_mp3.avi", "avi", build=build_avi)
@@ -653,6 +917,17 @@ register("codec/real_x264_bframes_gop.mp4", "mp4", build=build_h264_bframes)
 register("codec/real_x265_bframes_gop.mp4", "mp4", build=build_hevc_bframes)
 register("codec/real_vp9_altref_gop.webm", "mkv", build=build_vp9_altref)
 register("codec/real_av1_altref_gop.mp4", "mp4", build=build_av1_altref)
+
+# 真实流媒体包（目录形态）。fMP4 分片探测层（tfdt 连续性 / sample_flags 关键帧实证）
+# 只有真 ffmpeg 编出来的分片才带，合成清单测不到 —— 这两份把它钉住。
+register_package("streaming/real_hls_fmp4", "media.m3u8",
+                 build_hls_fmp4_package, check_hls_fmp4_package)
+register_package("streaming/real_dash_fmp4", "manifest.mpd",
+                 build_dash_fmp4_package, check_dash_fmp4_package)
+register_package("streaming/real_hls_ts", "media.m3u8",
+                 build_hls_ts_package, check_hls_ts_package)
+register_package("streaming/real_hls_ts_misaligned", "media.m3u8",
+                 build_hls_ts_misaligned_package, check_hls_ts_misaligned_package)
 
 
 # ---------------------------------------------------------------------------
@@ -1068,16 +1343,19 @@ def main():
 
     missing = [rel for rel in SAMPLES
                if not os.path.exists(os.path.join(CORPUS_DIR, rel))]
+    missing_pkgs = [rel for rel in PACKAGES if not package_present(rel)]
 
     if args.check:
-        if missing:
+        if missing or missing_pkgs:
             print("SKIP: 真实样本缺失（%s），本机没有生成过"
-                  % ", ".join(sorted(missing)))
+                  % ", ".join(sorted(missing) + sorted(missing_pkgs)))
             return 0
         problems = []
         for rel in sorted(SAMPLES):
             with open(os.path.join(CORPUS_DIR, rel), "rb") as fh:
                 problems += check(fh.read(), rel)
+        for rel in sorted(PACKAGES):
+            problems += PACKAGES[rel]["check"](os.path.join(CORPUS_DIR, rel))
         if problems:
             print("真实语料校验失败:", file=sys.stderr)
             for p in problems:
@@ -1085,14 +1363,15 @@ def main():
             print("重新生成: python tests/corpus/generate_real_corpus.py",
                   file=sys.stderr)
             return 1
-        print("真实语料校验通过: %d 个样本结构合格" % len(SAMPLES))
+        print("真实语料校验通过: %d 个样本 + %d 个流媒体包结构合格"
+              % (len(SAMPLES), len(PACKAGES)))
         return 0
 
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
-        if missing:
+        if missing or missing_pkgs:
             print("SKIP: 找不到 ffmpeg，且真实样本缺失（%s）"
-                  % ", ".join(sorted(missing)))
+                  % ", ".join(sorted(missing) + sorted(missing_pkgs)))
             return 0
         print("样本已存在，未找到 ffmpeg，跳过生成")
         return 0
@@ -1121,8 +1400,20 @@ def main():
         with open(path, "wb") as fh:
             fh.write(data)
 
-    print("已生成 %d 个真实样本 -> %s"
-          % (len(produced), CORPUS_DIR))
+    # 流媒体包是目录形态：build 直接把整套（清单 + init + 分片）写进目标目录，
+    # 生成后立刻用同一份 check 自检，避免"生成成功但结构不合格"溜进库里。
+    for rel in sorted(PACKAGES):
+        outdir = os.path.join(CORPUS_DIR, rel)
+        PACKAGES[rel]["build"](ffmpeg, outdir)
+        problems = PACKAGES[rel]["check"](outdir)
+        if problems:
+            print("流媒体包自检失败 (%s):" % rel, file=sys.stderr)
+            for p in problems:
+                print("  " + p, file=sys.stderr)
+            return 1
+
+    print("已生成 %d 个真实样本 + %d 个流媒体包 -> %s"
+          % (len(produced), len(PACKAGES), CORPUS_DIR))
     return 0
 
 

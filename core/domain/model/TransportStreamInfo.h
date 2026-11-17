@@ -69,6 +69,17 @@ struct TransportStreamInfo {
     std::string max_pid_gap_pid;
     int stalled_pids = 0; // 间隔超过阈值的 PID 数（阈值在规则里）
 
+    // ---- 首帧随机访问实证（分片级 QC 用）----
+    //
+    // 上面 idr_count / max_no_idr_interval_ms 都是"整段窗口"的聚合，回答不了
+    // "这个分片的第一帧能不能独立解码" —— ABR 切档后首帧花屏恰恰只取决于段首那一个 NAL。
+    // 这里取最早 first_pts 的视频 PID，看它第一个 VCL NAL 是不是同步样本：
+    //   H.264 nal_unit_type==5(IDR)；HEVC ∈{19,20,21}(IDR_W_RADL/IDR_N_LP/CRA)。
+    // has_first_video_sync_evidence=false 表示窗口里没找到可判定的视频首帧
+    // （没有视频 PID / 没扫载荷 / 首 PES 里只有 SPS/PPS 没有 slice），此时不能下结论。
+    bool has_first_video_sync_evidence = false;
+    bool first_video_frame_is_sync = false;
+
     // analyzed=false 时的原因（文件打不开 / 不是 TS / 取消）
     std::string error_message;
 

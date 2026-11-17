@@ -13,8 +13,8 @@
 // 依赖边界：
 //   - 头文件不依赖 Qt / FFmpeg；
 //   - fMP4/CMAF 分片走 Mp4SampleTableAnalyzer（自研 IsobmffParser，纯 C++）；
-//     MPEG-TS 分片的逐包解析要用到 TsStructureAnalyzer（依赖 Qt），
-//     由 ContainerStructureAnalyzer 在 Qt 侧补做，不进这个纯 C++ 层。
+//     MPEG-TS 分片走 TsStructureAnalyzer（同为纯 C++，与本类同在 VideoEyeAnalysisPackage），
+//     逐包扫到首个视频 VCL NAL 实证段首帧同步性。两条分片探测都在这个纯 C++ 层完成。
 
 #include <atomic>
 #include <cstdint>

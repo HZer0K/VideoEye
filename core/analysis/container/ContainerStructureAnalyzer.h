@@ -95,10 +95,6 @@ private:
     /// 清单结构 -> 通用结构树 / 流信息 / 元数据（供"文件结构"页复用同一套渲染）
     /// 返回 false 表示中途被取消：树没建完，外层不得把半成品树发出去。
     bool BuildStreamingTree(model::ContainerStructureResult& result, const std::atomic<bool>* cancel);
-
-    /// 用 TsStructureAnalyzer 抽查若干 TS 分片（复用已有 TS 容器分析）
-    /// 返回 false 表示中途被取消（已置位 container_parse_failed 的那一两个分片不算）。
-    bool ProbeTsSegments(model::ContainerStructureResult& result, const std::atomic<bool>* cancel);
 };
 
 } // namespace videoeye

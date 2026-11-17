@@ -887,8 +887,9 @@ ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStrea
         return StageStatus::kFailed;
     }
 
-    // 分片级 / ladder 级交叉校验。fMP4 分片在这里被 Mp4SampleTableAnalyzer 解析，
-    // MPEG-TS 分片的逐包解析要依赖 Qt，放到下面的 ProbeTsSegments。
+    // 分片级 / ladder 级交叉校验。fMP4 与 MPEG-TS 分片都在这里被探测：
+    // fMP4 走 Mp4SampleTableAnalyzer，TS 走 TsStructureAnalyzer（均为纯 C++，
+    // 同在 VideoEyeAnalysisPackage），段首帧同步性实证也在其中完成。
     //
     // 返回值必须接住：以前只查全局取消标志, 于是"分片校验自己判了取消却返回 kDone"、
     // 或"校验阶段失败"两种情况都会让本函数继续往下建树, 最后照样置 valid=true ——
@@ -906,8 +907,6 @@ ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStrea
     if (infrastructure::Checkpoint(cancel))
         return StageStatus::kCancelled;
 
-    if (!ProbeTsSegments(result, cancel))
-        return StageStatus::kCancelled;
     if (!BuildStreamingTree(result, cancel))
         return StageStatus::kCancelled;
 
@@ -917,52 +916,6 @@ ContainerStructureAnalyzer::StageStatus ContainerStructureAnalyzer::AnalyzeStrea
 
     result.valid = true;
     return StageStatus::kDone;
-}
-
-bool ContainerStructureAnalyzer::ProbeTsSegments(model::ContainerStructureResult& result,
-                                                 const std::atomic<bool>* cancel) {
-    model::StreamingPackageResult& pkg = result.streaming_package;
-    constexpr int kMaxTsProbe = 3; // 抽查头几个就够了：分片是同一次切片产出的
-    int probed = 0;
-
-    auto probe_one = [&](model::SegmentInfo& seg) {
-        if (infrastructure::Checkpoint(cancel))
-            return;
-        if (probed >= kMaxTsProbe)
-            return;
-        if (seg.partial || seg.container != model::SegmentContainer::MPEG_TS)
-            return;
-        if (!seg.exists || seg.resolved_path.empty())
-            return;
-        ++probed;
-        TsStructureAnalyzer ts;
-        model::ContainerStructureResult ts_result;
-        // 取消令牌跟着走：TS 分片解析要逐包扫几百到几千个 TS 包，
-        // 大型包这里能跑出好几秒，取消只是"抽查头三个"时也已经晚了。
-        if (ts.Analyze((seg.resolved_path), ts_result, cancel)) {
-            seg.probed = true;
-            return;
-        }
-        seg.container_parse_failed = true;
-        seg.container_error =
-            ts_result.error_message.empty() ? std::string("TS 结构解析失败") : ts_result.error_message;
-    };
-
-    for (model::MediaPlaylistInfo& pl : pkg.playlists) {
-        for (model::SegmentInfo& seg : pl.segments) {
-            if (infrastructure::Checkpoint(cancel))
-                return false;
-            probe_one(seg);
-        }
-    }
-    for (model::DashRepresentationInfo& rep : pkg.representations) {
-        for (model::SegmentInfo& seg : rep.segments) {
-            if (infrastructure::Checkpoint(cancel))
-                return false;
-            probe_one(seg);
-        }
-    }
-    return true;
 }
 
 bool ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureResult& result,

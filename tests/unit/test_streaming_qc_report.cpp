@@ -55,6 +55,22 @@ bool WriteFile(const fs::path& path, const std::string& content) {
     return true;
 }
 
+// 结构有效的 MPEG-TS 占位（NULL 包，PID 0x1FFF）。SegmentQcAnalyzer 现在会真的逐包扫
+// TS 分片，占位必须解析得动（同步字节 0x47 + 188 步长），否则会被判容器解析失败而扣分。
+// NULL 包没有视频 PES，首帧实证拿不到证据，关键帧结论保持清单给的 Declared。
+std::string MakeMinimalTs(size_t packets) {
+    std::string out;
+    out.reserve(packets * 188);
+    for (size_t i = 0; i < packets; ++i) {
+        out.push_back('\x47');
+        out.push_back('\x1F');
+        out.push_back('\xFF');
+        out.push_back(static_cast<char>(0x10 | (i & 0x0F)));
+        out.append(184, '\xFF');
+    }
+    return out;
+}
+
 // 跑一次真实引擎分析，返回 on_finished 里的结果对象（清单路径成功时必走它）。
 AnalysisResult RunEngine(const fs::path& path) {
     AnalysisResult result;
@@ -74,7 +90,7 @@ bool HasIssue(const videoeye::model::QcReport& report, const std::string& rule_i
     return false;
 }
 
-// 合法的单码率 HLS VOD（分片本体存在即可，本阶段不解析 TS 内容）
+// 合法的单码率 HLS VOD（分片本体是结构有效的 TS 占位，无视频首帧证据 → 关键帧保持 Declared）
 const char* const kValidHls = "#EXTM3U\n"
                               "#EXT-X-VERSION:3\n"
                               "#EXT-X-TARGETDURATION:4\n"
@@ -121,7 +137,7 @@ TEST(StreamingQcReportTest, ValidHlsBuildsDimensionAndScoresFull) {
     const fs::path dir = MakeTempDir("hls_valid");
     ASSERT_TRUE(WriteFile(dir / "index.m3u8", kValidHls));
     for (const char* name : {"seg0.ts", "seg1.ts"})
-        ASSERT_TRUE(WriteFile(dir / name, std::string(2048, '\0')));
+        ASSERT_TRUE(WriteFile(dir / name, MakeMinimalTs(11)));
 
     const AnalysisResult result = RunEngine(dir / "index.m3u8");
     ASSERT_TRUE(result.streaming_analyzed);
@@ -147,7 +163,7 @@ TEST(StreamingQcReportTest, DefectiveHlsIssueReachesReport) {
     const fs::path dir = MakeTempDir("hls_defect");
     ASSERT_TRUE(WriteFile(dir / "index.m3u8", kOverTargetHls));
     for (const char* name : {"seg0.ts", "seg1.ts"})
-        ASSERT_TRUE(WriteFile(dir / name, std::string(2048, '\0')));
+        ASSERT_TRUE(WriteFile(dir / name, MakeMinimalTs(11)));
 
     const AnalysisResult result = RunEngine(dir / "index.m3u8");
     ASSERT_TRUE(result.DimensionExecuted(AnalysisDimension::Streaming));

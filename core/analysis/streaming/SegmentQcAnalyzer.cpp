@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "core/analysis/container/TsStructureAnalyzer.h"
 #include "core/analysis/streaming/StreamingCancel.h"
 #include "core/media/streaming/ManifestText.h"
 
@@ -202,6 +203,40 @@ bool ProbeFmp4Segment(model::SegmentInfo& seg, uint32_t fallback_timescale, cons
     return true;
 }
 
+// 探测一个 MPEG-TS 媒体分片：逐包扫到第一个视频 PES 的首个 VCL NAL，实证段首帧能否独立解码。
+//
+// 与 fMP4 同理，约定不等于证据：HLS 惯例假定 TS 分片以 IDR 开头（清单解析器据此置
+// starts_with_keyframe=true / evidence=Declared），但切档/拼接没对齐 IDR 时这个假定是错的，
+// 只有扫到段首那个 NAL 才能把"某码率层切档后首帧花屏"抓出来。
+//   扫到首个 VCL NAL  → 按同步性实证（SyncFlag / NotSync）
+//   解析成功但无视频首帧证据（无视频 PID / 首 PES 只有 SPS/PPS）→ 保持 Declared，不下结论
+//   解析失败          → container_parse_failed（UI"分片容器解析失败"），取消则不清账
+bool ProbeTsSegment(model::SegmentInfo& seg, const std::atomic<bool>* cancel) {
+    if (IsStreamingCancelled(cancel))
+        return false;
+    TsStructureOptions opt;
+    // 首帧实证只需扫到第一个视频 PES 的首个 slice（在文件头部），给足余量即可，
+    // 不必逐分片扫全文件 —— 大包下 max_probe_segments 个分片叠起来必须是可控的 IO。
+    opt.max_scan_packets = 20000;
+    model::ContainerStructureResult res;
+    TsStructureAnalyzer analyzer;
+    if (!analyzer.Analyze(seg.resolved_path, res, cancel, opt)) {
+        if (!IsStreamingCancelled(cancel)) {
+            seg.container_parse_failed = true;
+            seg.container_error = res.error_message;
+        }
+        return false;
+    }
+    const model::TransportStreamInfo& ts = res.transport;
+    if (!ts.has_first_video_sync_evidence)
+        return true; // 解析成功但拿不到视频首帧：保持清单给的 Declared，不冒充已验证
+    seg.starts_with_keyframe = ts.first_video_frame_is_sync;
+    seg.keyframe_evidence =
+        ts.first_video_frame_is_sync ? model::KeyframeEvidence::SyncFlag : model::KeyframeEvidence::NotSync;
+    seg.first_frame_type = ts.first_video_frame_is_sync ? "I" : "P/B";
+    return true;
+}
+
 // 探测一组分片（HLS 的一个 media playlist / DASH 的一个 representation）
 void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_timescale,
                        const SegmentQcOptions& options, const std::atomic<bool>* cancel) {
@@ -223,6 +258,8 @@ void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_
             continue;
         if (seg.container == model::SegmentContainer::FMP4) {
             ProbeFmp4Segment(seg, init_timescale, cancel);
+        } else if (seg.container == model::SegmentContainer::MPEG_TS) {
+            ProbeTsSegment(seg, cancel);
         }
     }
 }
@@ -472,11 +509,13 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                       model::IssueSeverity::Info, static_cast<double>(evicted), 0.0, evicted, -1.0, -1);
         }
         if (invalid > 0) {
-            PushIssue(result, model::StreamingIssueCode::kSegmentContainerInvalid, "分片容器解析失败",
-                      "有 " + std::to_string(invalid) +
-                          " 个分片存在，但用已有的容器分析器（fMP4 走 IsobmffParser）解析失败。",
-                      "用 VideoEye 单独打开该分片看具体报错；常见原因是分片被截断或缺少初始化段。",
-                      model::IssueSeverity::Error, static_cast<double>(invalid), 0.0, invalid, -1.0, -1);
+            PushIssue(
+                result, model::StreamingIssueCode::kSegmentContainerInvalid, "分片容器解析失败",
+                "有 " + std::to_string(invalid) +
+                    " 个分片存在，但用已有的容器分析器（fMP4 走 IsobmffParser，TS 走 TsStructureAnalyzer）解析失败。",
+                "用 VideoEye 单独打开该分片看具体报错；常见原因是分片被截断、内容与扩展名不符，"
+                "或 fMP4 缺少初始化段。",
+                model::IssueSeverity::Error, static_cast<double>(invalid), 0.0, invalid, -1.0, -1);
         }
     }
 
@@ -521,11 +560,14 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
             std::string local_first_non_sync;
             std::string local_first_verified;
             for (const model::SegmentInfo& seg : segments) {
-                if (seg.partial || seg.container != model::SegmentContainer::FMP4)
+                const bool is_fmp4 = seg.container == model::SegmentContainer::FMP4;
+                const bool is_ts = seg.container == model::SegmentContainer::MPEG_TS;
+                if (seg.partial || (!is_fmp4 && !is_ts))
                     continue;
                 if (!seg.probed || seg.container_parse_failed)
                     continue;
-                ++probed_fmp4;
+                if (is_fmp4)
+                    ++probed_fmp4;
                 ++local_probed;
                 switch (seg.keyframe_evidence) {
                 case model::KeyframeEvidence::SyncFlag:
@@ -535,7 +577,10 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                         local_first_verified = seg.uri;
                     break;
                 case model::KeyframeEvidence::Declared:
-                    ++unverified;
+                    // unverified 的 Info 文案是 fMP4 专属（trun/tfhd/trex 缺省 flags）。
+                    // TS 的 Declared 来自清单惯例，探不到视频首帧时保持它即可，不混进这条计数。
+                    if (is_fmp4)
+                        ++unverified;
                     break;
                 case model::KeyframeEvidence::NotSync:
                     ++non_sync;
@@ -585,11 +630,8 @@ SegmentQcAnalyzer::StageStatus SegmentQcAnalyzer::Validate(model::StreamingPacka
                       Code(result, model::StreamingIssueCode::kSegmentStartsNonSync,
                            model::StreamingIssueCode::kSegmentStartsNonSync),
                       "分片首帧不是随机访问点",
-                      "已实证 " + std::to_string(non_sync) +
-                          " 个 fMP4 分片的首样本 "
-                          "sample_is_non_sync_sample=1（首个: " +
-                          first_non_sync +
-                          "）。"
+                      "已实证 " + std::to_string(non_sync) + " 个分片的首帧不是随机访问点（首个: " + first_non_sync +
+                          "；fMP4 首样本 sample_is_non_sync_sample=1，TS 首个 VCL NAL 非 IDR/CRA）。"
                           "这些分片无法独立起播：从该片开始播放会花屏/黑屏，直到下一个 IDR。",
                       "让编码器在每个分片起点强制 IDR（-force_key_frames 对齐分片边界，"
                       "或 -g 与分片时长严格对齐），并确认封装时没有把非关键帧切到段首。",

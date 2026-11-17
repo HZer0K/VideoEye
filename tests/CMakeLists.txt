@@ -1047,6 +1047,23 @@ target_link_libraries(test_streaming_qc_report PRIVATE VideoEyeAnalysis VideoEye
 add_test(NAME StreamingQcReportTests COMMAND test_streaming_qc_report)
 
 # =================================================
+# 测试 19a-real：真实 HLS / DASH fMP4 包的探测层回归
+# 说明: 合成清单（test_streaming_qc_rules）的分片是空字节，测不到 fMP4 探测层 ——
+#       ProbeFmp4Segment 读 tfdt 起点时间、读 trun/tfhd 的 sample_flags 实证关键帧
+#       （KeyframeEvidence::SyncFlag，而非按 CMAF 约定假定的 Declared）。这里用
+#       ffmpeg 真编出来的小包（tests/corpus/streaming/real_{hls,dash}_fmp4）把探测层
+#       钉住。语料由 generate_real_corpus.py 生成（RealCorpusCheck 门禁守其结构），
+#       缺失时测试自己 SKIP。分析器纯 C++（不碰 Qt/FFmpeg），只链 VideoEyeAnalysisPackage。
+# =================================================
+videoeye_add_test(test_streaming_real_package
+    unit/test_streaming_real_package.cpp
+)
+target_compile_definitions(test_streaming_real_package PRIVATE
+    VIDEOEYE_STREAMING_CORPUS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/corpus/streaming")
+target_link_libraries(test_streaming_real_package PRIVATE VideoEyeAnalysisPackage)
+add_test(NAME StreamingRealPackageTests COMMAND test_streaming_real_package)
+
+# =================================================
 # 测试 19b：MPEG-TS 传输层 QC 规则（container.ts.* 前缀分支）
 # 说明: 规则只读 AnalysisResult::ts_transport，样本全部手工构造 —— 不需要真实
 #       TS 文件。「解析器算得对不对」在 test_container_structure_analyzers 里测，

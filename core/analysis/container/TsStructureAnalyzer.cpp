@@ -542,6 +542,12 @@ struct EsPayloadStat {
     uint64_t first_idr_pts = 0;
     uint64_t last_idr_pts = 0;
     uint64_t max_idr_gap_90k = 0;
+
+    // ---- 首帧实证：该 PID 第一个 VCL NAL 是不是同步样本 ----
+    // 与 idr_count 不同，这两个字段只 latch 一次（首个 slice），用来回答
+    // "分片第一帧能否独立解码"。SPS/PPS/SEI 等非 VCL NAL 不算 slice，跳过。
+    bool has_first_slice = false;
+    bool first_slice_is_sync = false;
 };
 
 // 把一段 ES 载荷喂进滑动窗口，返回识别到的随机接入点个数。
@@ -571,10 +577,23 @@ int FeedEsPayload(EsPayloadStat& st, const uint8_t* data, int len) {
         const uint8_t header = st.win[3];
         if (st.codec == 1) {
             // forbidden_zero_bit 必须为 0；type 5 = IDR
-            if ((header & 0x80) == 0 && (header & 0x1F) == 5)
-                ++found;
+            if ((header & 0x80) == 0) {
+                const int nal_type = header & 0x1F;
+                // VCL NAL = type 1..5（非 IDR slice 1..4，IDR 5）。首个 VCL 即段首帧。
+                if (nal_type >= 1 && nal_type <= 5 && !st.has_first_slice) {
+                    st.has_first_slice = true;
+                    st.first_slice_is_sync = (nal_type == 5);
+                }
+                if (nal_type == 5)
+                    ++found;
+            }
         } else if (st.codec == 2) {
             const int nal_type = (header >> 1) & 0x3F;
+            // VCL NAL = type 0..31；IRAP（19/20 IDR、21 CRA）才是同步样本。
+            if (nal_type <= 31 && !st.has_first_slice) {
+                st.has_first_slice = true;
+                st.first_slice_is_sync = (nal_type == 19 || nal_type == 20 || nal_type == 21);
+            }
             if (nal_type == 19 || nal_type == 20 || nal_type == 21)
                 ++found;
         }
@@ -1389,6 +1408,12 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path, model::Container
         bool has_gap = false;
         bool has_no_idr = false;
 
+        // 首帧实证候选：最早 first_pts 的视频 PID 的首个 VCL NAL 同步性。
+        bool has_first_video_sync = false;
+        bool first_video_sync = false;
+        bool first_video_has_pts = false;
+        uint64_t first_video_pts = 0;
+
         for (const auto& kv : es_payload) {
             const uint16_t pid = kv.first;
             const EsPayloadStat& es = kv.second;
@@ -1451,6 +1476,19 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path, model::Container
                     worst_no_idr_pid = pid;
                     has_no_idr = true;
                 }
+
+                // 首帧实证只在 H.264/HEVC（codec 1/2）上成立：其它编码的同步标记不同。
+                // 多视频 PID 时取最早 first_pts 的那一路；有 PTS 的优先于无 PTS 的。
+                if ((es.codec == 1 || es.codec == 2) && es.has_first_slice) {
+                    const bool take = !has_first_video_sync ||
+                                      (es.has_pts && (!first_video_has_pts || es.first_pts < first_video_pts));
+                    if (take) {
+                        has_first_video_sync = true;
+                        first_video_sync = es.first_slice_is_sync;
+                        first_video_has_pts = es.has_pts;
+                        first_video_pts = es.first_pts;
+                    }
+                }
             }
         }
 
@@ -1464,6 +1502,8 @@ bool TsStructureAnalyzer::Analyze(const std::string& file_path, model::Container
         ts.max_no_idr_pid = has_no_idr ? Cat("0x", HexFillLow(worst_no_idr_pid, 4)) : std::string();
         ts.idr_count = idr_total;
         ts.video_pids_without_idr = video_without_idr;
+        ts.has_first_video_sync_evidence = has_first_video_sync;
+        ts.first_video_frame_is_sync = first_video_sync;
 
         if (has_no_idr)
             result.metadata["最长无 IDR(ms)"] = Fixed(ts.max_no_idr_interval_ms, 1);
