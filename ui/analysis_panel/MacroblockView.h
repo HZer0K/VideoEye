@@ -3,7 +3,7 @@
 // 宏块分析页：运动矢量列表 + 运动矢量可视化预览 + 块大小分布 + 运动幅度分布。
 //
 // 从 AnalysisPanel 拆出来的独立页面组件。这一页的数据只在播放期由解码器回吐
-// （MediaPlayer → MainWindow → 面板），不参与全文件扫描，所以接缝很窄：
+// （RealtimeAnalysisController → AnalysisBus → MainWindow → 面板），不参与全文件扫描，所以接缝很窄：
 //   - 数据进来：SetAnalysis()
 //   - 开关出去：面板通过 SetFeatureHooks 注入，视图只认自己的编号 0 = 宏块分析
 // 页面本体就是 QWidget（外部 QStackedWidget 的一页），不需要再包一层 tab widget。
@@ -44,7 +44,7 @@ public:
     // 而面板里的 feature_enabled_ 其实是关的。
     void SetFeatureHooks(std::function<bool(int)> is_enabled, std::function<void(int, bool)> set_enabled);
 
-    // 播放期逐帧回吐：与面板的批量刷新节拍一致，攒到 FlushPending() 再画
+    // 播放期约 10Hz 合并回吐（控制器侧 100ms 窗口只留最新一帧）：攒到 FlushPending() 再画
     void SetAnalysis(const model::MacroblockFrameAnalysis& analysis);
 
     // 清空本页数据并回到「等待视频播放」态。换文件、关闭分析时调用。

@@ -115,7 +115,8 @@ public:
     void FinalizeAudioBitstream(AudioBitstreamAnalyzer& audio_bitstream, int audio_stream_index);
     // 参数变化时间线：直接搬进结果（Assembler 不做二次加工）
     void FinalizeParameterTimelines(const std::vector<model::ParameterTimeline>& timelines);
-    // 帧级显示/解码顺序（POC）。空 = 没有可分析的 H.264 轨（维度会标不可用）。
+    // 帧级显示/解码顺序。空 = 没有可追踪的视频轨（当前覆盖 H.264 / HEVC / VVC（POC）、
+    // VP9（显示事件序）与 AV1（order_hint），维度会标不可用）。
     void FinalizeFrameOrder(const std::vector<model::FrameOrderTimeline>& timelines);
     // 必须在 color_probe 释放之后调用（部分 HDR 元数据只在解码帧上出现）
     void FinalizeColorHdr(ColorHdrAnalyzer& color_hdr, int color_video_stream_index);
@@ -144,7 +145,7 @@ public:
     void Finish(const AnalysisCallbacks& callbacks);
 
 private:
-    // 用 dimensions 表回填 7 个历史 *_analyzed 布尔，让"跑没跑"只有一份答案。
+    // 用 dimensions 表回填 8 个历史 *_analyzed 布尔，让"跑没跑"只有一份答案。
     //
     // 生产阶段（逐包扫描 / 各分析器收尾）必须继续写这些布尔 —— 扫描循环要边跑边判断；
     // 但到 FinalizeDimensionStatus 这里，维度的 executed 才是权威口径：一旦某维度被判定为

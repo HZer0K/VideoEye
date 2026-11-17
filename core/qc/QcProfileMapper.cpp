@@ -5,7 +5,7 @@ namespace qc {
 
 videoeye::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth) {
     videoeye::AnalysisOptions options;
-    // 强度只动"要不要解码"的开关，各分析维度本身仍保持默认开启。
+    // 档位除了"要不要解码"的开关，也直接预置部分维度开关（audio_qc / visual_qc）。
     switch (depth) {
     case QcAnalysisDepth::Fast:
         options.analyze_audio_qc = false; // 响度要靠解码，是最大的一块开销

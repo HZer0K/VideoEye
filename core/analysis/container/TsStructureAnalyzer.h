@@ -38,7 +38,8 @@ struct TsStructureOptions {
     // memcpy 级别的线性扫描，不额外读盘。
     bool scan_pes_payload = true;
 
-    // 视频 PID 最长允许多久没有 IDR/CRA（秒）。<= 0 关闭该检查。
+    // 视频 PID 最长允许多久没有 IDR/CRA（秒）。<= 0 表示不设时间阈值
+    // （只要有可见跨度就计），与 max_pid_gap_s 的"<= 0 关闭"语义不同。
     // 只用来判"这一段视频找不到任何随机接入点"——seek 会退化成从头解码。
     double max_no_idr_interval_s = 10.0;
 

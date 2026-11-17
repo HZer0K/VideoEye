@@ -45,7 +45,8 @@ public:
                                const SegmentQcOptions& options = SegmentQcOptions{},
                                const std::atomic<bool>* cancel = nullptr);
 
-    // 落盘探测：分片是否存在、多大、fMP4 分片的 tfdt 起点（关键帧时间）。
+    // 落盘探测：分片是否存在、多大；fMP4 分片给出 tfdt 起点（关键帧时间）与首样本
+    // 同步性实证，TS 分片逐包扫到首个视频 VCL NAL 实证段首帧同步性。
     static StageStatus ProbeSegments(model::StreamingPackageResult& result,
                                      const SegmentQcOptions& options = SegmentQcOptions{},
                                      const std::atomic<bool>* cancel = nullptr);

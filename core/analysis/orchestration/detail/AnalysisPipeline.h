@@ -420,7 +420,7 @@ struct VisualFrameProbe {
 class AnalysisPipeline {
 public:
     explicit AnalysisPipeline(const AnalysisOptions& options);
-    // 析构兜底释放三条解码通路（评审 P2-4）：
+    // 析构兜底释放各条解码通路（评审 P2-4）：
     // 正常返回与已知错误分支都会显式调 ReleaseProbes()，但 Prepare() / 逐包分析 /
     // 回调抛异常时栈展开不会走到那一步 —— 这时只有析构能把 FFmpeg 资源收干净。
     ~AnalysisPipeline();
@@ -433,12 +433,13 @@ public:
     void Prepare(AVFormatContext* fmt, model::AnalysisResult& result, double file_duration);
 
     // ---- 每个包一次 ----
-    // 要求 pkt->stream_index 已校验合法。分发顺序：时间轴 -> 字幕/时码/辅助 ->
-    // 音频解码 -> 关键帧与 GOP -> 色彩与 HDR。顺序本身不影响正确性，但保持固定顺序
-    // 便于对照日志。
+    // 要求 pkt->stream_index 已校验合法。分发覆盖：时间轴 -> 字幕/时码/辅助 ->
+    // 音频位流 -> 音频 QC 解码 -> 关键帧与 GOP / slice/SEI 巡检 / 码率 GOP 深度 ->
+    // 参数集追踪 -> 帧序追踪 -> 色彩与 HDR -> 视觉画质采样。顺序本身不影响正确性，
+    // 但保持固定顺序便于对照日志。
     void OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::AnalysisResult& result, int64_t packet_index);
 
-    // ---- 扫描结束后的三个钩子（顺序见文件头注释）----
+    // ---- 扫描结束后的钩子（顺序见文件头注释）----
     // 关闭输入上下文之前的最后一眼：部分封装的 HDR 元数据要读到包后才补进 codecpar。
     // 关上下文之前跑：部分封装的 HDR 元数据要读到包后才补进 codecpar。
     // result 用于回填 slice/SEI 巡检的汇总结果（见 FinishVideoEsInspection）。
@@ -506,7 +507,7 @@ public:
     const std::vector<model::ParameterTimeline>& parameter_timelines() const {
         return parameter_timelines_;
     }
-    // 帧级显示顺序时间线（H.264 / HEVC 走 POC，VP9 走显示事件序，
+    // 帧级显示顺序时间线（H.264 / HEVC / VVC 走 POC，VP9 走显示事件序，
     // AV1 走 order_hint；其余编码为空，对应维度标不可用）
     const std::vector<model::FrameOrderTimeline>& frame_order_timelines() const {
         return frame_order_timelines_;

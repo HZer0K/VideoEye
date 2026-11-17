@@ -15,7 +15,7 @@ namespace {
 // ---------------------------------------------------------------------------
 // 逐维度的"证据与覆盖"构造器
 //
-// 为什么拆（2026-10-31）：这 17 段判据原本挤在 FinalizeDimensionStatus 一个 300 行的
+// 为什么拆（2026-10-31）：这些判据原本挤在 FinalizeDimensionStatus 一个 300 行的
 // 函数里，改一个维度得在十几段几乎同构的 if/else 里找位置 —— 找错一次就是把 A 维度的
 // 条件写到 B 维度上，编译器不会报错，报告只会安静地少一行"未执行"或多一行"没问题"。
 //
@@ -26,7 +26,7 @@ namespace {
 //   3) MarkConclusive / SetDimension 统一在驱动函数里做，维度顺序也由它决定
 //      （有测试 DimensionAggregation.DimensionsAppearInTheDocumentedOrder 钉死）。
 //
-// 用自由函数而不是给它加 17 个成员：构造器不该被单独调用，挂到类上反而暗示它是
+// 用自由函数而不是给它加一堆成员：构造器不该被单独调用，挂到类上反而暗示它是
 // 公共步骤；成员函数还要为了 ctx 里的三样东西多传一遍参数。
 // ---------------------------------------------------------------------------
 struct DimensionContext {
@@ -133,7 +133,7 @@ DimensionStatus BuildFrameStructureStatus(const DimensionContext& ctx) {
     return status;
 }
 
-// 帧级显示顺序（H.264 / HEVC 走 POC，VP9 走显示事件序，AV1 走 order_hint）。
+// 帧级显示顺序（H.264 / HEVC / VVC 走 POC，VP9 走显示事件序，AV1 走 order_hint）。
 //
 // 与"参数变化时间线"是同一个包扫描循环里产出的两类结论，但覆盖判据不同：
 // 那里按包计覆盖，这里按**帧**计 —— 帧数能从顺序时间线直接数出来，

@@ -776,7 +776,7 @@ void BitrateGopAnalyzer::DetectOversizedFrames() {
 }
 
 void BitrateGopAnalyzer::DetectSparseKeyframes() {
-    // 整片只有 1 个（或 0 个）关键帧且有一定时长 → 几乎无法 seek
+    // 整片只有 1 个关键帧且有一定时长 → 几乎无法 seek（0 个关键帧另有判定，不在此列）
     if (result_.duration_seconds < 30.0)
         return;
     if (result_.key_frame_seconds.size() > 1)

@@ -653,7 +653,7 @@ bool DetectLayout(const std::string& probe, int& packet_size, int64_t& first_syn
     return true;
 }
 
-// 从 from 开始往后找一个可信的同步点（该位置与 +ps、+2ps 都是 0x47）。
+// 从 from 开始往后找一个可信的同步点（该位置与 +ps 都是 0x47；块尾不足时单点接受）。
 bool FindSyncOffset(SeqFileReader& file, int64_t from, int packet_size, int64_t max_bytes, int64_t& found) {
     if (!file.Seek(from))
         return false;

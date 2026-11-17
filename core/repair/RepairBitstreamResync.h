@@ -65,7 +65,7 @@ RepairBitstreamResyncResult ScanForRandomAccessPoints(const std::string& path, u
                                                       const RepairBitstreamResyncOptions& options,
                                                       const std::atomic<bool>* cancel, const RepairRunBudget* budget);
 
-// 顶层盒扫描：找第一个非空 mdat 的载荷区间。
+// 顶层盒扫描：找第一个 mdat 的载荷区间（即使载荷为空也采纳，不往后找）。
 // 与「必须恰好一个 mdat」的重建器不同，这里只为限定扫描窗口，多 mdat 时取第一个
 // 并置 multiple_mdats=true —— 扫描窗口不完整必须如实告知，不能假装扫了全文件。
 struct RepairMdatWindow {

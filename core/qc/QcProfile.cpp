@@ -230,7 +230,7 @@ std::vector<QcProfile> BuiltinQcProfiles() {
 }
 
 const QcProfile* FindBuiltinQcProfile(const std::string& id) {
-    // BuiltinQcProfiles() 每次重建 5 个对象，调用频率很低（切换模板、解析命令行），不值得缓存。
+    // 函数级静态缓存：BuiltinQcProfiles() 只构建一次，之后查找都走这份快照。
     static const std::vector<QcProfile> kProfiles = BuiltinQcProfiles();
     for (const auto& profile : kProfiles) {
         if (profile.id == id)

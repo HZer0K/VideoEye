@@ -24,8 +24,8 @@ int SubHeightC(int chroma_format_idc) {
 // 一律按「每条目至少 1 bit」给出界，超界即判非法并停止继续读 —— 解析中途失败不能
 // 顺手把 present 置成 true，否则下游会拿着一堆垃圾值当成有效参数集。
 constexpr int kMaxNumSubpics = 1024;        // sps / pps 的 subpic 数量
-constexpr int kMaxNumRefPicLists = 64;      // 单条 ref_pic_list 里的参考项数
-constexpr int kMaxRefPicListEntries = 4096; // ref_pic_list 的条目数上限
+constexpr int kMaxNumRefPicLists = 64;      // sps_num_ref_pic_lists[i]：list 的条数
+constexpr int kMaxRefPicListEntries = 4096; // 单条 ref_pic_list_struct 里的参考项数
 constexpr int kMaxVirtualBoundaries = 4095; // 虚拟边界条数（每条至少 1 bit）
 constexpr int kMaxHrdCpbCntMinus1 = 31;     // HRD 参数集里的 cpb_cnt - 1
 // subpic_id 的位长：subpic_id_len_minus1 取值 0..15（H.266 7.4.3.3 约束
@@ -63,7 +63,8 @@ int CeilShift(int v, int s) {
 // 返回 false = 没走完这段，调用方据此把 depth 停在 SubpicIdMapping。
 bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
     // 真实码流的 tile 行列数不会超过几十，给 4096 是纯兜底：
-    // 一条 ue(v) 顶到 40 亿时，这里的循环会先把 reader 拖到越界并置 HasError。
+    // 一条 ue(v) 顶到天文数字时，ReadUEBounded 在读的那一刻就置 HasError，
+    // 不会让循环拿着荒谬的次数把 reader 拖到越界。
     constexpr int kMaxTiles = 4096;
 
     // H.266 7.3.2.4（Table 15）的顺序，一个字段都不能多、不能少：
@@ -480,7 +481,10 @@ void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int p
             }
             if (st_ref_pic) {
                 const uint32_t abs_delta_poc = reader.ReadUE();
-                // 短时参考项是否带符号位（加权预测时首项不带 +1 修正）
+                // ⚠️ 简化实现：无条件 +1，因此 abs_delta_poc_st 恒 > 0、恒读一位
+                // strp_entry_sign_flag。规范里 i > 0 且未开加权预测时 +1 修正
+                // 不适用（abs_delta_poc_m1 == 0 的项不该有符号位），这类码流会
+                // 从这里开始错位。
                 const uint32_t abs_delta_poc_st = abs_delta_poc + 1;
                 if (abs_delta_poc_st > 0)
                     reader.ReadBit(); // strp_entry_sign_flag

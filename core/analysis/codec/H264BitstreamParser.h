@@ -59,9 +59,9 @@ private:
     static void ParseProfileLevelInfo(uint32_t profile_idc, uint32_t level_idc, int& profile, std::string& profile_name,
                                       int& level, std::string& level_version);
 
-    // 取出 RBSP：去掉可能存在的 1 字节 NAL header，再做 emulation prevention 反转义。
-    // ExtradataParser 的两条路径对 data 是否含 header 并不一致
-    // （AnnexB 剥掉、avcC 保留），这里统一处理。
+    // 取出 RBSP：只做 emulation prevention 反转义。
+    // NalUnit::data 恒不含 NAL header（ExtradataParser 的 AnnexB / avcC 两条
+    // 提取路径都已剥掉，见 core/media/codec/ExtradataParser.h 的不变量说明）。
     static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
 
     // 同上，但从裸载荷开始（NalView 路径）：只做 emulation prevention 反转义。

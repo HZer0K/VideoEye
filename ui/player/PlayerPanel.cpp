@@ -597,9 +597,6 @@ void PlayerPanel::OnStateChanged(model::PlayerState state) {
 }
 
 void PlayerPanel::OnFrameReady(const QImage& frame) {
-    // 主线程逐帧绘制耗时统计 (每 100 帧汇总一次, 用于定位播放期卡顿)
-    const auto frame_begin = std::chrono::steady_clock::now();
-
     // 播放区已收起: 不做 CPU 回退绘制。解码线程侧已通过
     // MediaPlayer::SetRenderingSuppressed 停止发帧, 此处为显式兜底。
     if (!IsPlayerAreaVisible()) {

@@ -413,7 +413,8 @@ bool VvcPocTracker::ReadSlice(const NalView& nal, bool has_time, double time_sec
                     reader.ReadBit(); // sh_extra_bit[i]
             }
             // sh_num_tiles_in_slice_minus1 只在"非矩形 slice 且 tile 数 > 1"时存在，
-            // 而上面能走到 address_absent 的两种情况都满足 tile 数 == 1。
+            // 而上面能走到 address_absent 的三种情况要么 NumTilesInPic == 1
+            // （no_pic_partition），要么 rect_slice == 1，该字段都不存在。
             const uint32_t raw = reader.ReadUEClamped(2);
             slice_type = NormalizeSliceType(raw);
             if (slice_type < 0 || reader.HasError())

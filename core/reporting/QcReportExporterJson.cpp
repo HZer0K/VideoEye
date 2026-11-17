@@ -8,10 +8,6 @@
 namespace videoeye {
 namespace reporting {
 
-// JsonValue 还住在历史命名空间 videoeye::utils —— utils/ 目录已经拆进
-// infrastructure/，命名空间没跟着改（全仓 200+ 处引用，单独一轮做）。
-using videoeye::JsonValue;
-
 using detail::kReportSchemaVersion;
 using detail::WriteUtf8File;
 
@@ -216,8 +212,8 @@ JsonValue BuildParameterTimelinesArray(const model::AnalysisResult& result) {
 // 帧级显示顺序（POC 重建 / VP9 的显示事件序）。
 //
 // 与 parameter_timelines 的分工：那条记"配置怎么变"，这条记"帧怎么排"。
-// 字段全部来自逐 slice 解析出的 POC；解析不出来的组合（H.264 的
-// pic_order_cnt_type=1、AV1/VVC）走 available=false + reason，
+// 字段全部来自逐 slice / 帧头解析出的顺序值；解析不出来的流（H.264 的
+// pic_order_cnt_type=1、启用 POC MSB cycle 的 VVC 等）走 available=false + reason，
 // 不给推断不出的字段留 0 占位。
 JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
     JsonValue array = JsonValue::MakeArray();
@@ -259,8 +255,8 @@ JsonValue BuildFrameOrdersArray(const model::AnalysisResult& result) {
 
         // 支持范围：把"哪些结论能下、哪些不能"写进报告，避免读者把缺失当通过。
         JsonValue scope = JsonValue::MakeObject();
-        scope.Set("codecs", JText("H.264 / HEVC（POC）、VP9（显示事件序）与 AV1（order_hint，"
-                                  "模 2^bits 的环形量已解环）；VVC 未实现（对应维度标记为不可用）"));
+        scope.Set("codecs", JText("H.264 / HEVC / VVC（POC）、VP9（显示事件序）与 AV1（order_hint，"
+                                  "模 2^bits 的环形量已解环）"));
         scope.Set("poc_type", JText("H.264：pic_order_cnt_type 0 与 2 支持，1 不支持"
                                     "（需要 offset_for_ref_frame 表）；HEVC 只有一套公式，恒记 0；"
                                     "VP9 与 AV1 没有该概念，恒记 -1"));

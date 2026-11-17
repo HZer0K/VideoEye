@@ -541,8 +541,8 @@ void VideoEsInspector::HandleSeiPayload(int payload_type, const uint8_t* p, size
         BitReader reader;
         reader.Reset(p, n);
         // pic_timing 的第一项是可选的 pic_struct（只有 SPS VUI 的
-        // pic_struct_present_flag=1 时才存在）。这里拿不到 VUI，
-        // 所以只记录"有这条 SEI"，不去猜它到底有没有。
+        // pic_struct_present_flag=1 时才存在）。这里拿不到 VUI，载荷非空时
+        // 按前 4 bit 试读 pic_struct —— 该 flag 为 0 时会误读，只作参考。
         if (n >= 1) {
             sei.pic_struct = static_cast<int>(reader.ReadBits(4));
         }

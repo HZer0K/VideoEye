@@ -162,8 +162,9 @@ struct MediaPlayer::Impl {
     // MediaPlayer 经它转发开关/统计, 自身不再持有这些散落成员。
     AnalysisSession analysis_session_;
 
-    // 播放期实时分析的全部编排（六个 hook / 19 个逐帧计数器 / 逐帧分析器 / 视觉缺陷
-    // 采样与工作线程）住在 RealtimeAnalysisController 里，门面只转发入口与信号。
+    // 播放期实时分析的全部编排（hook / 逐帧计数器 / 逐帧分析器 / 视觉缺陷
+    // 采样与工作线程）住在 RealtimeAnalysisController 里，门面只转发入口，
+    // 信号由控制器直接在 analysis_bus() 上发射。
     RealtimeAnalysisController realtime_analysis_;
 
     // 后台任务统一调度: 任务 ID / 取消标志 / 终态 / 过期结果丢弃。
@@ -172,11 +173,12 @@ struct MediaPlayer::Impl {
     task::TaskManager task_manager_;
 
     // 抽帧 / 音视频导出的全部编排（发起、排队、代际、取消、worker 线程生命周期）
-    // 住在 ExportController 里，门面只转发入口与信号。
+    // 住在 ExportController 里，门面只转发入口，信号直接在 export_bus() 上发射。
     ExportController export_controller_;
 
     // 容器结构分析的后台编排（派发 / 作废 / 过期结果丢弃）住在
-    // ContainerInspectionController 里，门面只负责"该不该分析"和转发两条信号。
+    // ContainerInspectionController 里，门面只负责"该不该分析"，两条信号直接在
+    // container_bus() 上发射。
     ContainerInspectionController container_inspection_;
 
     // 打开媒体的全部编排（事务式: Prepare 建独立上下文 / Commit 一次性提交）住在
@@ -214,7 +216,7 @@ MediaPlayer::MediaPlayer(QObject* parent) : QObject(parent), impl_(std::make_uni
     // 容器结构分析的两条信号也不再经门面转发: ContainerInspectionController 直接在
     // 自己的 ContainerBus 上发射，UI 连 container_bus()（见 core/player/ContainerBus.h）。
 
-    // 实时分析的 23 条信号也不再经门面转发: RealtimeAnalysisController 直接在
+    // 实时分析的 24 条信号也不再经门面转发: RealtimeAnalysisController 直接在
     // 自己的 AnalysisBus 上发射，UI 连 analysis_bus()（见 core/player/AnalysisBus.h）。
 
     // 打开链路的四条信号原样转发: 封面图 / 媒体模式 / 媒体信息文本 / 打开失败。
@@ -348,7 +350,7 @@ void MediaPlayer::Impl::BeginMediaSwitch(const QString& url) {
     current_url_ = url;
     // 换文件了: 上一次的容器结构分析结果作废(任务体投递前会查 IsCurrent)
     container_inspection_.Cancel();
-    // 实时分析的复位（19 个逐帧计数器 / "已报告过"标志 / 逐帧分析器 / 清空 UI 列表）
+    // 实时分析的复位（逐帧计数器 / "已报告过"标志 / 逐帧分析器 / 清空 UI 列表）
     // 整体在控制器里 —— 逐个留在调用方等于把它的内部状态摊开在别人家。
     realtime_analysis_.ResetForNewMedia();
     analysis_session_.stream_analyzer().Reset();
@@ -641,7 +643,8 @@ void MediaPlayer::SetAnalysisFeature(model::AnalysisFeature feature, bool enable
 // --- 画面质量 / 视觉缺陷 ---
 
 // 画面质量 / 视觉缺陷: 开关、采样档位、收尾全部在 RealtimeAnalysisController 里
-// （见 core/player/RealtimeAnalysisController.h），本类只保留对外入口与信号转发。
+// （见 core/player/RealtimeAnalysisController.h），本类只保留对外入口，
+// 信号由控制器直接在 analysis_bus() 上发射。
 
 model::VisualDefectOptions MediaPlayer::GetVisualDefectOptions() const {
     return impl_->realtime_analysis_.GetVisualDefectOptions();
@@ -662,8 +665,8 @@ model::StreamStats MediaPlayer::GetCurrentStats() const {
 // --- 导出: 全部委托给 ExportController ---
 //
 // 抽帧 / 音视频导出的发起、排队、代际过滤、取消与 worker 线程生命周期都在
-// core/player/ExportController.cpp，本类只保留对外入口与信号转发
-// （连接见构造函数）。拆分的理由与"绝不能改"的几条约定都写在那个文件头。
+// core/player/ExportController.cpp，本类只保留对外入口；十条信号在 export_bus()
+// 上，门面不再做转发连接。拆分的理由与"绝不能改"的几条约定都写在那个文件头。
 
 void MediaPlayer::StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality,
                                         int frame_interval) {
@@ -686,13 +689,10 @@ void MediaPlayer::CancelAllExports() {
     impl_->export_controller_.CancelAllExports();
 }
 
-// --- 解码线程 ---
-
-// --- 播放回调 (由 PlaybackSession 的解码线程调用) ---
+// --- 硬件解码查询 ---
 //
-// 切分后解码循环只做 demux / 解码 / pacing / 画面输出; "要不要发信号、要不要计数"
-// 这类分析语义全部留在下面这些 hook 里, 与分析器、计数器放在一起。
-// 调用线程与改造前一致(解码线程), 因此信号仍然由 Qt 自动排队到 UI 线程。
+// 播放回调（hook）与分析器、计数器已整体搬进 RealtimeAnalysisController，
+// 这里只剩两个只读查询。
 
 bool MediaPlayer::IsHardwareDecoding() const {
     const VideoDecoder* decoder = impl_->playback_session_.video_decoder();

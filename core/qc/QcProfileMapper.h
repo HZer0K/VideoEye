@@ -13,8 +13,8 @@
 namespace videoeye {
 namespace qc {
 
-// 分析强度 -> AnalysisOptions。基础档位与"具体要分析哪些维度"无关，
-// 后者由调用方决定（UI 有自己的开关面板）。
+// 分析强度 -> AnalysisOptions。档位会预置维度开关（Fast 关音频/视觉 QC，
+// Standard/Deep 开逐帧视觉 QC，Deep 另开帧类型解码），调用方可再覆盖。
 videoeye::AnalysisOptions OptionsForDepth(QcAnalysisDepth depth);
 
 } // namespace qc

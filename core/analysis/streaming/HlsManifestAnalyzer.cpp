@@ -355,7 +355,7 @@ void ParseMediaPlaylistBody(const std::vector<std::string>& lines, const std::st
                 pl.has_discontinuity_sequence = true;
             }
         } else if (name == "#EXT-X-PLAYLIST-TYPE") {
-            // 保留原文：VOD / EVENT /（空）。IsLive() 只看是不是 VOD，
+            // 保留原文：VOD / EVENT /（空）。IsLive() 看 ENDLIST 与是否 VOD，
             // 但 EVENT 列表只增不减、不会淘汰头部旧分片，live 侧的检查要区分它。
             pl.playlist_type = mt::ToLower(body);
             pl.playlist_type_vod = (pl.playlist_type == "vod");

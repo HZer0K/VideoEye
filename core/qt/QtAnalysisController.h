@@ -122,7 +122,7 @@ private:
     // 等待工作线程体返回（不 join）。返回 false 表示预算内没等到。
     bool AwaitWorker(int budget_ms);
     // 回收句柄。**仅在线程体已返回时调用**，否则会在调用线程上阻塞 ——
-    // 这正是本类要避免的事情，所以每个调用点都得先用 worker_finished_ 判过。
+    // 这正是本类要避免的事情，所以每个调用点都得先用 WorkerBodyReturned() 判过。
     void ReapWorker();
 
     // 关闭路径：作废排队请求 + 置取消令牌 + 在预算内等线程退出；超预算只能放弃。

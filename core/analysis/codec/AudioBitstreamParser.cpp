@@ -192,7 +192,7 @@ bool ParseAacStreamInfo(BitReader& br, LatmHeader& out) {
 //
 // 只处理 channelConfiguration != 0 的情况：== 0 时要在此完整解析一个
 // program_config_element()，而现有的 ParseAacProgramConfig 是给 raw_data_block
-// 用的（开头带 5 bit id_syn_ele），语法不同不能复用。这类流本来就已经从 PCE
+// 用的（开头带 3 bit id_syn_ele），语法不同不能复用。这类流本来就已经从 PCE
 // 拿到了声道布局，少这一条 sync extension 影响有限 —— 但要把原因写进 note，
 // 不能静默跳过。
 bool SkipGaSpecificConfig(BitReader& br, int aot, int channel_configuration, std::string& note) {
@@ -1290,8 +1290,8 @@ bool AudioBitstreamParser::ParseAacProgramConfig(const uint8_t* data, size_t siz
         return false;
     BitReader br(data, size);
     uint64_t value = 0;
-    // raw_data_block 由若干 syntax element 组成，每个以 3 bit element_instance_tag 开头，
-    // 元素类型在 ID_END(7) 之前由 4 bit 的 id_syn_ele 给出。这里只看**第一个**元素：
+    // raw_data_block 由若干 syntax element 组成，每个以 3 bit id_syn_ele 开头，
+    // 后跟 4 bit element_instance_tag（ID_END(7) 没有 tag）。这里只看**第一个**元素：
     // 不是 PCE(5) 就放弃（要走完 SCE/CPE 的整个 payload 才能到下一个元素）。
     if (!br.Read(3, value))
         return false;

@@ -26,15 +26,17 @@ std::string LowerExtension(const std::string& path);
 std::string FileStem(const std::string& path);
 std::string FileName(const std::string& path);
 
-// 两个路径是否指向同一个文件（任一方不存在时按字符串规范化比较）。
+// 两个路径是否指向同一个文件（两边都存在时用 equivalent，任一方不存在时
+// 按路径别名键比较，见下方 PathsAlias）。
 bool SamePath(const std::string& a, const std::string& b);
 
 // ---- R01：路径别名 ----
 //
-// SamePath 只在两边都存在时用 equivalent；任何一个产物路径此时还不存在，
-// 于是 .part 源文件与 final_path + ".part" 会被当成两个不同路径。
-// PathAliasKey 把"绝对路径 + 父目录符号链接解析 + Windows 大小写折叠"做成稳定键，
-// 让尚不存在的产物也能和已存在的源文件比对。
+// 旧实现只在两边都存在时用 equivalent，产物路径此时还不存在，.part 源文件
+// 与 final_path + ".part" 会被当成两个不同路径。现在 SamePath 直接委托
+// PathsAlias：任一方不存在时回退 PathAliasKey —— 把"绝对路径 + 父目录符号
+// 链接解析 + Windows 大小写折叠"做成稳定键，让尚不存在的产物也能和已存在
+// 的源文件比对。
 std::string PathAliasKey(const std::string& path);
 bool PathsAlias(const std::string& a, const std::string& b);
 

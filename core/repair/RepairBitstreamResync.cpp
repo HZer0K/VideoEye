@@ -42,7 +42,8 @@ bool ParseNalHead(const std::string& codec, std::uint8_t b0, std::uint8_t* type)
             return false; // forbidden_zero_bit 必须为 0
         const std::uint8_t nal_type = static_cast<std::uint8_t>(b0 & 0x1F);
         if (nal_type < 1 || nal_type > 12)
-            return false; // 8~12 保留，13+ 属 SVC/MVC 扩展，第一版不认
+            return false; // 1–12 为基础语法集（8=PPS、9=AUD、12=填充等）；
+                          // 13+ 为保留 / SVC/MVC 扩展，第一版不认
         *type = nal_type;
         return true;
     }

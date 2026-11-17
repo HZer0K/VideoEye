@@ -7,8 +7,10 @@
 //      （EXT-X-TARGETDURATION / EXTINF / EXT-X-MAP / EXT-X-DISCONTINUITY /
 //       EXT-X-KEY / EXT-X-PART / EXT-X-BYTERANGE）；
 //   2) 产出 StreamingPackageResult 里的 variants / renditions / playlists / segments；
-//   3) Validate() 做 HLS 侧的清单级校验（时长越界、抖动、discontinuity 配对、
-//      初始化段缺失、加密标签、LL-HLS 部分分片）。
+//   3) Validate() 做 HLS 侧校验：清单级（时长越界、抖动、discontinuity 配对、
+//      初始化段缺失、加密标签、LL-HLS 部分分片）+ 直播语义与时间标签
+//      （MEDIA-SEQUENCE、DATERANGE、PROGRAM-DATE-TIME、I-frame variant、
+//      EXT-X-START、SKIP 增量更新），全集见 .cpp 的 kOwnCodes。
 //
 // 依赖边界（与 Mp4SampleTableAnalyzer 一致）:
 //   - 头文件不依赖 Qt / FFmpeg，只用 C++17 标准库，纯逻辑可单测；

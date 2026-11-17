@@ -68,8 +68,8 @@ public:
 private:
     bool enabled_ = false;
     std::string disabled_reason_;
-    // 两个实现都不是多态基类的派生类：它们的骨架相同但状态字段完全不同，
-    // 硬抽一个虚基类只会把两边各自的字段都摊到基类里。
+    // 各实现都不是多态基类的派生类：它们的骨架相同但状态字段完全不同，
+    // 硬抽一个虚基类只会把各自不同的字段都摊到基类里。
     std::variant<std::monostate, H264PocTracker, HevcPocTracker, VvcPocTracker, Vp9FrameOrderTracker,
                  Av1FrameOrderTracker>
         impl_;

@@ -45,12 +45,12 @@ struct ContainerMetadata {
 //   - H.264 : SPS + PPS（含 VUI 色彩/时基）—— Supported
 //   - HEVC  : VPS + SPS + PPS —— Supported
 //   - AV1   : Sequence Header OBU（含 color_config）；MP4 里通常只有 av1C，
-//             此时仅位深/采样结构可信（TypeOnly）
+//             此时仅位深/采样结构可信（Partial，仅类型级信息）
 //   - VP9   : **没有参数集**。关键信息写在每个关键帧的 uncompressed header
 //             里（Vp9BitstreamParser）：WebM/IVF/带内走这条路；MP4 的 vpcC
-//             只有 profile/level/位深/色度，给不出分辨率（TypeOnly）
-//   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归），但畸形码流验证
-//             不充分 —— 按方案 A 标 Partial，partial=true，不参与严格一致性比对
+//             只有 profile/level/位深/色度，给不出分辨率（Partial）
+//   - VVC   : VPS/SPS/PPS/vvcC 均可解析（含真实编码器回归）；SPS+PPS 齐全且
+//             组合落在验证矩阵时 Supported、参与严格一致性比对，否则 Partial
 // ==========================================================================
 class BitstreamAnalyzer {
 public:
@@ -104,7 +104,7 @@ private:
     void ApplyVp9Summary();
     void ApplyVvcSummary();
 
-    // 收纳 media 层解析出的 NAL / OBU：内部留 utils 版喂 codec parser，
+    // 收纳 media 层解析出的 NAL / OBU：内部留 media 层（videoeye 命名空间）版喂 codec parser，
     // 对外结果（result_）转成 domain 版（见 core/domain/model/BitstreamUnits.h）
     void IngestUnits(const videoeye::ExtradataResult& parsed);
 

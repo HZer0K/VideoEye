@@ -48,8 +48,8 @@ namespace {
 // 打开/探测阶段对它们的具体用法（含 moov 顺序扫描、MP4 sample table、流摘要）
 // 已随 AnalysisInputSession 一起搬走，见 core/analysis/orchestration/detail/AnalysisInputSession.cpp。
 
-// 流媒体清单的扩展名。清单是纯文本，扩展名是唯一的识别手段
-// （魔数检测对 "#EXTM3U" / "<MPD" 无能为力）。
+// 流媒体清单的扩展名。本路由按扩展名分派（必须在 avformat_open_input 之前）；
+// FormatDetector 另有内容嗅探（"#EXTM3U" / "<MPD"）兜底无扩展名/错扩展名的清单。
 bool IsStreamingManifestExtension(const std::string& ext) {
     return ext == "m3u8" || ext == "m3u" || ext == "mpd";
 }
@@ -216,7 +216,7 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
 
     // ---- 分析维度集合（建分析器 / 注册流 / 开解码器）----
     //
-    // 六个维度的创建与逐包分发都收在 AnalysisPipeline 里：新增一个维度只需要改那一个
+    // 各分析维度的创建与逐包分发都收在 AnalysisPipeline 里：新增一个维度只需要改那一个
     // 文件，不用再同时改这里的创建段、下面的分发段和最后的收尾段。
     AnalysisPipeline pipeline(options);
     pipeline.Prepare(fmt, result, file_duration);

@@ -34,8 +34,8 @@ constexpr int kMaxPictureSize = 32768;
 
 bool Vp9BitstreamParser::LooksLikeKeyFrame(const uint8_t* data, size_t size) {
     // 完整开销：frame_marker(2) + profile(2) + [reserved(1)] + show_existing(1)
-    //           + frame_type(1) + show_frame(1) + error_resilient(1) = 9~10 bit，
-    //           再跟 24 bit 的 sync code → 最多 34 bit ≈ 5 字节。
+    //           + frame_type(1) + show_frame(1) + error_resilient(1) = 8~9 bit，
+    //           再跟 24 bit 的 sync code → 最多 33 bit ≈ 5 字节。
     // 用 6 字节门槛是不想把一个"刚好够放着 xxxx"的输入当成候选再去读字节。
     if (data == nullptr || size < 6)
         return false;

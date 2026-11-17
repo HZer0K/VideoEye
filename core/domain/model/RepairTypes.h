@@ -706,7 +706,9 @@ struct RepairFidelity {
     // timeline_modified 只表示「引擎是否主动重写时间戳」，不等于「产物时间轴相对源未变」：
     // 借用参考初始化段时，未核验的 mdhd 时基会悄悄改变播放时长。
     bool timeline_modified = false;
-    // unchanged / modified / unknown。默认 unknown —— 没有证据时不能先声称没改写。
+    // unchanged / modified / adjusted / unknown。默认 unknown —— 没有证据时不能
+    // 先声称没改写。adjusted 与 modified 区分：前者是逐流单调重写 / 缺口合并
+    // 造成的主动调整，不是全区段播放速度改变（见 RepairEngine）。
     std::string timeline_status = "unknown";
     std::string timeline_note;
 

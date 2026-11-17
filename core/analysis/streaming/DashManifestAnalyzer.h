@@ -6,7 +6,9 @@
 //   1) 解析 MPD XML：Period / AdaptationSet / Representation / SegmentTemplate /
 //      SegmentTimeline / SegmentBase / SegmentList / BaseURL；
 //   2) 把 <S t= d= r=/> 展开成 SegmentInfo 序列；
-//   3) Validate() 做 DASH 侧校验（SegmentTimeline 缺口与重叠、缺少分片定位信息）。
+//   3) Validate() 做 DASH 侧校验（SegmentTimeline 缺口与重叠、缺少分片定位信息、
+//      dynamic MPD 直播语义、DRM / UTCTiming / EventStream / Role /
+//      EssentialProperty），全集见 .cpp 的 kOwnCodes。
 //
 // 依赖边界（与 HlsManifestAnalyzer 一致）:
 //   - 头文件不依赖 Qt / FFmpeg / 第三方 XML 库，只用 C++17 标准库。

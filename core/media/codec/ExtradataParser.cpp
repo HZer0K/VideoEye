@@ -544,10 +544,10 @@ std::vector<NalUnit> ExtradataParser::ExtractAnnBNalUnits(const uint8_t* data, s
                 nal_units.push_back(ParseVvcNalUnit(nal_begin, nal_size));
                 break;
             default: {
-                // 自动判定：H.264 的 NAL header 只有 1 字节且低 5 位就是 type，
-                // 而 HEVC/VVC 的 byte0 高位还带着 forbidden(0) 与 type 位。
-                // 这条启发式认不出 VVC（它的 byte0 是 nuh_layer_id）——
-                // VVC 的 extradata 走 vvcC，或由调用方显式传 NalSyntax::Vvc。
+                // ⚠️ 这条"启发式"恒真：(byte0 & 0x1F) 最大就是 31，永远 < 32，
+                // 所以 Auto 实际恒按 H.264 解读（历史行为如此，不改语义）。
+                // HEVC / VVC 的 extradata 走 hvcC / vvcC，或由调用方显式传
+                // NalSyntax::Hevc / Vvc —— 不要依赖 Auto 区分它们。
                 const uint8_t first_byte = nal_begin[0];
                 if ((first_byte & 0x1F) < 32) {
                     nal_units.push_back(ParseH264NalUnit(nal_begin, nal_size));
@@ -1147,7 +1147,8 @@ ExtradataResult ExtradataParser::ParseWithFormatRaw(ExtradataFormat format, cons
         // 否则 NAL 边界会整体错位。
         const int prefix_bytes =
             (format == ExtradataFormat::LengthPrefix1) ? 1 : ((format == ExtradataFormat::LengthPrefix2) ? 2 : 4);
-        // ConvertLengthPrefixToAnnexB 吃的是 vector，先包一层（不用拷，只做一次视图）
+        // ConvertLengthPrefixToAnnexB 的入参是 vector，这里先整份拷一次
+        // （接口所限；转换本身还会再产出一份 Annex B 缓冲）
         const std::vector<uint8_t> input(data, data + size);
         std::vector<uint8_t> annexb = ConvertLengthPrefixToAnnexB(input, prefix_bytes);
         if (annexb.empty()) {

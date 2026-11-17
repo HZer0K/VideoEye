@@ -7,7 +7,7 @@
 
 #include "core/repair/RepairTranscodeTracks.h"
 
-// avcodec_get_supported_config() 与 enum AVCodecConfig 是 libavcodec 61.12.100
+// avcodec_get_supported_config() 与 enum AVCodecConfig 是 libavcodec 61.19.100
 // (FFmpeg 7.1) 才加入的；AVCodec::sample_fmts / supported_samplerates /
 // ch_layouts 则从 FFmpeg 8 起废弃、9 起移除。Windows 预编译包是 libavcodec 62
 // （只能用新 API），Linux 发行版自带的却可能是 6.x / 7.0（只有旧字段）。

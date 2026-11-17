@@ -242,8 +242,8 @@ public:
         source_time_base_ = time_base;
     }
 
-    // 切片 W：是否在源时间轴空洞里补静音。必须在 Init 之前设置（Init 里要按
-    // 编码器参数算容差）；Init 之后设置会拿不到编码块长度。
+    // 切片 W：是否在源时间轴空洞里补静音。只开关策略；容差在规划期按编码块
+    // 长度计算（Init 无条件记录 sample_rate / block_samples），设置顺序不限。
     void ConfigureSilenceFill(bool enabled, bool merge_contiguous) {
         silence_policy_.fill_enabled = enabled;
         silence_policy_.merge_contiguous = merge_contiguous;
@@ -1769,8 +1769,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     outcome.transcode_fidelity.profile_note = TranscodeProfileNote(outcome.transcode_fidelity);
 
     uint64_t encoded_frames = 0;
-    // 样本账本：S08 产物是「视频重编码 + 音频码流复制」的混合。源字节偏移不可得，
-    // 时间戳按首包归零重建，一律标 Inferred，不与保码流路径的容器原值混淆。
+    // 样本账本：S08 产物是「主视频重编码（副视频轨复制）+ 音频按容器接受性
+    // 复制或重编码」的混合。源字节偏移不可得，PTS 按统一原点平移重建，一律标
+    // Inferred，不与保码流路径的容器原值混淆。
     // 报告里的写入包数 / 逐轨包数全部由它求和，不再另设计数器。
     RepairSampleLedger sample_ledger;
     uint64_t bytes_written = 0;

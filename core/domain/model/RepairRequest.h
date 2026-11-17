@@ -38,7 +38,8 @@ struct RepairRequest {
     // （styp/sidx/moof/mdat）时，从这里提取初始化段并在重封装前拼接。
     std::string reference_path;
 
-    // 目标流（FFmpeg 流下标）。空 = 自动选择第一条视频轨；没有视频则选第一条音频轨。
+    // 目标流（FFmpeg 流下标）。空 = 自动选择最佳视频轨（av_find_best_stream，
+    // 多视频轨时未必是第一条）；没有视频则选最佳音频轨，再兜底首条媒体轨。
     std::vector<int> target_streams;
 
     RepairMode mode = RepairMode::PreserveBitstream;
@@ -52,7 +53,10 @@ struct RepairRequest {
     // *.partial.<ext> 命名（不覆盖既有文件），并在报告里标注为未验证前缀。
     bool keep_partial_on_cancel = false;
 
-    // ---- 第一阶段恢复能力开关（默认全部开启，单轨抢救需显式允许）----
+    // ---- 第一阶段恢复能力开关 ----
+    // 默认策略：保码流类开关开启（segment_salvage / repair_timeline /
+    // allow_single_track）；产出合成内容或合成时间戳的填充类默认关闭
+    // （fill_missing_timestamps / fill_video_gaps / fill_audio_gaps_with_silence）。
 
     // 读到损坏区间后是否继续向后寻找恢复点，把后半段一起抢救回来。
     // false 时退化为"读到错误就停"（旧行为）。

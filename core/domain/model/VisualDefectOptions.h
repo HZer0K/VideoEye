@@ -96,8 +96,9 @@ struct VisualDefectOptions {
     double combing_min_seconds = 0.5;
 
     // ---- 花屏 / 马赛克（块效应）----
-    // 块边长按"源图像素"计。分析时会额外取一块 1:1 的源分辨率中心裁剪图做检测，
-    // 避免 4K/1080p 降采样到 256 宽后 8px 块结构被抹平、导致规则永远不可用。
+    // 块边长按"源图像素"计。分析时会额外取中心 + 四角最多 5 块 1:1 的源分辨率裁剪图
+    // 做检测，各块算分取最大，避免 4K/1080p 降采样到 256 宽后 8px 块结构被抹平、
+    // 导致规则永远不可用。
     int block_size = 8;
     double blockiness_score = 0.35; // 块边界不连续度
     double blockiness_min_seconds = 0.3;

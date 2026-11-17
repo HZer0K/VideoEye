@@ -170,7 +170,8 @@ RepairTrackBounds AnalyzeTrackBounds(const IsobmffTrack& track, uint64_t file_si
     }
 
     for (uint64_t chunk = 0; chunk < chunk_limit && sample_index < total; ++chunk) {
-        // 每 4096 个样本查一次取消 / 共享截止时间，兼顾开销与响应速度。
+        // 在 chunk 边界、累计样本数恰为 4096 倍数时查取消 / 共享截止时间。
+        // 实际检查间隔取决于 samples_per_chunk（不整除 4096 时会稀疏得多）。
         if (budget != nullptr && (sample_index & 0xFFFULL) == 0 && budget->Checkpoint()) {
             bounds.truncated_by_budget = true;
             bounds.note += "诊断阶段被取消或超出共享时间预算；";

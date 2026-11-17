@@ -242,7 +242,7 @@ void ProbeSegmentRange(std::vector<model::SegmentInfo>& segments, uint32_t init_
                        const SegmentQcOptions& options, const std::atomic<bool>* cancel) {
     uint32_t probed = 0;
     for (model::SegmentInfo& seg : segments) {
-        // 这层是逐分片的磁盘 stat + fMP4 头解析，大型包最耗时的就是它
+        // 这层是逐分片的磁盘 stat + fMP4 头解析 / TS 载荷扫描，大型包最耗时的就是它
         if (ShouldCheckStreamingCancel(probed) && IsStreamingCancelled(cancel))
             return;
         if (seg.partial)

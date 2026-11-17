@@ -40,8 +40,8 @@ extern "C" {
 namespace videoeye {
 
 namespace {
-// domain 侧早就不用 std::string 了，这两个小工具只在本文件内部用：
-// 把 std::vector<std::string>::join() 与定宽小数格式化换成 std 版本。
+// domain 侧统一用 std::string，这两个小工具只在本文件内部用：
+// 字符串列表的 join 与定宽小数格式化。
 //
 // 注意 trimmed 这一路已经不在这里了：QString::trimmed() 的替身统一收在
 // detail/AnalysisTextUtil.h 的 TrimCopy()，全 analysis 层只此一份。本文件原先另有个
@@ -925,7 +925,7 @@ bool ContainerStructureAnalyzer::BuildStreamingTree(model::ContainerStructureRes
     // master 完全可能存在），拼到一半被取消时不能把半棵树交给 UI。
     const auto cancelled = [cancel] { return infrastructure::Checkpoint(cancel); };
 
-    // 入参保持 std::string（调用方大量用 StrCat 拼装），落地到 domain 时统一转 std::string
+    // 入参与 domain 字段都是 std::string（调用方大量用 StrCat 拼装），这里直接赋值
     auto make_elem = [](const std::string& name, const std::string& type, int depth,
                         const std::string& value = std::string(), const std::string& extra = std::string()) {
         model::ContainerElement e;

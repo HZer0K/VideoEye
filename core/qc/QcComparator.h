@@ -7,7 +7,8 @@
 //
 // 输出的最小单元是 QcCompareRow：一行一个字段，含左右两侧的字符串展示值、
 // 数值与差值。导出器（JSON/CSV/HTML）与 UI 表格都直接消费这个结构，
-// 加一个新对比项只要在 CompareRuns() 里加一行 AddXxx()。
+// 加一个新对比项只要在 CompareRuns() 里用 RowBuilder 的 Text/Number/Count/Percent
+// 加一行（见 QcComparator.cpp）。
 
 #include <string>
 #include <vector>
@@ -54,7 +55,7 @@ struct QcComparison {
 
     int DifferentCount() const;
     int AvailableRowCount() const;
-    // 各分组的行下标区间（导出/UI 分节展示用）
+    // 各分组名称（按行出现顺序去重，导出/UI 分节展示用）
     std::vector<std::string> GroupNames() const;
 };
 

@@ -133,7 +133,8 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     // moov 缺失分两种形态：
     // 1) fMP4 媒体分片序列缺初始化段（styp/moof/mdat）：初始化段是独立传输的，
     //    拿到同源 ftyp+moov 就能前置补全并重封装 —— 这是真实可执行能力；
-    // 2) 普通 MP4 的 moov 丢失：当前版本不具备结构重建能力，只能要求参考样片。
+    // 2) 普通 MP4 的 moov 丢失：mdat 载荷可扫描时走无参考重建（下方 P2-12 分支）；
+    //    交织多轨等不可扫描形态才要求参考样片。
     // 必须在"有没有媒体轨"之前判 —— moov 丢失时 FFmpeg 也探测不到任何流，
     // 若先按"无轨道"收尾，会把"需要参考样片"误报成"没有可恢复内容"。
     const bool init_segment_missing =

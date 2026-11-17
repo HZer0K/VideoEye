@@ -164,7 +164,7 @@ struct FrameQualityMetric {
     int sample_height = 0;
 
     // ---- 亮度 ----
-    double luma_mean = kQualityNoValue;       // 全帧亮度均值 [0,255]
+    double luma_mean = kQualityNoValue; // 有效画面区域（排除黑边）的亮度均值 [0,255]；区域无效时为整帧
     double luma_std = kQualityNoValue;        // 亮度标准差（对比度参考）
     double black_ratio = kQualityNoValue;     // Y <= black_luma 的像素占比（黑场判定）
     double dark_ratio = kQualityNoValue;      // Y <= shadow_luma 的像素占比（欠曝判定）

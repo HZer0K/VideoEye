@@ -60,8 +60,8 @@ struct TranscodeTrackProbe {
     // 目标容器是否接受该编码（实测）：音频轨与**非主视频轨**都要测；
     // 主视频轨恒 Unknown（它一律重编码，容器接受性与决策无关）。
     TranscodeContainerFit container_fit = TranscodeContainerFit::Unknown;
-    // 实测的原始原因（拒绝时是封装器的原话，Unknown 时是为什么没测成）。
-    // 报告里跟在理由后面，避免把「封装器原话」和我们的归纳混成一句。
+    // 实测的原因文本（拒绝时是 FFmpeg 错误码的文本化描述——封装器的具体理由
+    // 只走 av_log，返回值拿不到原话；Unknown 时是为什么没测成）。
     std::string container_fit_detail;
 
     // ---- 切片 V：容器拒绝时的转码目标 ----
@@ -99,12 +99,12 @@ const char* TranscodeTrackKindName(AVMediaType type, bool attached_pic);
 // 拿一张静态图去重编码整部片子。
 int SelectPrimaryVideoIndex(const std::vector<TranscodeTrackProbe>& probes);
 
-// 纯函数：按固定规则给每条轨判定 copy / transcode / drop。
-// 规则表见 .cpp 顶部的注释；理由码是机读稳定标识，测试钉它。
+// 纯函数：按固定规则给每条轨判定 copy / transcode / drop（分支见 .cpp 的
+// PlanTranscodeTracks）；理由码是机读稳定标识，测试钉它。
 TranscodeTrackPlan PlanTranscodeTracks(const std::vector<TranscodeTrackProbe>& probes);
 
 // 容器是否接受该编码：内存试写头实测（不落临时文件、不需要真编码）。
-// detail 回填失败原因（拒绝时是封装器的原话），可为 nullptr。
+// detail 回填失败原因（拒绝时是 FFmpeg 错误码的文本化描述），可为 nullptr。
 TranscodeContainerFit ProbeTrackFitsContainer(const char* format_name, const AVCodecParameters* parameters,
                                               std::string* detail);
 

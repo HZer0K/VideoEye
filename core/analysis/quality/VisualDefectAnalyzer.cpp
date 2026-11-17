@@ -132,7 +132,7 @@ std::string DescribeDefect(model::VisualDefectType type, double duration, double
         std::snprintf(buf, sizeof(buf), "模糊 %.2fs：锐度指数 %.3f（阈值 %.3f，越小越糊）", duration, score, threshold);
         break;
     case model::VisualDefectType::Flicker:
-        std::snprintf(buf, sizeof(buf), "闪烁 %.2fs：亮度均值平均跳变 %.1f（阈值 %.1f）", duration, score, threshold);
+        std::snprintf(buf, sizeof(buf), "闪烁 %.2fs：亮度均值最大跳变 %.1f（阈值 %.1f）", duration, score, threshold);
         break;
     case model::VisualDefectType::Blockiness:
         std::snprintf(buf, sizeof(buf), "花屏/马赛克 %.2fs：块效应强度 %.2f（阈值 %.2f）", duration, score, threshold);
@@ -973,8 +973,7 @@ void VisualDefectAnalyzer::ProcessSampleLocked(const model::FrameSample& sample,
         u.reverse = false;
         UpdateSegmentLocked(u, sample);
     }
-    // 块效应：ComputeFrameMetrics 一直都在算 blockiness_score，但没有任何一段消费它，
-    // 这个缺陷等于永远检测不到（算出来的分数连"有没有命中"这一步都走不到）。
+    // 块效应：detect_blockiness 开关下按 blockiness_score 阈值命中并更新分段。
     if (options_.detect_blockiness) {
         u.type = model::VisualDefectType::Blockiness;
         u.hit = Valid(m.blockiness_score) && m.blockiness_score >= options_.blockiness_score;

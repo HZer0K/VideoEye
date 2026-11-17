@@ -301,11 +301,11 @@ struct AnalysisOptions {
     // 这个逐包看参数集有没有变（时间线）。本项成本是"每包一次 NAL 扫描"，
     // 只有真正含 SPS/PPS 的包才会多做一次解析，可以全程开着。
     bool analyze_parameter_timeline = true;
-    // 帧级显示/解码顺序。顺序值按编码各自的语义取：H.264 / HEVC 用 POC，
+    // 帧级显示/解码顺序。顺序值按编码各自的语义取：H.264 / HEVC / VVC 用 POC，
     // VP9 没有 POC 这个概念（顺序值来自显示事件序），AV1 用 order_hint（模 2^bits
     // 的环形量要做解环，否则小 POC 会被算成大了 2^bits）。
-    // 覆盖 H.264 / HEVC / VP9 / AV1；VVC 未实现（顺序信息在 slice header 里，尚未接入）
-    // —— 未实现时不产出结果，维度标为不可用，不给空壳。
+    // 覆盖 H.264 / HEVC / VVC / VP9 / AV1；不支持的流（如 H.264 poc_type=1、
+    // 启用 POC MSB cycle 的 VVC）不产出结果，维度标为不可用，不给空壳。
     bool analyze_frame_order = true;
 
     // MP4/fMP4 容器一致性校验（sample table / elst / moof-traf-trun / faststart）。

@@ -37,7 +37,8 @@ public:
     /// @param cancel 可选取消标志: 非空时（1）交给 FFmpeg 的 AVIO 中断回调, 使关闭流程
     ///               （CancelAll）能及时中止阻塞 IO；（2）往下传给每种容器解析器,
     ///               在 box / element / segment / 分片级别轮询。传空则不做取消。
-    ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG 路径都吃这一套。
+    ///               MP4 / MKV / AVI / FLV / TS / ASF / OGG / MPEG-PS / MXF / HLS / DASH
+    ///               路径都吃这一套。
     /// @param on_stage 可选尾部阶段回调（仅测试使用，见 StageCallback 说明）
     bool Analyze(const std::string& file_path, model::ContainerStructureResult& result,
                  std::shared_ptr<std::atomic<bool>> cancel = {}, const StageCallback& on_stage = {});
@@ -56,7 +57,7 @@ private:
         kFailed,    // 走完但失败，允许回退 FFmpeg
     };
 
-    // 下面三个"树转换"函数返回 bool：false 表示中途被取消（不再堆出半成品树），
+    // 下面几个"树转换 / 流提取"函数返回 bool：false 表示中途被取消（不再堆出半成品树），
     // 让 Analyze() 能把结果归成"已取消"，而不是把半棵树当成有效的结构树交出去。
     /// 将 Mp4BoxNode 树映射为 ContainerElement 树
     bool ConvertMp4Tree(const std::vector<model::Mp4BoxNode>& nodes, int depth,

@@ -53,7 +53,8 @@ public:
     // 容器层快照，供"码流 vs 容器"一致性比对。必须在第一次 Feed() 之前设置。
     void SetContainerMetadata(const ContainerMetadata& metadata);
 
-    // 该编码有没有参数集解析器（H.264 / HEVC / VVC / AV1 之外的编码不启用）
+    // 该编码有没有参数集解析器（H.264 / HEVC / VVC / AV1 / VP9 之外的编码不启用；
+    // VP9 不攒包，逐包单独试关键帧头）
     bool enabled() const {
         return enabled_;
     }

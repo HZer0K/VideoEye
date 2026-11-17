@@ -68,8 +68,9 @@ struct RepairExecutionOutcome {
     // P2-13：S08 容忍式转码的实测结果。
     bool video_reencoded = false;
     bool audio_reencoded = false;
-    // 解码成功但无法稳定重编码，被丢弃的帧数（残缺/GOP 内解码失败的帧）。
+    // 成功重编码的帧数。
     uint64_t transcoded_frames = 0;
+    // 解码成功但无法稳定重编码，被丢弃的帧数（残缺/GOP 内解码失败的帧）。
     uint64_t dropped_video_frames = 0;
     // 抽帧 PSNR 实测（0 样本时 perceptual_fidelity 保持 unknown_without_reference）。
     uint64_t psnr_samples = 0;

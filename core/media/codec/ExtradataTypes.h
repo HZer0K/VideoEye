@@ -4,7 +4,7 @@
 //
 // 放在这里是为了让**结果的使用者**（如 core/domain/model/BitstreamInfo.h）不必
 // 包含 ExtradataParser 这个解析器实现头 —— 反过来也就是让 model 层不再依赖
-// codec 层。解析器与本文件同属 videoeye::utils，调用方无需改名。
+// codec 层。解析器与本文件同属 videoeye 命名空间，调用方无需改名。
 
 #include <cstdint>
 #include <string>
@@ -117,7 +117,8 @@ enum class ExtradataFormat {
 // H.264 与 VVC（VVC 首字节是 nuh_layer_id，type 在第 2 字节），所以调用方
 // 知道 codec 时必须显式指定，别让启发式去猜。
 enum class NalSyntax {
-    Auto = 0, // 按首字节启发式猜（H.264 / HEVC 二选一，见 ExtractAnnBNalUnits）
+    Auto = 0, // ⚠️ 历史启发式 (byte0 & 0x1F) < 32 恒真，实际恒按 H.264 解读
+              // （见 ExtractAnnBNalUnits）。HEVC / VVC 必须显式指定，别用 Auto。
     H264,     // 1 字节 header，type = byte0 & 0x1F
     Hevc,     // 2 字节 header，type = (byte0 >> 1) & 0x3F
     Vvc,      // 2 字节 header，type = (byte1 >> 3) & 0x1F

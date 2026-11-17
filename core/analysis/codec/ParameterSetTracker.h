@@ -39,7 +39,7 @@ class ParameterSetTracker {
 public:
     // NAL 封装方式（与 VideoEsInspector 同源问题：MP4 的媒体包没有起始码）
     enum class Framing {
-        Auto = 0,       // 逐包判定：先看起始码，再看长度前缀链是否自洽
+        Auto = 0,       // 首包判定（长度前缀链是否自洽），随后固定封装方式与前缀宽度
         AnnexB,         // 强制按起始码切
         LengthPrefixed, // 强制按 prefix_bytes 宽度切
     };

@@ -24,14 +24,14 @@ namespace player {
 //   - VisualDefectOptions: 值类型, 跨线程访问经 GetVisualDefectOptions() 加锁取副本.
 //
 // 设计约定:
-//   - MediaPlayer 的公共 API (EnableAnalysis / SetXxxEnabled / IsXxxEnabled /
-//     GetVisualDefectOptions ...) 保持不变, 仅内部转发到本类,
+//   - MediaPlayer 的公共 API 保持不变 (逐维度开关已收敛为统一的 SetAnalysisFeature,
+//     另有 EnableAnalysis / IsXxxEnabled / GetVisualDefectOptions ...), 仅内部转发到本类,
 //     因此 UI 层 (AnalysisPanel / PlayerPanel / MainWindow) 无需改动.
 //     StreamAnalyzer 不再对外暴露可变引用: 需要读统计/历史就用本类的 GetStats()
 //     与 StreamAnalyzer 的加锁快照接口。
-//   - 真正的视觉缺陷分析器 (VisualDefectAnalyzer) 仍留在 MediaPlayer: 它要发信号、
-//     与解码线程的 Feed/Drain 流程耦合, 不适合塞进本类; 它读开关/选项时走本类的
-//     IsVisualDefectAnalysisEnabled() / GetVisualDefectOptions().
+//   - 真正的视觉缺陷分析器 (VisualDefectAnalyzer) 住在 RealtimeAnalysisController:
+//     它要发信号、与解码线程的 Feed/Drain 流程耦合, 不适合塞进本类; 它读开关/选项时
+//     走本类的 IsVisualDefectAnalysisEnabled() / GetVisualDefectOptions().
 class AnalysisSession {
 public:
     AnalysisSession() = default;

@@ -26,16 +26,19 @@
 //     两三个字段，能稳定推出；slice_type 依赖 address 字段宽度。
 //     只有"宽度可证为 0"的流才去读它：
 //       - ph_inter_slice_allowed_flag == 0 → 规范规定 sh_slice_type 不存在，恒 I
-//       - 无 subpic 且无 extra_sh_bit，且 PPS 是"不划分图像"或
-//         "每 subpic 单 slice"（这两种情况下 sh_slice_address 宽度为 0）
+//       - PPS no_pic_partition（不划分图像），或 rect_slice 且
+//         single_slice_per_subpic（每 subpic 单 slice）——这两种情况下
+//         sh_slice_address 宽度为 0；有 subpic 时先按定长吃掉 sh_subpic_id
+//         （位长必须在 1..16 内，否则不读 slice_type）。extra_sh_bit 不构成
+//         障碍：按 SPS 的 present 标志逐位读掉后照样能到 sh_slice_type。
 //     其余流（多 tile / 多 slice / 显式 slice 布局）**不猜**：POC 照常给，
 //     slice_type 记未知（报告里显示 '?'、计入 other_count），而不是从错位的位里
 //     读一个看起来合理的数字。
 //
 //   * 一幅图像只记一帧。PH 打开一幅图像，该图像的第一个 slice 落帧；
 //     同一 PH 之后的 slice 不重复落（多 slice 图像不会被算成多帧）。
-//     内联 PH 的 slice 属于"一个 slice 一幅图像"的形态，直接落帧；若该流同时
-//     有可读的 address 且非 0，说明是同一幅图像的后续 slice，跳过。
+//     内联 PH 的 slice 属于"一个 slice 一幅图像"的形态，直接落帧并替换待决 PH；
+//     非内联的后续 slice 靠 consumed 标志去重（首帧落定后置位），不看 address。
 //
 //   * 不重建参考帧列表（RPL / DPB），不按 temporal sub-layer 区分 prevTid0Pic
 //     （与 HEVC 同口径，逐幅图像累进）。

@@ -9,7 +9,8 @@
 //
 // 出口的语义各不相同，调用方不要合并处理:
 //   Complete  —— 扫到 EOF，结果可用（scan_status 可能已因 max_packets 被置 Sampled）
-//   Cancelled —— 取消生效；终态已置 Cancelled，调用方只需发 NotifyCancelled
+//   Cancelled —— 取消生效；与 Complete 一样走完整收尾（各分析器 Finish + Assembler），
+//                终态文案由 scan_status 决定，调用方不要跳过收尾直接返回
 //   Failed    —— 真的 IO 错误；失败终态（error_message / scan_error_code）已写进
 //                result，调用方只需发 NotifyFailed(result.error_message)
 //

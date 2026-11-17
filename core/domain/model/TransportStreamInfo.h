@@ -62,12 +62,13 @@ struct TransportStreamInfo {
     double max_no_idr_interval_ms = 0.0;
     std::string max_no_idr_pid;     // 上述间隔出在哪个 PID（已格式化成 0x....）
     int64_t idr_count = 0;          // 全窗口识别到的 IDR/CRA 总数
-    int video_pids_without_idr = 0; // 整段窗口一个 IDR 都没看到的视频 PID 数
+    int video_pids_without_idr = 0; // 整段窗口一个 IDR 都没看到、且可见时间跨度超过
+                                    // max_no_idr_interval_s 阈值的视频 PID 数
 
     // 同一 PID 相邻 PES 的最大时间间隔（含"该 PID 提前断流到窗口末尾"的情形）。
     double max_pid_gap_ms = 0.0;
     std::string max_pid_gap_pid;
-    int stalled_pids = 0; // 间隔超过阈值的 PID 数（阈值在规则里）
+    int stalled_pids = 0; // 间隔超过阈值的 PID 数（阈值 = TsStructureOptions::max_pid_gap_s）
 
     // ---- 首帧随机访问实证（分片级 QC 用）----
     //

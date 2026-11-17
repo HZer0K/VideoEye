@@ -106,7 +106,7 @@ void HevcBitstreamParser::ParseProfileTierLevel(videoeye::BitReader& reader, int
         compat[j] = reader.ReadBit();
     }
 
-    // 6 个固定约束位（progressive / interlaced / non-packed / frame-only 之后，
+    // 4 个固定约束位（progressive / interlaced / non-packed / frame-only 之后，
     // 是否还有扩展约束位取决于 profile 是否属于 Rext 系）
     reader.SkipBits(1); // general_progressive_source_flag
     reader.SkipBits(1); // general_interlaced_source_flag

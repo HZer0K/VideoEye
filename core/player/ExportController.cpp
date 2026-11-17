@@ -64,7 +64,7 @@ void ExportController::StartVideoFrameExport(const QString& output_dir, const QS
     }
 
     // 旧抽帧线程还在跑(已取消但仍卡在 FFmpeg 里退不出来): 不许并行再起一个 ——
-    // 两次任务写的是同一个输出目录, 文件名又只由帧序号决定, 会互相覆盖出半新半旧的产物。
+    // 两次任务写的是同一个输出目录, 同一帧的产物文件名又相同, 会互相覆盖出半新半旧的产物。
     // 这里把请求排进 pending, 等旧线程真正结束的 finished 回调续跑, 用户不必再点一次。
     if (IsFrameExportWorkerAlive()) {
         pending_frame_export_ = PendingFrameExport{current_url_(), output_dir, format, jpg_quality, frame_interval};
@@ -357,8 +357,8 @@ void ExportController::StartMediaExportNow(const exporter::ExportOptions& opt) {
             media_exporter_ = nullptr;
 
         // 终态兜底, 与抽帧侧同理: 线程已退出却还没终态, 说明终态信号没落地。
-        // 只补 Canceled 且只在本次确实被取消过时才补; End 的 id 匹配 + 终态一次性
-        // 保证它不会盖掉已经写好的 Succeeded/Failed。
+        // 按取消令牌补 Canceled、否则补 Succeeded; End 的 id 匹配 + 终态一次性
+        // 保证它不会盖掉已经写好的终态。
         // 与抽帧侧一致: 这里是唯一的兜底写入者, QtWorkerOwner 不持 TaskManager,
         // 不在别处抢着 End。
         if (tasks_.State(kSlotMediaExport) == task::TaskState::Running)

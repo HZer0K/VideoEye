@@ -259,7 +259,7 @@ void StreamAnalyzer::CalculateBitrate() {
             stats_.avg_bitrate_bps = sum / bitrate_history_.size();
         }
 
-        // 重置当前 GOP 计数器
+        // 重置码率窗口字节数
         bitrate_window_bytes_ = 0;
     }
 }

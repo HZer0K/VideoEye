@@ -36,7 +36,8 @@ struct AudioReencodeCandidate {
 
 using AudioEncoderAvailable = std::function<bool(const char* encoder_name)>;
 
-// 纯函数：按目标容器给出**偏好顺序**的候选编码器，并滤掉本构建没有的。
+// 纯函数：给出**固定偏好顺序**的候选编码器（目前不区分目标容器，format_name
+// 只为将来按容器分叉预留），并滤掉本构建没有的。
 // 偏好理由：aac 是唯一被 S08 全部目标容器（mp4 / mov / matroska / mpegts）
 // 接受的编码；其余按各容器的常见程度排。
 std::vector<AudioReencodeCandidate> AudioReencodeCandidates(const std::string& format_name,

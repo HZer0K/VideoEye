@@ -4,7 +4,8 @@
 //
 // 与 RepairPlainMp4Rebuilder 的区别：
 //   * 无参考版只能处理「纯 H.264（AVCC）」或「纯 ADTS AAC」单轨，且要求 mdat
-//     里有 in-band SPS/PPS 与 VUI 帧率证据。而真实录制文件把参数集只放在 moov
+//     里有 in-band SPS/PPS，帧率证据则认 SPS VUI 或调用方显式给定的帧率
+//     （见 RepairPlainMp4Rebuilder）。而真实录制文件把参数集只放在 moov
 //     的 avcC/esds 里，删掉 moov 后载荷里只剩 slice 与裸 AAC AU，无参考必然失败。
 //   * 这里从同源完整样片**只借解码配置**（stsd 的 sample entry 原始字节、
 //     track→codec 映射、ftyp brands、逐轨时基作为待核对值），样本大小 / 偏移 /

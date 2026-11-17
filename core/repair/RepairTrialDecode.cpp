@@ -26,7 +26,9 @@ std::string AvErrorText(int code) {
 }
 
 // H.264 包内是否含 IDR（NAL type 5）。
-// 只认 4 字节长度前缀；其它形态返回 supported=false，绝不按 4 字节硬套。
+// ⚠️ 统一按 4 字节长度前缀解析，不读 avcC 的 lengthSizeMinusOne：Annex B /
+// 其它前缀宽度的包会以「长度前缀与包长不自洽」报错返回 false。supported
+// 目前恒 true（没有形态识别路径），调用方的 !supported 分支实际不会走到。
 bool H264PacketHasIdr(const AVPacket* packet, bool* supported, std::string* error) {
     *supported = true;
     if (packet->size < 5) {

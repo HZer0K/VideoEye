@@ -23,7 +23,8 @@ namespace videoeye {
 //   HEVC / VP9 / AV1 的 FFmpeg 解码器不写 AV_FRAME_DATA_MOTION_VECTORS，
 //   这些编码的 P/B 帧拿不到运动矢量 (实测内置 FFmpeg 8.x 为 0 条)，
 //   UI 必须显示「解码器不导出运动矢量」而不是分析失败。
-// 块大小分桶统一覆盖 H.264 与 HEVC 全部 PU 尺寸, 无需按编码区分统计逻辑。
+// 块大小分桶覆盖 H.264 全部宏块分区与 HEVC 常见方形 PU 尺寸, 无需按编码区分统计逻辑;
+// HEVC 非方形 / AMP 尺寸（64x32、16x4 等）计入 other 桶。
 //
 // 帧内块估算只对 H.264 / HEVC 做 (按 16x16 宏块 / 64x64 CTU 的固定网格),
 // 结果同时置 intra_count_available 与 block_counts_estimated:

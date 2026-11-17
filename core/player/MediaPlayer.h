@@ -91,7 +91,7 @@ public:
     // 与导出同理: 由 ContainerInspectionController 直接在总线上发射，门面不再转发。
     ContainerBus& container_bus();
 
-    // 播放期实时分析信号的对外出口（23 条，见 core/player/AnalysisBus.h）。
+    // 播放期实时分析信号的对外出口（24 条，见 core/player/AnalysisBus.h）。
     // 这是原先挂在门面上最大的一块（占了一半以上的信号声明与转发连接），现在由
     // RealtimeAnalysisController 直接在总线上发射。
     AnalysisBus& analysis_bus();
@@ -135,8 +135,9 @@ public:
     // 视频帧导出
     //
     // 若上一次抽帧的线程还没退出来，本次请求**排队**而不是立即启动：两次任务写的是
-    // 同一个输出目录、文件名又只由帧序号决定，并行跑会互相覆盖产物。排队请求会在旧
-    // 线程真正结束的 finished 回调里自动续跑（用户不必再点一次）。
+    // 同一个输出目录、同一帧的产物文件名又相同（帧序号 + pts/毫秒时间戳后缀），
+    // 并行跑会互相覆盖产物。排队请求会在旧线程真正结束的 finished 回调里自动续跑
+    // （用户不必再点一次）。
     void StartVideoFrameExport(const QString& output_dir, const QString& format, int jpg_quality = 90,
                                int frame_interval = 1);
     // 只置取消标志并请求线程退出，**不等待**：调用方在 UI 线程，绝不能被卡住。
@@ -187,7 +188,7 @@ signals:
     void PlaybackFinished();
     void MediaModeChanged(bool has_video);
 
-    // 实时分析的 23 条信号不在门面上了 —— 走 analysis_bus()
+    // 实时分析的 24 条信号不在门面上了 —— 走 analysis_bus()
     // （见 core/player/AnalysisBus.h），UI 连总线而不是连门面。
     // 容器结构分析的两条信号同理走 container_bus()；导出的十条走 export_bus()。
     // 门面现在只背"播放 + 打开"这两件真正属于它的契约。

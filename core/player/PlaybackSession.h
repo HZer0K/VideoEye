@@ -27,11 +27,11 @@ extern "C" {
 namespace videoeye {
 namespace player {
 
-// 交给 MediaPlayer 的分析回调上下文。
+// 交给 RealtimeAnalysisController 的分析回调上下文。
 //
-// 切分原则: **播放机械归 PlaybackSession, 分析语义归 MediaPlayer**。
+// 切分原则: **播放机械归 PlaybackSession, 分析语义归 RealtimeAnalysisController**。
 // 解码循环里每一处"要不要发信号 / 要不要计数"都属于分析语义, 因此不搬进 Session,
-// 而是由 Session 在对应时机回调 MediaPlayer 装的 hook —— MediaPlayer 侧的代码与
+// 而是由 Session 在对应时机回调控制器装的 hook —— 控制器侧的代码与
 // 各种 Analyzer / 计数器保持在一起, Session 只管 demux、解码、pacing 与画面输出。
 struct PacketContext {
     const AVPacket* packet = nullptr;
@@ -71,7 +71,7 @@ struct AudioFrameContext {
 // 播放会话: 一次"打开媒体 -> 播放/暂停/定位 -> 停止"的完整生命周期。
 //
 // 持有: AVFormatContext / 解码器 / 音频输出 / 解码线程 / 播放时钟 / 播放状态机。
-// 不持有: 任何分析器与分析开关(那些在 AnalysisSession 与 MediaPlayer 里)。
+// 不持有: 任何分析器与分析开关(开关在 AnalysisSession, 分析器在 RealtimeAnalysisController)。
 //
 // 为什么是 QObject: 画面、位置、状态这些信号必须在工作线程发出、由 Qt 自动排队到
 // UI 线程; 用裸回调会让每个信号都多一层转发。
@@ -79,7 +79,8 @@ class PlaybackSession : public QObject {
     Q_OBJECT
 
 public:
-    // 分析回调集合。全部在解码线程上被调用(与改造前一致), 由 MediaPlayer 在安装前填好。
+    // 分析回调集合。全部在解码线程上被调用(与改造前一致), 由 RealtimeAnalysisController
+    // 在构造时装好(InstallHooks)。
     struct Hooks {
         std::function<void(const PacketContext&)> on_packet;
         std::function<void(const VideoFrameContext&)> on_video_frame;

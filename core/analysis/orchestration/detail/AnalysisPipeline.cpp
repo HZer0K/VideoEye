@@ -891,8 +891,8 @@ void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& 
     }
 
     // slice / SEI 巡检收尾：汇总 QP 分布与 SEI 元数据，回填主轨的码流结果。
-    // 挂在 BeforeClose 是因为它不依赖任何解码上下文 —— 只要在关YYYY前跑掉即可，
-    // 而 BeforeClose 是"关之前最后还能读到 exporter 状态"的那个点。
+    // 挂在 BeforeClose 是因为它不依赖任何解码上下文 —— 只要在关闭输入前跑掉即可，
+    // 而 BeforeClose 是"关之前最后还能读到巡检器状态"的那个点。
     FinishVideoEsInspection(result);
 
     // 参数变化时间线收尾：这里要算"引用了从未传输的参数集"——只有扫完全部包

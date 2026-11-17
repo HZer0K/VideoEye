@@ -166,7 +166,7 @@ BatchQcRun BatchQcRunner::Run(const std::vector<BatchQcItem>& items, const Batch
             while (true) {
                 if (IsCancelled(callbacks)) {
                     // 取消必须在这里**立刻立起来**, 不能只是自己退出: 每支 worker 手上正在
-                    // 跑的那个 analyze 只认 request.cancel(它指向_cancel_), 而它下次查看
+                    // 跑的那个 analyze 只认 request.cancel(它指向 cancel_), 而它下次查看
                     // 自己的结束条件要等到当前这一项整个跑完。统一置位之后, 其它 worker
                     // 才能在各自分析**过程中**感知到 —— 这既是"点停止后多久能真正停"的关键,
                     // 也是下面那段 join 唯一的耗时上界来源: 跑得最慢的那一项能被中断, join

@@ -8,13 +8,15 @@
 //   * AC-3：fscod / frmsizecod / bsid / bsmod / acmod / lfeon / dialnorm / 码率；
 //   * E-AC-3：strmtyp / substreamid / frmsiz / acmod / dialnorm / chanmap；
 //   * Opus：OpusHead 与 TOC（config / 立体声标志 / 帧数 / 帧长 / 模式 / 带宽）；
-//   * AAC AudioSpecificConfig（MP4 extradata 的 5 字节头）、PCE、ADTS CRC-16；
+//   * AAC AudioSpecificConfig（MP4 extradata，基础 2 字节 + SBR/PS 同步扩展）、PCE；
 //   * MP3：帧头（版本/层/码率/采样率/声道模式）+ Xing/Info/VBRI/LAME 延迟；
 //   * FLAC：STREAMINFO + 帧头（块大小/采样率/位深/CRC-8）。
 //
 // 不做的事情：不解析音频 payload、不判断响度（响度必须解码后算）。
-// CRC 只对**能明确定义覆盖范围**的做校验（ADTS / FLAC 帧头）；MP3 的 CRC-16
-// 覆盖范围随保护位与 side info 变化，当前只报"存在"不报"通过"。
+// CRC 只对**能明确定义覆盖范围**的做校验（目前只有 FLAC 帧头 CRC-8）；
+// ADTS 的 CRC-16 覆盖范围口径不一，只报 protection_absent 不做校验（见下方
+// ParseAacProgramConfig 附近的说明）；MP3 的 CRC-16 覆盖范围随保护位与
+// side info 变化，当前只报"存在"不报"通过"。
 // 这些头字段足够支撑"码流声明 vs 容器声明 vs 实测"三方差值。
 
 #include <cstddef>
@@ -250,7 +252,8 @@ public:
     // LOAS：返回 audioMuxLengthBytes 与 useSameStreamMux（这两项在加密/复用场景也要用）
     static bool ParseLoasHeader(const uint8_t* data, size_t size, int& audio_mux_length_bytes,
                                 bool& use_same_stream_mux);
-    // 解析 StreamMuxConfig；data 指向 AudioMuxElement 的 useSameStreamMux 位之后
+    // 解析 StreamMuxConfig；data 指向 AudioMuxElement 起点（含 useSameStreamMux 位，
+    // 该位为 1 时直接返回 false 并在 note 里写明"沿用上一帧配置"）
     static bool ParseLatmStreamMuxConfig(const uint8_t* data, size_t size, LatmHeader& out);
 
     // AC-3 / E-AC-3。force_eac3 由调用方按 codec id 给出；为 false 时按 AC-3 解析。

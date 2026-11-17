@@ -20,6 +20,7 @@
 //                st_ref_pic_set() 与 NumPocTotalCurr 的推导，只做一半就会得到
 //                错位的 QP —— 那种数比没有更糟，所以宁可不产出（supported=false
 //                + unsupported_reason 写明原因），也不要给一个看着合理的假值。
+//   * AV1     —— metadata OBU（CLL / MDCV / HDR10+ T.35），无 slice QP。
 // ==========================================================================
 
 #include <cstddef>

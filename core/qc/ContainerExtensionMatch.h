@@ -87,7 +87,7 @@ inline const std::map<std::string, std::string>& ExtensionAliasMap() {
         {"aif", "aiff"},
         // --- RealMedia 家族：解复用器名是 "rm"，.rmvb 是同一种容器 ---
         {"rmvb", "rm"},
-        // --- 流媒体清单：container_format 由 QtAnalysisController 直接写 "hls" / "dash" ---
+        // --- 流媒体清单：container_format 由 StreamingManifestScan 直接写 "hls" / "dash" ---
         {"m3u8", "hls"},
         {"m3u", "hls"},
         {"mpd", "dash"},

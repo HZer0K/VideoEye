@@ -19,13 +19,13 @@
 //     一个自包含的 OpenResult，**绝不**触碰正在使用的 PlaybackSession —— 因此可以安全
 //     地放在后台线程上跑；
 //   * Commit() 在 UI 线程上把 OpenResult 一次性采用进 PlaybackSession（成功整体采用，
-//     失败整体丢弃），并在这里发封面图 / 媒体模式 / 打开失败三条信号。
+//     失败整体丢弃），并在这里发封面图 / 媒体模式 / 媒体信息文本 / 打开失败四条信号。
 // MediaPlayer::Open() 仍在调用线程上同步 Prepare + Commit（兼容旧调用与测试）；
 // MediaPlayer::OpenAsync() 则在后台线程 Prepare、排回 UI 线程 Commit。
 //
-// 本类是 QObject: 提交时要发封面图 / 媒体模式 / 打开失败三条信号，而对外契约
-// （信号名与参数）必须与拆分前一个字节不差 —— 所以这里声明同名信号，由 MediaPlayer
-// 原样转发。
+// 本类是 QObject: 提交时要发封面图 / 媒体模式 / 媒体信息文本 / 打开失败四条信号，
+// 而对外契约（信号名与参数）必须与拆分前一个字节不差 —— 所以这里声明同名信号，
+// 由 MediaPlayer 原样转发。
 //
 // 生命周期: Prepare 用到的取消状态（OpenAttempt）由 MediaPlayer 在换媒体时新建，并通过
 // OpenPrepareParams 传进来 —— 本类不拥有它。提交成功后播放会话继续用它的中断状态响应

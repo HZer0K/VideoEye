@@ -167,7 +167,7 @@ void BitstreamAnalyzer::ApplyContainerSnapshot() {
 }
 
 // 收纳 media 层解析出的单元：
-//   * nal_units_ / obu_units_ 留 utils 版 —— codec parser（H264/HEVC/AV1/VVC）
+//   * nal_units_ / obu_units_ 留 media 层版 —— codec parser（H264/HEVC/AV1/VVC）
 //     只认这一版，没必要让四个解析器跟着改签名；
 //   * result_.nal_units / obu_units 放 domain 版 —— 这是对外结果，UI 与报告只读它。
 // 两者字段一一对应，转换只在入库这一处发生。
@@ -891,7 +891,7 @@ void BitstreamAnalyzer::FinalizeCapability(int codec_id) {
     case AV_CODEC_ID_VP9:
         // VP9 的两条数据链质量差别很大，能力必须分开给：
         //   * 解出关键帧 → 宽高/位深/色度/range/色彩都有，能参与容器比对
-        //   * 只有 vpcC  → 分辨率一概不知（TypeOnly），参加比对只会造假告警
+        //   * 只有 vpcC  → 分辨率一概不知（Partial），参加比对只会造假告警
         if (result_.parse_outcome == BitstreamParseOutcome::ParseFailed) {
             result_.capability = AnalysisCapability::Failed;
         } else if (result_.parse_outcome == BitstreamParseOutcome::FullParse && result_.vp9_seq_header.present) {
@@ -967,7 +967,7 @@ void BitstreamAnalyzer::CompareWithContainer(const model::BitstreamAnalysisResul
         return; // 什么都没解析出来，别拿默认值制造假告警
     }
     if (!kCompareParameterSetFields) {
-        return; // 见 kCompareParameterSetFields 的注释：解析器还没对齐规范
+        return; // 开关默认打开（解析器已按规范重写并验证）；保留关闭入口以便回退
     }
     if (result.capability != model::AnalysisCapability::Supported) {
         // Partial / Failed / Unavailable 的解析字段未经完整验证，不参与严格一致性比对。

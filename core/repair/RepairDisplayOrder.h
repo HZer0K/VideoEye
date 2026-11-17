@@ -72,8 +72,10 @@ struct RepairDisplayOrderPlan {
     // model::FrameOrderTimeline::order_source 同口径。
     std::string order_source;
     std::string basis; // 推导依据（给人看，进报告）
-    // verified = 每帧 POC 实测 + 段内无重复 POC + 首帧是 RAP
-    // derived  = 有 POC，但存在下列之一：首帧不在 RAP、段内 POC 重复、明细被上限截断
+    // verified = 首帧是 RAP + 段内无重复 POC + 有恒定样本时长证据（duration.source 非空）
+    // derived  = 上述任一不满足，或追踪器报告 POC 回退但推导显示序与解码序一致
+    //            （交叉证据矛盾）。明细被上限截断不降级：未扫完的末段整段丢弃，
+    //            剩余完整段照常评级（truncated 标志另行如实告知）。
     std::string confidence = "unknown";
     RepairFrameDurationEvidence duration;
     std::vector<RepairDisplayFrame> frames;

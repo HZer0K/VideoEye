@@ -358,10 +358,10 @@ void AppendFrameOrder(std::ostringstream& out, const model::AnalysisResult& anal
     if (analysis.frame_order_timelines.empty())
         return;
     out << "  <h2>帧级显示顺序</h2>\n";
-    out << "  <p class=\"meta\">H.264 / HEVC 来自逐 slice 解析出的 POC；VP9 没有 POC，"
+    out << "  <p class=\"meta\">H.264 / HEVC / VVC 来自逐 slice / PH 解析出的 POC；VP9 没有 POC，"
            "由 show_frame / show_existing_frame 的显示事件序还原成「显示序号」；"
            "AV1 用帧头里的 order_hint（模 2^bits 的环形量，已按 get_relative_dist 解环）。"
-           "支持范围：H.264 / HEVC / VP9 / AV1；VVC 未实现，H.264 的 picture_order_cnt_type=1 "
+           "支持范围：H.264 / HEVC / VVC / VP9 / AV1；H.264 的 picture_order_cnt_type=1 "
            "不支持；不重建参考帧列表。</p>\n";
     for (const model::FrameOrderTimeline& timeline : analysis.frame_order_timelines) {
         out << "  <h3>视频流 #" << timeline.stream_index << "</h3>\n";

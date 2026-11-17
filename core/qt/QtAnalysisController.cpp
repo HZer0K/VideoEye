@@ -87,7 +87,7 @@ quint64 QtAnalysisController::StartAnalysis(const std::string& file_path, const 
 
 void QtAnalysisController::Launch(const std::string& file_path, const videoeye::AnalysisOptions& options,
                                   const task::TaskHandle& handle) {
-    // 上一条工作线程一定已经退出了（到这里之前都判过 worker_finished_），
+    // 上一条工作线程一定已经退出了（到这里之前都判过 WorkerBodyReturned()），
     // join 只是收句柄。这里再兜一次，免得将来有人漏判一步就把线程赋值成 joinable 的
     // 旧线程 —— 那会直接 std::terminate。
     ReapWorker();
