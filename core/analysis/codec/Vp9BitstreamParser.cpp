@@ -202,12 +202,12 @@ bool Vp9BitstreamParser::ColorSpaceToCicp(int color_space, int& color_primaries,
         return true;
     case static_cast<int>(model::Vp9ColorSpace::Bt2020Ncl):
         color_primaries = 9;           // AVCOL_PRI_BT2020
-        transfer_characteristics = 16; // AVCOL_TRC_BT2020_10
+        transfer_characteristics = 14; // AVCOL_TRC_BT2020_10
         matrix_coefficients = 9;       // AVCOL_SPC_BT2020_NCL
         return true;
     case static_cast<int>(model::Vp9ColorSpace::Bt2020Cl):
         color_primaries = 9;           // AVCOL_PRI_BT2020
-        transfer_characteristics = 16; // AVCOL_TRC_BT2020_10
+        transfer_characteristics = 14; // AVCOL_TRC_BT2020_10
         matrix_coefficients = 10;      // AVCOL_SPC_BT2020_CL
         return true;
     case static_cast<int>(model::Vp9ColorSpace::Srgb):

@@ -67,7 +67,7 @@ private:
     static void SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer, int max_sublayers_minus1,
                                            const TimingHrdContext& ctx);
     static void SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
-                                     bool inter_layer_prediction);
+                                     bool inter_layer_prediction, bool weighted_pred);
     static void ParseVuiParameters(videoeye::BitReader& reader, model::VvcVuiInfo& vui);
 };
 

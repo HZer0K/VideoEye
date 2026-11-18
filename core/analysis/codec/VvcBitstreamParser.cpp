@@ -452,7 +452,7 @@ void VvcBitstreamParser::SkipOlsTimingHrdParameters(videoeye::BitReader& reader,
 }
 
 void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
-                                              bool inter_layer_prediction) {
+                                              bool inter_layer_prediction, bool weighted_pred) {
     // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
     // 不封顶就是一个 ue(v) 撑起几十亿次循环。
     //
@@ -480,12 +480,13 @@ void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int p
                 st_ref_pic = reader.ReadBit();
             }
             if (st_ref_pic) {
-                const uint32_t abs_delta_poc = reader.ReadUE();
-                // ⚠️ 简化实现：无条件 +1，因此 abs_delta_poc_st 恒 > 0、恒读一位
-                // strp_entry_sign_flag。规范里 i > 0 且未开加权预测时 +1 修正
-                // 不适用（abs_delta_poc_m1 == 0 的项不该有符号位），这类码流会
-                // 从这里开始错位。
-                const uint32_t abs_delta_poc_st = abs_delta_poc + 1;
+                const uint32_t abs_delta_poc_minus1 = reader.ReadUE();
+                // H.266 7.3.8.6：只有当加权预测开启且 i > 0 时 abs_delta_poc_st 才直接
+                // 取 ue(v)；其余情况取 ue(v) + 1。无条件 +1 会把「加权预测 + 首项」
+                // 这类码流的符号位读早一位，后面整段 SPS 从此错位。
+                uint32_t abs_delta_poc_st = abs_delta_poc_minus1;
+                if (!(weighted_pred && i > 0))
+                    abs_delta_poc_st += 1;
                 if (abs_delta_poc_st > 0)
                     reader.ReadBit(); // strp_entry_sign_flag
             } else if (!ltrp_in_header) {
@@ -923,7 +924,8 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         }
         for (int j = 0; j < sps.sps_num_ref_pic_lists[i]; ++j) {
             SkipRefPicListStruct(reader, sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4, sps.sps_long_term_ref_pics_flag,
-                                 sps.sps_inter_layer_prediction_enabled_flag);
+                                 sps.sps_inter_layer_prediction_enabled_flag,
+                                 sps.sps_weighted_pred_flag || sps.sps_weighted_bipred_flag);
         }
     }
     if (rpl1_same_as_rpl0) {

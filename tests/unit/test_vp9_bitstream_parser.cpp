@@ -307,10 +307,10 @@ TEST(Vp9BitstreamParserTests, ColorSpaceToCicpMatchesFfmpeg) {
     EXPECT_EQ(trc, 1);
     EXPECT_EQ(matrix, 1);
 
-    // BT.2020 NCL -> 9 / 16 / 9
+    // BT.2020 NCL -> 9 / 14 / 9（14 = AVCOL_TRC_BT2020_10；16 是 PQ）
     EXPECT_TRUE(Vp9BitstreamParser::ColorSpaceToCicp(5, pri, trc, matrix));
     EXPECT_EQ(pri, 9);
-    EXPECT_EQ(trc, 16);
+    EXPECT_EQ(trc, 14);
     EXPECT_EQ(matrix, 9);
 
     // sRGB -> 1 / 13 / 0

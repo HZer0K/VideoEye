@@ -2661,7 +2661,9 @@ RepairExecutionOutcome RepairTolerantTranscode::Execute(const model::RepairReque
     synthetic_fill.summary = VideoGapFillSummary(synthetic_fill);
     synthetic_fill.note = VideoGapFillBasisNote(synthetic_fill);
     if (synthetic_fill.frames_inserted > 0) {
-        outcome.transcode_note += "；合成黑帧=" + std::to_string(synthetic_fill.frames_inserted) + " 帧（" +
+        // 填补内容可能是重复上一帧，也可能是黑帧（含部分退回黑帧），
+        // 这里不写死「黑帧」；具体构成由 synthetic_fill.summary 说明。
+        outcome.transcode_note += "；合成填补帧=" + std::to_string(synthetic_fill.frames_inserted) + " 帧（" +
                                   FormatSeconds(synthetic_seconds_accum) + " s），不是从源恢复的内容";
         // 样本账本记的是「与源对应的已恢复样本」，合成帧不在里面；而
         // packets_written 必须与账本总数严格相等（上层守恒会逐项核对），

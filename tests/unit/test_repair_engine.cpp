@@ -1275,6 +1275,26 @@ TEST(RepairPlanner, NonIsobmffContainerFallsBackToGenericRemux) {
     EXPECT_EQ(no_stream.early_status, RepairBusinessStatus::NoRecoverableContent);
 }
 
+// Auto 产物扩展名必须与实际产物命名同口径：mov / m4v 保留源扩展名，其它回落 mp4。
+TEST(RepairPlanner, AutoOutputExtensionKeepsMovAndM4v) {
+    RepairDiagnosis diagnosis;
+    diagnosis.openable = true;
+    diagnosis.container_known = false;
+
+    struct Case {
+        const char* source;
+        const char* expected;
+    };
+    for (const Case& item :
+         {Case{"clip.mov", "mov"}, Case{"clip.m4v", "m4v"}, Case{"clip.M4V", "m4v"}, Case{"clip.avi", "mp4"}}) {
+        RepairRequest request;
+        request.source_path = item.source;
+        request.output_container = RepairOutputContainer::Auto;
+        const auto outcome = repair::RepairPlanner::MakePlan(request, diagnosis, std::nullopt, 0, nullptr);
+        EXPECT_EQ(outcome.plan.expected_output_extension, item.expected) << item.source;
+    }
+}
+
 // 缺失时间戳的合成必须是显式开关：关闭时计划仍写明"不伪造"。
 TEST(RepairPlanner, MissingTimestampSynthesisIsExplicit) {
     RepairDiagnosis diagnosis;
@@ -1650,6 +1670,17 @@ public:
 };
 
 } // namespace
+
+// FNV-1a 64 的 offset basis 必须是标准值，否则所有哈希证据都建立在错误基线之上。
+TEST(RepairPayloadHashTests, Fnv1a64BeginIsStandardOffsetBasis) {
+    using videoeye::repair::Fnv1a64Begin;
+    using videoeye::repair::Fnv1a64Update;
+    // 标准 FNV-1a 64 已知向量：("hello") = 0xa430d84680aabd0b。
+    // offset basis 少写一位（1469598103934665603）会产出另一个值，这条钉住它。
+    const std::string hello = "hello";
+    EXPECT_EQ(Fnv1a64Update(Fnv1a64Begin(), reinterpret_cast<const uint8_t*>(hello.data()), hello.size()),
+              0xa430d84680aabd0bULL);
+}
 
 // ---- F03：ADTS 头与裸访问单元必须是同一份哈希证据 ----
 TEST(RepairPayloadHashTests, AdtsAndRawAccessUnitsProduceSameHash) {

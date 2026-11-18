@@ -283,6 +283,9 @@ void BitrateGopAnalyzer::DownsampleSamples() {
         Sample bucket = samples_[i];
         if (i + 1 < samples_.size()) {
             const Sample& next = samples_[i + 1];
+            // 类型比较必须用**合并前**的单帧字节数：bucket.frame_bytes 一旦加上
+            // next.frame_bytes 就恒大于 next.frame_bytes，"取字节更大的那个"永不成立。
+            const int64_t bucket_frame_bytes = bucket.frame_bytes;
             bucket.size += next.size;
             bucket.frame_bytes += next.frame_bytes;
             bucket.frame_weight += next.frame_weight;
@@ -293,7 +296,7 @@ void BitrateGopAnalyzer::DownsampleSamples() {
             // 类型取"字节更大的那个"：合并后桶本身的字节是两个帧的合计，
             // 拿它做单帧大小判定已不可靠（DetectOversizedFrames 会跳过这类桶），
             // 这里只保证类型标记尽量贴近更主要的那一帧。
-            if (next.frame_bytes > bucket.frame_bytes)
+            if (next.frame_bytes > bucket_frame_bytes)
                 bucket.type = next.type;
         }
         merged.push_back(std::move(bucket));

@@ -308,7 +308,7 @@ struct ExtradataResult {
         // 而两套口径里 1 的含义还是反的（AV1 码流 1=full / AVColorRange 1=limited）。
         int color_range = 0;
         int color_primaries = 9;           // BT.2020
-        int transfer_characteristics = 14; // PQ
+        int transfer_characteristics = 16; // PQ（AVCOL_TRC_SMPTE2084；BT2020_10 才是 14）
         int matrix_coefficients = 9;       // BT.2020 NCL
         int initial_presentation_delay_bits = 0;
 

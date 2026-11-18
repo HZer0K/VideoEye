@@ -123,9 +123,13 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
     case model::RepairOutputContainer::Mp4:
         plan.expected_output_extension = "mp4";
         break;
-    case model::RepairOutputContainer::Auto:
-        plan.expected_output_extension = LowerExtension(request.source_path) == "mov" ? "mov" : "mp4";
+    case model::RepairOutputContainer::Auto: {
+        // 与 RepairOutputWriter::OutputExtension 同一口径：mov / m4v 保留源扩展名，
+        // 否则报告写的扩展名会和实际产物对不上。
+        const std::string ext = LowerExtension(request.source_path);
+        plan.expected_output_extension = (ext == "mov" || ext == "m4v") ? ext : "mp4";
         break;
+    }
     }
     if (request.limits.user_confirmed_exceed && request.limits.max_seconds > 0)
         plan.global_preconditions.push_back("用户已确认可超出时间预算，本次修复不设硬超时");
@@ -155,7 +159,8 @@ RepairPlanOutcome RepairPlanner::MakePlan(const model::RepairRequest& request, c
             plan.actions.push_back(MakeAction(
                 model::RepairAction::S01_Remux, "无参考扫描 mdat 载荷，重建 ftyp+moov/stbl 后再重新封装",
                 "产物具备可读索引；样本边界由 NAL/ADTS 帧结构实测得出",
-                "样本边界是推断值；音视频交织的 mdat 无法拆分；不重建 edts/ctts，含 B 帧时显示顺序可能不符"));
+                "样本边界是推断值；音视频交织的 mdat 无法拆分；不重建 edts，ctts 仅在 POC 实测显示序与解码序不一致时"
+                "按实测写入，否则产物按解码序显示"));
             AddFirstStageActions(plan, request, diagnosis);
             if (request.mode == model::RepairMode::RecoverContent) {
                 plan.actions.push_back(

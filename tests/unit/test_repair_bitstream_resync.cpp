@@ -182,6 +182,25 @@ TEST(RepairBitstreamResync, CancelledBudgetStopsScanWithoutClaimingSuccess) {
     EXPECT_FALSE(result.error.empty());
 }
 
+TEST(RepairBitstreamResync, HealthyBudgetDoesNotAbortScan) {
+    const std::string dir = MakeTempDir("healthy_budget");
+    const std::string path = (fs::path(dir) / "payload.bin").string();
+
+    std::vector<uint8_t> payload;
+    payload.insert(payload.end(), 1000, 0xFF);
+    AppendH264Au(payload, true, true, 0x55);
+    ASSERT_TRUE(WriteFile(path, payload));
+
+    // 未取消、无截止时间：预算健康时扫描必须正常跑完并找到候选。
+    std::atomic<bool> cancel{false};
+    RepairRunBudget budget(&cancel, 0);
+    RepairBitstreamResyncOptions options;
+    const RepairBitstreamResyncResult result =
+        ScanForRandomAccessPoints(path, 0, static_cast<uint64_t>(payload.size()), "h264", options, nullptr, &budget);
+    EXPECT_TRUE(result.found) << result.error;
+    EXPECT_TRUE(result.error.empty());
+}
+
 TEST(RepairBitstreamResync, MarksWindowTruncationInsteadOfSilentlyScanningPrefix) {
     const std::string dir = MakeTempDir("truncated");
     const std::string path = (fs::path(dir) / "payload.bin").string();

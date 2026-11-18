@@ -254,7 +254,8 @@ RepairBitstreamResyncResult ScanForRandomAccessPoints(const std::string& path, u
 
     std::uint64_t pos = 0;
     while (pos < size && static_cast<int>(result.candidates.size()) < max_candidates) {
-        if (budget != nullptr && !budget->Checkpoint()) {
+        // Checkpoint() 返回 true = 已取消 / 已超预算：命中就停，健康时继续扫。
+        if (budget != nullptr && budget->Checkpoint()) {
             result.error = budget->Canceled() ? "扫描被取消" : "扫描超出共享预算";
             break;
         }

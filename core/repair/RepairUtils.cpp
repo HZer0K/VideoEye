@@ -60,7 +60,8 @@ std::string FormatLocalRunId() {
 }
 
 uint64_t Fnv1a64Begin() {
-    return 1469598103934665603ULL;
+    // FNV-1a 64 位标准 offset basis（十进制 14695981039346656037）。
+    return 14695981039346656037ULL;
 }
 
 uint64_t Fnv1a64Update(uint64_t state, const std::uint8_t* data, std::size_t size) {
