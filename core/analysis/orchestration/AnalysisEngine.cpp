@@ -219,6 +219,8 @@ void AnalysisEngine::Run(const std::string& file_path, const AnalysisOptions& op
     // 各分析维度的创建与逐包分发都收在 AnalysisPipeline 里：新增一个维度只需要改那一个
     // 文件，不用再同时改这里的创建段、下面的分发段和最后的收尾段。
     AnalysisPipeline pipeline(options);
+    // 纯字幕文件要整文件重解析（demuxer 会丢空事件），必须把本地路径带下去
+    pipeline.SetSourcePath(file_path);
     pipeline.Prepare(fmt, result, file_duration);
 
     // ---- 逐包扫描 ----

@@ -67,7 +67,7 @@ TEST(ControlBarWidgetTests, InitialControlsMatchLayoutContract) {
     EXPECT_EQ(0, volume->minimum());
     EXPECT_EQ(100, volume->maximum());
     EXPECT_EQ(100, volume->value());
-    EXPECT_EQ(QStringLiteral("音量: 100%"), volume->toolTip());
+    EXPECT_EQ(QStringLiteral("音量: 100%（画面获得焦点时 ↑/↓ 调整）"), volume->toolTip());
 
     // 进度条初始上下界都是 0（没有媒体时不可拖动）
     QSlider* seek = bar.seekSlider();
@@ -108,10 +108,10 @@ TEST(ControlBarWidgetTests, VolumeTooltipFollowsSliderValue) {
 
     volume->setValue(35);
     EXPECT_EQ(35, volume->value());
-    EXPECT_EQ(QStringLiteral("音量: 35%"), volume->toolTip());
+    EXPECT_EQ(QStringLiteral("音量: 35%（画面获得焦点时 ↑/↓ 调整）"), volume->toolTip());
 
     volume->setValue(0);
-    EXPECT_EQ(QStringLiteral("音量: 0%"), volume->toolTip());
+    EXPECT_EQ(QStringLiteral("音量: 0%（画面获得焦点时 ↑/↓ 调整）"), volume->toolTip());
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ TEST(ControlBarWidgetTests, VolumeChangeWithoutPlayerIsSafe) {
 
     volume->setValue(10);
     EXPECT_EQ(10, volume->value());
-    EXPECT_EQ(QStringLiteral("音量: 10%"), volume->toolTip());
+    EXPECT_EQ(QStringLiteral("音量: 10%（画面获得焦点时 ↑/↓ 调整）"), volume->toolTip());
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +184,22 @@ TEST(ControlBarWidgetTests, VolumeChangeIsForwardedToInjectedPlayer) {
 
     bar.volumeButton()->click();
     EXPECT_EQ(42, player.GetVolume());
+}
+
+// ---------------------------------------------------------------------------
+// 6. 无障碍名：图标按钮没有可见文字，屏幕阅读器只能靠 accessibleName 认出它
+// ---------------------------------------------------------------------------
+TEST(ControlBarWidgetTests, IconButtonsExposeAccessibleNames) {
+    EnsureApp();
+    ControlBarWidget bar;
+    EXPECT_FALSE(bar.playPauseButton()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.volumeButton()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.seekSlider()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.volumeSlider()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.mvOverlayButton()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.collapseButton()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.timeLabel()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.timecodeLabel()->accessibleName().isEmpty());
 }
 
 TEST(ControlBarWidgetTests, RepeatedResizesKeepControlsVisibleAndInsideTheBar) {

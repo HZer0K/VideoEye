@@ -595,6 +595,102 @@ void AppendTransportStream(std::ostringstream& out, const model::TransportStream
     out << "  </table>\n";
 }
 
+// 字幕与辅助数据（功能 9）。
+//
+// 字幕问题本身已经按规则 id 进了「问题清单」，这一节补的是**数据**：
+// 每条字幕流的格式 / 语言 / 解析状态，以及 cue 级问题的具体时间点 ——
+// 交付审核里"少了一句字幕""字幕从第几秒开始丢"只能靠这些数字定位。
+// 只有字幕 / 时码 / 辅助数据任一分析真的跑出结果才落节：全都没跑时落空节会让人
+// 误以为"查过且没问题"（与「画质 QC」同一口径）。
+void AppendSubtitleAux(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    const bool subtitle_analyzed = analysis.subtitle.analyzed;
+    const bool timecode_analyzed = analysis.timecode.analyzed;
+    const bool aux_analyzed = analysis.aux_data.analyzed;
+    if (!subtitle_analyzed && !timecode_analyzed && !aux_analyzed)
+        return;
+
+    const model::SubtitleAnalysisResult& sub = analysis.subtitle;
+    const model::TimecodeAnalysisResult& tc = analysis.timecode;
+    const model::AuxiliaryDataResult& aux = analysis.aux_data;
+
+    out << "  <h2>字幕与辅助数据</h2>\n";
+    if (subtitle_analyzed) {
+        int stream_level = 0;
+        for (const model::SubtitleIssue& issue : sub.issues) {
+            if (issue.IsStreamLevel())
+                ++stream_level;
+        }
+        out << "  <p class=\"meta\">字幕流 " << sub.streams.size() << " 条（文本 " << sub.text_stream_count
+            << " / 图形 " << sub.bitmap_stream_count << "），cue " << sub.cues.size() << " 条，问题 "
+            << sub.issues.size() << " 处（流级 " << stream_level << " / cue 级 "
+            << (static_cast<int>(sub.issues.size()) - stream_level) << "）";
+        if (sub.cues_truncated)
+            out << " ｜ <strong>cue 明细已达每流上限并截断，下表只含前若干条</strong>";
+        out << "</p>\n";
+
+        if (!sub.streams.empty()) {
+            out << "  <table>\n    <tr><th>流</th><th>编码</th><th>格式</th><th>承载</th><th>语言</th>"
+                   "<th>默认</th><th>强制</th><th>听障</th><th>已解析</th><th>Cue 数</th><th>说明</th></tr>\n";
+            for (const model::SubtitleStreamInfo& stream : sub.streams) {
+                out << "    <tr><td>" << stream.stream_index << "</td><td>" << Html(stream.codec_name) << "</td><td>"
+                    << Html(model::ToString(stream.format)) << "</td><td>" << Html(model::ToString(stream.kind))
+                    << "</td><td>" << Html(stream.language.empty() ? std::string("-") : stream.language) << "</td><td>"
+                    << (stream.default_disposition ? "是" : "否") << "</td><td>" << (stream.forced ? "是" : "否")
+                    << "</td><td>" << (stream.hearing_impaired ? "是" : "否") << "</td><td>"
+                    << (stream.IsText() ? (stream.parsed ? "是" : "否") : "-") << "</td><td>";
+                if (stream.truncated)
+                    out << stream.cue_count << "（已截断）";
+                else
+                    out << stream.cue_count;
+                out << "</td><td>" << Html(stream.note.empty() ? std::string("-") : stream.note) << "</td></tr>\n";
+            }
+            out << "  </table>\n";
+        }
+
+        if (!sub.issues.empty()) {
+            out << "  <table>\n    <tr><th>流</th><th>cue</th><th>级别</th><th>问题</th>"
+                   "<th>开始</th><th>结束</th><th>说明</th></tr>\n";
+            // 逐条 cue 问题的量级可能上千（长片 + 密集字幕），HTML 只列前 100 条，
+            // 全量明细留给 JSON；否则报告体积和打开速度都会被拖垮。
+            constexpr std::size_t kMaxListedIssues = 100;
+            std::size_t listed = 0;
+            for (const model::SubtitleIssue& issue : sub.issues) {
+                if (listed >= kMaxListedIssues)
+                    break;
+                ++listed;
+                const bool cue_level = !issue.IsStreamLevel();
+                out << "    <tr class=\"" << SeverityClass(issue.severity) << "\"><td>" << issue.stream_index
+                    << "</td><td>" << (cue_level ? std::to_string(issue.cue_index + 1) : std::string("-"))
+                    << "</td><td>" << Html(model::ToString(issue.severity)) << "</td><td>"
+                    << Html(model::ToString(issue.type)) << "</td><td>"
+                    << (cue_level && issue.start_seconds >= 0.0 ? Fixed(issue.start_seconds, 3) + " s"
+                                                                : std::string("-"))
+                    << "</td><td>"
+                    << (cue_level && issue.end_seconds >= 0.0 ? Fixed(issue.end_seconds, 3) + " s" : std::string("-"))
+                    << "</td><td>" << Html(issue.detail) << "</td></tr>\n";
+            }
+            out << "  </table>\n";
+            if (sub.issues.size() > kMaxListedIssues) {
+                out << "  <p class=\"meta\">另有 " << (sub.issues.size() - kMaxListedIssues)
+                    << " 条字幕问题未列出，完整列表见 JSON 报告的 subtitle_aux.issues。</p>\n";
+            }
+        }
+    } else {
+        out << "  <p class=\"meta\">字幕分析未产出结果。</p>\n";
+    }
+
+    if (timecode_analyzed) {
+        out << "  <p class=\"meta\">首帧时码 " << Html(tc.has_primary ? tc.primary.ToString() : std::string("无"))
+            << " ｜ 帧率 " << (tc.primary_frame_rate > 0.0 ? Fixed(tc.primary_frame_rate, 3) : std::string("未知"))
+            << " fps" << (tc.primary_drop_frame ? "（drop-frame）" : "") << " ｜ 章节 " << tc.chapters.size()
+            << " 个，问题 " << tc.chapter_issues.size() << " 处</p>\n";
+    }
+    if (aux_analyzed) {
+        out << "  <p class=\"meta\">SCTE-35 cue " << aux.scte35_cue_count << " 条（OUT " << aux.scte35_out_count
+            << " / IN " << aux.scte35_in_count << "）｜ metadata " << aux.metadata.size() << " 条</p>\n";
+    }
+}
+
 void AppendComparisonTable(std::ostringstream& out, const qc::QcComparison& comparison) {
     out << "  <h2>文件对比</h2>\n";
     out << "  <p class=\"meta\">原文件: " << Html(comparison.left_path)
@@ -655,6 +751,7 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     AppendPerTrackAudioQc(out, run.analysis);
     AppendMainTrackAudioQc(out, run.analysis.audio_qc);
     AppendTransportStream(out, run.analysis.ts_transport);
+    AppendSubtitleAux(out, run.analysis);
     if (bundle.has_comparison)
         AppendComparisonTable(out, bundle.comparison);
     AppendRuleSnapshot(out, report);

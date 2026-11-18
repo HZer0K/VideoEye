@@ -515,6 +515,11 @@ void AnalysisPanel::WireAnalysisPages() {
     });
     connect(pages_.subtitle_aux, &SubtitleAuxPage::StartTimecodeReady, this, &AnalysisPanel::StartTimecodeReady);
     connect(pages_.subtitle_aux, &SubtitleAuxPage::SeekRequested, this, &AnalysisPanel::SeekRequested);
+    // 「取消」与诊断页共用同一次扫描：和其它共用扫描的页一样，中止总控那一次任务。
+    connect(pages_.subtitle_aux, &SubtitleAuxPage::CancelRequested, this, [this]() {
+        if (pages_.diagnostics)
+            pages_.diagnostics->CancelScan();
+    });
     // 字幕页同样共用同一次扫描：登记进注册表，扫描中「开始分析」跟着禁用、换文件同步。
     AddScanClient(pages_.subtitle_aux);
 

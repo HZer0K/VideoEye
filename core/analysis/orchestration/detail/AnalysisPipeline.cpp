@@ -82,6 +82,10 @@ int NalLengthSizeFromExtradata(const AVCodecParameters* par) {
 AnalysisPipeline::AnalysisPipeline(const AnalysisOptions& options) : options_(options) {
 }
 
+void AnalysisPipeline::SetSourcePath(std::string path) {
+    source_path_ = std::move(path);
+}
+
 AnalysisPipeline::~AnalysisPipeline() {
     // 兜底释放（评审 P2-4）：正常/已知错误分支都会显式 ReleaseProbes()，这里收的是
     // "栈展开"那条路径 —— Prepare() / 逐包分析 / 回调抛异常时不会走到显式释放。
@@ -102,6 +106,7 @@ void AnalysisPipeline::Prepare(AVFormatContext* fmt, model::AnalysisResult& resu
     // 字幕 / 时码 / 辅助数据轨：只在存在对应流时才有实际工作量（内部按类型过滤）
     if (options_.analyze_subtitle) {
         subtitle_.Reset(options_.subtitle_options);
+        subtitle_.SetSourcePath(source_path_);
         subtitle_.RegisterStreams(fmt);
     }
     if (options_.analyze_timecode) {

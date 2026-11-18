@@ -4,7 +4,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 extern "C" {
@@ -56,6 +58,20 @@ bool IsAllDigits(const std::string& text) {
             return false;
     }
     return true;
+}
+
+// 有原生整包解析器、不依赖 FFmpeg 解码器的格式
+bool IsNativelyParsedFormat(model::SubtitleFormat format) {
+    switch (format) {
+    case model::SubtitleFormat::Srt:
+    case model::SubtitleFormat::Ssa:
+    case model::SubtitleFormat::Ass:
+    case model::SubtitleFormat::WebVtt:
+    case model::SubtitleFormat::MovText:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // ISO 639-2 里这几个码都表示"没有确定的单一语言"：
@@ -117,20 +133,45 @@ std::string FlattenText(const std::string& in) {
     return Trim(out);
 }
 
+// '<' 什么时候是标签开始？只看两种真实存在的写法：
+//   HTML 标签 <i> / </i> / <font ...>，以及 WebVTT 时间戳标签 <00:01:02.500>。
+// 字幕正文里的比较符号（如 "2<3,5>1,4<6"）不能当标签删掉 —— 否则可见文本与
+// 字符数都会失真，阅读速度跟着误报。
+bool IsAngleTagStart(const std::string& text, size_t pos) {
+    const size_t next = pos + 1;
+    if (next >= text.size())
+        return false;
+    const unsigned char c = static_cast<unsigned char>(text[next]);
+    if (std::isalpha(c) || c == '/')
+        return true;
+    if (!std::isdigit(c))
+        return false;
+    // 数字开头只有 "mm:ss" / "hh:mm:ss" 这种时间戳才算标签
+    for (size_t i = next; i < text.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(text[i]);
+        if (ch == ':')
+            return true;
+        if (!std::isdigit(ch))
+            return false;
+    }
+    return false;
+}
+
 std::string StripAngleTags(const std::string& in) {
     std::string out;
-    bool in_tag = false;
-    for (char c : in) {
-        if (c == '<') {
-            in_tag = true;
+    size_t i = 0;
+    while (i < in.size()) {
+        if (in[i] == '<' && IsAngleTagStart(in, i)) {
+            const size_t close = in.find('>', i + 1);
+            if (close == std::string::npos) {
+                out.append(in, i, std::string::npos);
+                break;
+            }
+            i = close + 1;
             continue;
         }
-        if (c == '>') {
-            in_tag = false;
-            continue;
-        }
-        if (!in_tag)
-            out.push_back(c);
+        out.push_back(in[i]);
+        ++i;
     }
     return out;
 }
@@ -248,7 +289,9 @@ bool ParseCueBlocks(const std::string& text, bool webvtt, std::vector<ParsedSubt
             raw += blk[i];
         }
         cue.raw_text = Trim(raw);
-        cue.text = FlattenText(StripAngleTags(cue.raw_text));
+        // SRT 里也常出现 {\an8} 之类的 ASS 覆盖指令，必须一并剥掉，
+        // 否则这些控制符会计进字符数并出现在导出文本里。
+        cue.text = FlattenText(StripAngleTags(SubtitleAnalyzer::StripAssOverrides(cue.raw_text)));
         cue.valid = true;
         out.push_back(std::move(cue));
         saw_any = true;
@@ -324,6 +367,25 @@ model::SubtitleFormat SubtitleAnalyzer::FormatFromCodecId(int codec_id) {
         return model::SubtitleFormat::Xsub;
     case AV_CODEC_ID_DVB_TELETEXT:
         return model::SubtitleFormat::Teletext;
+    case AV_CODEC_ID_MICRODVD:
+        return model::SubtitleFormat::MicroDvd;
+    case AV_CODEC_ID_SUBVIEWER:
+    case AV_CODEC_ID_SUBVIEWER1:
+        return model::SubtitleFormat::SubViewer;
+    case AV_CODEC_ID_SAMI:
+        return model::SubtitleFormat::Sami;
+    case AV_CODEC_ID_REALTEXT:
+        return model::SubtitleFormat::RealText;
+    case AV_CODEC_ID_STL:
+        return model::SubtitleFormat::Stl;
+    case AV_CODEC_ID_JACOSUB:
+        return model::SubtitleFormat::JacoSub;
+    case AV_CODEC_ID_MPL2:
+        return model::SubtitleFormat::Mpl2;
+    case AV_CODEC_ID_PJS:
+        return model::SubtitleFormat::Pjs;
+    case AV_CODEC_ID_VPLAYER:
+        return model::SubtitleFormat::VPlayer;
     case AV_CODEC_ID_TEXT:
     case AV_CODEC_ID_TTML:
     case AV_CODEC_ID_HDMV_TEXT_SUBTITLE:
@@ -342,6 +404,16 @@ model::SubtitleKind SubtitleAnalyzer::KindFromFormat(model::SubtitleFormat forma
     case model::SubtitleFormat::MovText:
     case model::SubtitleFormat::Teletext:
     case model::SubtitleFormat::OtherText:
+    case model::SubtitleFormat::MicroDvd:
+    case model::SubtitleFormat::SubViewer:
+    case model::SubtitleFormat::Sami:
+    case model::SubtitleFormat::RealText:
+    case model::SubtitleFormat::Stl:
+    case model::SubtitleFormat::JacoSub:
+    case model::SubtitleFormat::Mpl2:
+    case model::SubtitleFormat::Pjs:
+    case model::SubtitleFormat::VPlayer:
+    case model::SubtitleFormat::AqTitle:
         return model::SubtitleKind::Text;
     case model::SubtitleFormat::Cea608:
     case model::SubtitleFormat::Cea708:
@@ -460,6 +532,76 @@ bool SubtitleAnalyzer::ParseAssText(const std::string& text, std::vector<ParsedS
     return saw_any;
 }
 
+bool SubtitleAnalyzer::ParseMicroDvdText(const std::string& text, double frame_rate,
+                                         std::vector<ParsedSubtitleCue>& out) {
+    if (frame_rate <= 1.0)
+        frame_rate = 25.0;
+    const std::vector<std::string> lines = SplitLines(text);
+    bool saw_any = false;
+    for (const std::string& line : lines) {
+        const std::string trimmed = Trim(line);
+        if (trimmed.size() < 5 || trimmed[0] != '{')
+            continue;
+        const size_t first_close = trimmed.find('}');
+        if (first_close == std::string::npos)
+            continue;
+        const size_t second_open = trimmed.find('{', first_close + 1);
+        if (second_open == std::string::npos)
+            continue;
+        const size_t second_close = trimmed.find('}', second_open + 1);
+        if (second_close == std::string::npos)
+            continue;
+
+        const long start_frame = std::atol(trimmed.substr(1, first_close - 1).c_str());
+        const long end_frame = std::atol(trimmed.substr(second_open + 1, second_close - second_open - 1).c_str());
+        std::string body = trimmed.substr(second_close + 1);
+        // | 是 MicroDVD 的换行符
+        std::replace(body.begin(), body.end(), '|', '\n');
+
+        ParsedSubtitleCue cue;
+        cue.start_seconds = static_cast<double>(start_frame) / frame_rate;
+        cue.end_seconds = static_cast<double>(end_frame) / frame_rate;
+        cue.raw_text = body;
+        cue.text = FlattenText(StripAngleTags(StripAssOverrides(body)));
+        cue.valid = true;
+        // {n}{n} 且文本为空 = 清屏指令，不是"空字幕"，不能计入 cue
+        if (cue.text.empty() && std::llabs(end_frame - start_frame) <= 1)
+            continue;
+        out.push_back(std::move(cue));
+        saw_any = true;
+    }
+    return saw_any;
+}
+
+bool SubtitleAnalyzer::IsValidUtf8(const std::string& text) {
+    size_t i = 0;
+    const size_t n = text.size();
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        size_t extra = 0;
+        if ((c & 0xE0) == 0xC0)
+            extra = 1;
+        else if ((c & 0xF0) == 0xE0)
+            extra = 2;
+        else if ((c & 0xF8) == 0xF0)
+            extra = 3;
+        else
+            return false;
+        if (i + extra >= n)
+            return false;
+        for (size_t k = 1; k <= extra; ++k) {
+            if ((static_cast<unsigned char>(text[i + k]) & 0xC0) != 0x80)
+                return false;
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
 std::string SubtitleAnalyzer::DecodeCea608Field(const uint8_t* data, size_t size) {
     std::string out;
     if (data == nullptr)
@@ -573,6 +715,7 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
 
     double prev_start = -1.0;
     double prev_end = -1.0;
+    std::string prev_text;
     int stream_index = -1;
 
     for (model::SubtitleCue& cue : cues) {
@@ -618,11 +761,20 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
                           cue.start_seconds, cue.end_seconds, buf);
                 flagged = true;
             } else if (options.check_overlap && cue.start_seconds < prev_end - options.overlap_tolerance_seconds) {
-                std::snprintf(buf, sizeof(buf), "第 %d 条起点 %.3fs 早于上一条终点 %.3fs（重叠 %.3fs）", cue.index + 1,
-                              cue.start_seconds, prev_end, prev_end - cue.start_seconds);
-                add_issue(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning, stream_index, cue.index,
-                          cue.start_seconds, cue.end_seconds, buf);
-                flagged = true;
+                // ASS/SSA 的 Dialogue 本来就允许分层：正片字幕 + 屏幕字/特效字可以
+                // 同时上屏，两条**不同文本**的事件时间重叠是合法排版，不是时间轴错误。
+                // 只有文本完全相同才说明是重复事件（同一句话被下了两次）。
+                // 真正的时序错误仍由 NonMonotonic / InvalidDuration / OutOfRange 兜底。
+                const bool layered_ass =
+                    (cue.format == model::SubtitleFormat::Ass || cue.format == model::SubtitleFormat::Ssa) &&
+                    !prev_text.empty() && cue.text != prev_text;
+                if (!layered_ass) {
+                    std::snprintf(buf, sizeof(buf), "第 %d 条起点 %.3fs 早于上一条终点 %.3fs（重叠 %.3fs）",
+                                  cue.index + 1, cue.start_seconds, prev_end, prev_end - cue.start_seconds);
+                    add_issue(model::SubtitleIssueType::Overlap, model::IssueSeverity::Warning, stream_index, cue.index,
+                              cue.start_seconds, cue.end_seconds, buf);
+                    flagged = true;
+                }
             }
         }
 
@@ -648,6 +800,7 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
         if (flagged)
             cue.has_issue = true;
         prev_start = cue.start_seconds;
+        prev_text = cue.text;
         // prev_end 必须单调不减：字幕时间轴只会往前走。畸形样本（end 早于 start）会把
         // 它拉回起点，之后的重叠率、停留时长、丢帧判定全都跟着倒退 —— 一条坏数据会
         // 放大成一片误报，所以这里只取"不比历史更靠前"的那个值。
@@ -660,6 +813,17 @@ void SubtitleAnalyzer::Reset(const SubtitleOptions& options) {
     options_ = options;
     result_ = model::SubtitleAnalysisResult{};
     caption_slots_.clear();
+    ReleaseTextDecoders();
+    whole_file_streams_.clear();
+    unsupported_streams_.clear();
+}
+
+SubtitleAnalyzer::~SubtitleAnalyzer() {
+    ReleaseTextDecoders();
+}
+
+void SubtitleAnalyzer::SetSourcePath(std::string path) {
+    source_path_ = std::move(path);
 }
 
 SubtitleAnalyzer::CaptionSlot* SubtitleAnalyzer::FindOrCreateCaptionSlot(int stream_index) {
@@ -738,6 +902,9 @@ void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
             info.duration_seconds = static_cast<double>(st->duration) * tb;
         }
 
+        const int codec_id = static_cast<int>(st->codecpar->codec_id);
+        const bool has_decoder = avcodec_find_decoder(static_cast<AVCodecID>(codec_id)) != nullptr;
+
         if (info.kind == model::SubtitleKind::Bitmap) {
             info.note = "图形字幕：只输出流 metadata 与包时间线（不做 OCR / 像素级合成分析，见 D3 边界）";
             ++result_.bitmap_stream_count;
@@ -746,12 +913,43 @@ void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
                             ? "CEA-708：DTVCC 按服务解码（文本与起止时间来自上屏/擦除事件）"
                             : "CEA-608：按 CC1-CC4 通道解码（pop-on/paint-on/roll-up 状态机）";
             ++result_.text_stream_count;
+        } else if (info.kind == model::SubtitleKind::Text) {
+            if (!IsNativelyParsedFormat(info.format) && !has_decoder) {
+                // 既没有原生解析器、FFmpeg 也不认识这个 codec：不能装作解析成功，
+                // 必须留下明确的"未解析"结论，否则这类流会被当成"没有问题"。
+                info.note = "该字幕格式没有可用的解析器，未做文本级检查";
+                unsupported_streams_.push_back(info.stream_index);
+                model::SubtitleIssue issue;
+                issue.type = model::SubtitleIssueType::UnsupportedFormat;
+                issue.severity = model::IssueSeverity::Warning;
+                issue.stream_index = info.stream_index;
+                issue.cue_index = -1;
+                issue.detail = "字幕流 " + std::to_string(info.stream_index) + "（" + info.codec_name +
+                               "）格式不支持解析，未做文本级检查";
+                result_.issues.push_back(std::move(issue));
+            } else {
+                ++result_.text_stream_count;
+            }
         } else {
-            ++result_.text_stream_count;
+            // 认不出承载方式（ARIB 图文、未知 codec 等）：同样要显式说明，而不是静默跳过
+            info.note = "无法识别的字幕流类型，未做文本级检查";
+            unsupported_streams_.push_back(info.stream_index);
+            model::SubtitleIssue issue;
+            issue.type = model::SubtitleIssueType::UnsupportedFormat;
+            issue.severity = model::IssueSeverity::Info;
+            issue.stream_index = info.stream_index;
+            issue.cue_index = -1;
+            issue.detail = "字幕流 " + std::to_string(info.stream_index) + "（" + info.codec_name +
+                           "）类型无法识别，未做文本级检查";
+            result_.issues.push_back(std::move(issue));
         }
 
         result_.streams.push_back(std::move(info));
     }
+
+    // 纯字幕文件（没有音视频流）必须整文件重解析：demuxer 会把空事件、畸形事件
+    // 直接丢掉，只靠逐包路径永远看不到它们。
+    TryParseWholeFile(fmt);
 }
 
 void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
@@ -785,8 +983,6 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
     const bool is_cc = (info->kind == model::SubtitleKind::ClosedCaption);
     if (!options_.parse_text_cues)
         return;
-    if (info->cue_count >= static_cast<int>(options_.max_cues_per_stream))
-        return;
 
     // 隐藏字幕不能按包解析：608 是"显存状态机"（预装载/上屏/滚动），708 是
     // "DTVCC 包 + service block"。这里只把 cc_data 喂给解码器，cue 在 Finish 时定稿 ——
@@ -809,15 +1005,57 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
     if (info->kind != model::SubtitleKind::Text)
         return;
 
-    ParsedSubtitleCue parsed;
-    if (!ParsePacketPayload(static_cast<int>(stream->codecpar->codec_id), pkt->data, static_cast<size_t>(pkt->size), ts,
-                            duration, parsed)) {
+    // 整文件已重解析 / 明确不支持：跳过逐包解析，避免同一批 cue 入两遍，
+    // 也避免把二进制载荷当成正文。
+    if (std::find(whole_file_streams_.begin(), whole_file_streams_.end(), info->stream_index) !=
+        whole_file_streams_.end()) {
+        return;
+    }
+    if (std::find(unsupported_streams_.begin(), unsupported_streams_.end(), info->stream_index) !=
+        unsupported_streams_.end()) {
+        return;
+    }
+
+    if (IsNativelyParsedFormat(info->format)) {
+        ParsedSubtitleCue parsed;
+        if (!ParsePacketPayload(static_cast<int>(stream->codecpar->codec_id), pkt->data, static_cast<size_t>(pkt->size),
+                                ts, duration, parsed)) {
+            return;
+        }
+        AppendParsedCue(parsed, *info);
+        return;
+    }
+
+    // 非原生格式（MicroDVD / SAMI / RealText / STL / JACOsub ...）：交给 FFmpeg 字幕解码器。
+    // 各 demuxer 已经把时间轴写进 PTS，解码器负责还原干净文本 —— 自己按字节猜格式
+    // 既覆盖不了 STL 这类二进制容器，也容易把时间前缀算进阅读速度。
+    AVCodecContext* context = EnsureTextDecoder(stream);
+    if (context == nullptr)
+        return;
+    if (info->note.empty())
+        info->note = "由 FFmpeg 字幕解码器解析（时间轴来自容器 PTS）";
+    AVSubtitle subtitle{};
+    int got = 0;
+    const int ret = avcodec_decode_subtitle2(context, &subtitle, &got, pkt);
+    if (ret >= 0 && got != 0)
+        AppendDecodedSubtitle(subtitle, ts, duration, *info);
+    if (got != 0)
+        avsubtitle_free(&subtitle);
+}
+
+void SubtitleAnalyzer::AppendParsedCue(const ParsedSubtitleCue& parsed, model::SubtitleStreamInfo& info) {
+    if (info.cue_count >= static_cast<int>(options_.max_cues_per_stream)) {
+        // 不能静默停止：报告与 UI 必须知道"后面还有，只是没入库"
+        if (!info.truncated) {
+            info.truncated = true;
+            result_.cues_truncated = true;
+        }
         return;
     }
 
     model::SubtitleCue cue;
-    cue.index = info->cue_count;
-    cue.stream_index = info->stream_index;
+    cue.index = info.cue_count;
+    cue.stream_index = info.stream_index;
     cue.cue_number = parsed.cue_number;
     cue.start_seconds = parsed.start_seconds;
     cue.end_seconds = parsed.end_seconds;
@@ -825,14 +1063,219 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
         (parsed.end_seconds > parsed.start_seconds) ? (parsed.end_seconds - parsed.start_seconds) : 0.0;
     cue.text = parsed.text;
     cue.raw_text = parsed.raw_text;
-    cue.language = info->language;
-    cue.format = info->format;
+    cue.language = info.language;
+    cue.format = info.format;
     cue.char_count = CountVisibleChars(cue.text);
     cue.empty = (cue.char_count == 0);
 
-    ++info->cue_count;
-    info->parsed = true;
+    ++info.cue_count;
+    info.parsed = true;
     result_.cues.push_back(std::move(cue));
+}
+
+AVCodecContext* SubtitleAnalyzer::EnsureTextDecoder(const AVStream* stream) {
+    if (stream == nullptr || stream->codecpar == nullptr)
+        return nullptr;
+    for (TextDecoderSlot& slot : text_decoders_) {
+        if (slot.stream_index == stream->index)
+            return slot.context;
+    }
+
+    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (codec == nullptr)
+        return nullptr;
+    AVCodecContext* context = avcodec_alloc_context3(codec);
+    if (context == nullptr)
+        return nullptr;
+    context->pkt_timebase = stream->time_base;
+    // STL 这类格式的帧率/字符集放在 GSI 里，由 demuxer 写进 extradata；不传下去解码会失败
+    const int extra_size = stream->codecpar->extradata_size;
+    if (stream->codecpar->extradata != nullptr && extra_size > 0) {
+        context->extradata =
+            static_cast<uint8_t*>(av_mallocz(static_cast<size_t>(extra_size) + AV_INPUT_BUFFER_PADDING_SIZE));
+        if (context->extradata != nullptr) {
+            std::memcpy(context->extradata, stream->codecpar->extradata, static_cast<size_t>(extra_size));
+            context->extradata_size = extra_size;
+        }
+    }
+    if (avcodec_open2(context, codec, nullptr) < 0) {
+        avcodec_free_context(&context);
+        return nullptr;
+    }
+    TextDecoderSlot slot;
+    slot.stream_index = stream->index;
+    slot.context = context;
+    text_decoders_.push_back(slot);
+    return context;
+}
+
+void SubtitleAnalyzer::ReleaseTextDecoders() {
+    for (TextDecoderSlot& slot : text_decoders_) {
+        if (slot.context != nullptr)
+            avcodec_free_context(&slot.context);
+    }
+    text_decoders_.clear();
+}
+
+// AVSubtitle 里的 ASS 行形如 "0,0,Default,,0,0,0,,正文"（ReadOrder/Layer/Style/Name/
+// MarginL/MarginR/MarginV/Effect/Text），没有起止时间 —— 时间在 AVSubtitle 的
+// start_display_time / end_display_time（相对包 PTS 的毫秒）。
+static std::string AssRectText(const AVSubtitleRect& rect) {
+    if (rect.type == SUBTITLE_TEXT && rect.text != nullptr)
+        return rect.text;
+    if (rect.type != SUBTITLE_ASS || rect.ass == nullptr)
+        return std::string();
+    const std::string line = rect.ass;
+    size_t start = 0;
+    for (int i = 0; i < 8; ++i) {
+        const size_t comma = line.find(',', start);
+        if (comma == std::string::npos)
+            return std::string();
+        start = comma + 1;
+    }
+    return line.substr(start);
+}
+
+void SubtitleAnalyzer::AppendDecodedSubtitle(const AVSubtitle& subtitle, double pts_seconds, double duration_seconds,
+                                             model::SubtitleStreamInfo& info) {
+    std::string raw;
+    for (unsigned i = 0; i < subtitle.num_rects; ++i) {
+        const AVSubtitleRect* rect = subtitle.rects[i];
+        if (rect == nullptr)
+            continue;
+        const std::string part = AssRectText(*rect);
+        if (part.empty())
+            continue;
+        if (!raw.empty())
+            raw.push_back('\n');
+        raw += part;
+    }
+    // 图形字幕的 rect 没有文本：这条包只是位图，按"无文本"处理会让覆盖率虚高，直接跳过
+    if (subtitle.num_rects > 0 && raw.empty())
+        return;
+
+    ParsedSubtitleCue cue;
+    cue.raw_text = raw;
+    cue.text = FlattenText(StripAngleTags(StripAssOverrides(raw)));
+    cue.start_seconds = (pts_seconds >= 0.0) ? pts_seconds : 0.0;
+    if (subtitle.start_display_time > 0)
+        cue.start_seconds += static_cast<double>(subtitle.start_display_time) / 1000.0;
+    if (subtitle.end_display_time > 0) {
+        cue.end_seconds =
+            ((pts_seconds >= 0.0) ? pts_seconds : 0.0) + static_cast<double>(subtitle.end_display_time) / 1000.0;
+    } else if (duration_seconds > 0.0) {
+        cue.end_seconds = cue.start_seconds + duration_seconds;
+    } else {
+        cue.end_seconds = cue.start_seconds;
+    }
+    cue.valid = true;
+    AppendParsedCue(cue, info);
+}
+
+bool SubtitleAnalyzer::TryParseWholeFile(const AVFormatContext* fmt) {
+    if (!options_.parse_text_cues || fmt == nullptr)
+        return false;
+    if (source_path_.empty() || source_path_.find("://") != std::string::npos)
+        return false;
+
+    // 只处理"纯字幕文件"：有任何音视频流就仍走正常的逐包路径
+    int subtitle_streams = 0;
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        const AVStream* st = fmt->streams[i];
+        if (st == nullptr || st->codecpar == nullptr)
+            continue;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO || st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            return false;
+        }
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
+            ++subtitle_streams;
+    }
+    if (subtitle_streams != 1)
+        return false;
+
+    model::SubtitleStreamInfo* info = nullptr;
+    for (model::SubtitleStreamInfo& stream : result_.streams) {
+        if (stream.kind == model::SubtitleKind::Text) {
+            info = &stream;
+            break;
+        }
+    }
+    if (info == nullptr)
+        return false;
+    if (std::find(unsupported_streams_.begin(), unsupported_streams_.end(), info->stream_index) !=
+        unsupported_streams_.end()) {
+        return false;
+    }
+
+    // 只有这几类有整文件解析器。MovText/tx3g、图形字幕等封装在二进制容器里，
+    // 读原始字节当文本判 UTF-8 只会制造假告警，必须挡在读取之前。
+    switch (info->format) {
+    case model::SubtitleFormat::Srt:
+    case model::SubtitleFormat::WebVtt:
+    case model::SubtitleFormat::Ass:
+    case model::SubtitleFormat::Ssa:
+    case model::SubtitleFormat::MicroDvd:
+        break;
+    default:
+        return false;
+    }
+
+    std::ifstream file(source_path_, std::ios::binary);
+    if (!file)
+        return false;
+    constexpr size_t kMaxRead = 64u * 1024u * 1024u;
+    std::string bytes;
+    bytes.resize(kMaxRead);
+    file.read(&bytes[0], static_cast<std::streamsize>(kMaxRead));
+    bytes.resize(static_cast<size_t>(file.gcount()));
+    if (bytes.empty())
+        return false;
+
+    if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
+        static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF) {
+        bytes.erase(0, 3);
+    }
+    if (!IsValidUtf8(bytes)) {
+        model::SubtitleIssue issue;
+        issue.type = model::SubtitleIssueType::NonUtf8Encoding;
+        issue.severity = model::IssueSeverity::Warning;
+        issue.stream_index = info->stream_index;
+        issue.cue_index = -1;
+        issue.detail = "字幕流 " + std::to_string(info->stream_index) +
+                       " 的文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码），阅读速度与文本判定可能失真";
+        result_.issues.push_back(std::move(issue));
+        info->note = "文本不是合法 UTF-8，字符统计按字节近似";
+    }
+
+    std::vector<ParsedSubtitleCue> parsed;
+    bool ok = false;
+    switch (info->format) {
+    case model::SubtitleFormat::Srt:
+        ok = ParseSrtText(bytes, parsed);
+        break;
+    case model::SubtitleFormat::WebVtt:
+        ok = ParseWebVttText(bytes, parsed);
+        break;
+    case model::SubtitleFormat::Ass:
+    case model::SubtitleFormat::Ssa:
+        ok = ParseAssText(bytes, parsed);
+        break;
+    case model::SubtitleFormat::MicroDvd:
+        ok = ParseMicroDvdText(bytes, options_.microdvd_frame_rate, parsed);
+        break;
+    default:
+        // 其它格式由 FFmpeg 解码器处理，不在这里抢路
+        return false;
+    }
+    if (!ok || parsed.empty())
+        return false;
+
+    for (const ParsedSubtitleCue& cue : parsed)
+        AppendParsedCue(cue, *info);
+    whole_file_streams_.push_back(info->stream_index);
+    if (info->note.empty())
+        info->note = "纯字幕文件：整文件解析（含空事件与畸形事件）";
+    return true;
 }
 
 void SubtitleAnalyzer::AppendCaptionCues(CaptionSlot& slot, double end_seconds) {
@@ -886,8 +1329,11 @@ void SubtitleAnalyzer::AppendCaptionCues(CaptionSlot& slot, double end_seconds) 
 
     const int limit = static_cast<int>(options_.max_cues_per_stream);
     for (const model::CaptionCue& caption : captions.cues) {
-        if (info->cue_count >= limit)
+        if (info->cue_count >= limit) {
+            info->truncated = true;
+            result_.cues_truncated = true;
             break;
+        }
         model::SubtitleCue cue;
         cue.index = info->cue_count;
         cue.stream_index = info->stream_index;
@@ -980,6 +1426,29 @@ void SubtitleAnalyzer::Finish(double media_duration_seconds) {
                 issue.detail = "字幕流 " + std::to_string(stream.stream_index) + " 没有 handler name";
                 result_.issues.push_back(std::move(issue));
             }
+        }
+    }
+
+    // 文本字幕一条 cue 都没解析出来时必须显式报出：格式不支持、编码不匹配、
+    // 解析器失败，最终都会表现成"这条流没有问题"——这是 QC 最危险的假阴性。
+    if (options_.parse_text_cues) {
+        for (const model::SubtitleStreamInfo& stream : result_.streams) {
+            if (stream.kind != model::SubtitleKind::Text)
+                continue;
+            if (stream.cue_count > 0 || stream.truncated)
+                continue;
+            if (std::find(unsupported_streams_.begin(), unsupported_streams_.end(), stream.stream_index) !=
+                unsupported_streams_.end()) {
+                continue; // 已经有"格式不支持"的结论，不重复报
+            }
+            model::SubtitleIssue issue;
+            issue.type = model::SubtitleIssueType::NoCues;
+            issue.severity = model::IssueSeverity::Warning;
+            issue.stream_index = stream.stream_index;
+            issue.cue_index = -1;
+            issue.detail = "字幕流 " + std::to_string(stream.stream_index) + "（" + stream.codec_name +
+                           "）没有解析出任何字幕，无法做文本级检查";
+            result_.issues.push_back(std::move(issue));
         }
     }
 

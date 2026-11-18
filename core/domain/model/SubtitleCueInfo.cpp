@@ -62,6 +62,26 @@ const char* ToString(SubtitleFormat format) {
         return "其它文本字幕";
     case SubtitleFormat::OtherBitmap:
         return "其它图形字幕";
+    case SubtitleFormat::MicroDvd:
+        return "MicroDVD";
+    case SubtitleFormat::SubViewer:
+        return "SubViewer";
+    case SubtitleFormat::Sami:
+        return "SAMI";
+    case SubtitleFormat::RealText:
+        return "RealText";
+    case SubtitleFormat::Stl:
+        return "EBU STL";
+    case SubtitleFormat::JacoSub:
+        return "JACOsub";
+    case SubtitleFormat::Mpl2:
+        return "MPL2";
+    case SubtitleFormat::Pjs:
+        return "PJS";
+    case SubtitleFormat::VPlayer:
+        return "VPlayer";
+    case SubtitleFormat::AqTitle:
+        return "AQTitle";
     case SubtitleFormat::Unknown:
     default:
         return "未知";
@@ -104,6 +124,12 @@ const char* ToString(SubtitleIssueType type) {
         return "缺少语言 tag";
     case SubtitleIssueType::MissingHandler:
         return "缺少 handler name";
+    case SubtitleIssueType::NoCues:
+        return "未解析出字幕";
+    case SubtitleIssueType::UnsupportedFormat:
+        return "格式不支持解析";
+    case SubtitleIssueType::NonUtf8Encoding:
+        return "编码不是 UTF-8";
     default:
         return "未知问题";
     }
@@ -139,6 +165,26 @@ const char* SubtitleFormatCode(SubtitleFormat format) {
         return "other_text";
     case SubtitleFormat::OtherBitmap:
         return "other_bitmap";
+    case SubtitleFormat::MicroDvd:
+        return "microdvd";
+    case SubtitleFormat::SubViewer:
+        return "subviewer";
+    case SubtitleFormat::Sami:
+        return "sami";
+    case SubtitleFormat::RealText:
+        return "realtext";
+    case SubtitleFormat::Stl:
+        return "stl";
+    case SubtitleFormat::JacoSub:
+        return "jacosub";
+    case SubtitleFormat::Mpl2:
+        return "mpl2";
+    case SubtitleFormat::Pjs:
+        return "pjs";
+    case SubtitleFormat::VPlayer:
+        return "vplayer";
+    case SubtitleFormat::AqTitle:
+        return "aqtitle";
     case SubtitleFormat::Unknown:
     default:
         return "unknown";
@@ -167,6 +213,12 @@ const char* SubtitleIssueCode(SubtitleIssueType type) {
         return "missing_language";
     case SubtitleIssueType::MissingHandler:
         return "missing_handler";
+    case SubtitleIssueType::NoCues:
+        return "no_cues";
+    case SubtitleIssueType::UnsupportedFormat:
+        return "unsupported_format";
+    case SubtitleIssueType::NonUtf8Encoding:
+        return "non_utf8";
     default:
         return "unknown";
     }

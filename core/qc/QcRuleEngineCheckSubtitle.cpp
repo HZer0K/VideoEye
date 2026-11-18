@@ -77,6 +77,9 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
         {"subtitle.cue_out_of_range", model::SubtitleIssueType::OutOfRange},
         {"subtitle.missing_language", model::SubtitleIssueType::MissingLanguage},
         {"subtitle.missing_handler", model::SubtitleIssueType::MissingHandler},
+        {"subtitle.text.no_cues", model::SubtitleIssueType::NoCues},
+        {"subtitle.text.unsupported_format", model::SubtitleIssueType::UnsupportedFormat},
+        {"subtitle.text.non_utf8", model::SubtitleIssueType::NonUtf8Encoding},
     };
     bool matched = false;
     model::SubtitleIssueType target = model::SubtitleIssueType::EmptyText;

@@ -981,6 +981,78 @@ QcExportBundle MakeEnrichedBundle() {
     analysis.audio_qc.true_peak_dbtp = -1.0;
     analysis.audio_qc.loudness_range_lu = 5.0;
 
+    // 字幕与辅助数据（功能 9）：点亮报告里的同名章节。
+    // 一条空 cue 的 cue 级问题 + 一条流级问题是两种渲染路径（带时间点 / 不带），
+    // 章节里必须都能看见。
+    analysis.subtitle.analyzed = true;
+    analysis.subtitle.text_stream_count = 1;
+    model::SubtitleStreamInfo subtitle_stream;
+    subtitle_stream.stream_index = 3;
+    subtitle_stream.format = model::SubtitleFormat::Srt;
+    subtitle_stream.kind = model::SubtitleKind::Text;
+    subtitle_stream.codec_name = "subrip";
+    subtitle_stream.language = "zh";
+    subtitle_stream.handler_name = "SubRip";
+    subtitle_stream.default_disposition = true;
+    subtitle_stream.cue_count = 2;
+    subtitle_stream.packet_count = 2;
+    subtitle_stream.parsed = true;
+    analysis.subtitle.streams.push_back(subtitle_stream);
+    model::SubtitleCue cue;
+    cue.index = 0;
+    cue.stream_index = 3;
+    cue.start_seconds = 1.0;
+    cue.end_seconds = 1.1;
+    cue.duration_seconds = 0.1;
+    cue.text = "   ";
+    cue.empty = true;
+    analysis.subtitle.cues.push_back(cue);
+    model::SubtitleIssue cue_issue;
+    cue_issue.type = model::SubtitleIssueType::EmptyText;
+    cue_issue.severity = IssueSeverity::Warning;
+    cue_issue.stream_index = 3;
+    cue_issue.cue_index = 0;
+    cue_issue.start_seconds = 1.0;
+    cue_issue.end_seconds = 1.1;
+    cue_issue.detail = "第 1 条 cue 没有可见文本";
+    analysis.subtitle.issues.push_back(cue_issue);
+    model::SubtitleIssue stream_issue;
+    stream_issue.type = model::SubtitleIssueType::MissingLanguage;
+    stream_issue.severity = IssueSeverity::Warning;
+    stream_issue.stream_index = 3;
+    stream_issue.detail = "缺少 language tag";
+    analysis.subtitle.issues.push_back(stream_issue);
+
+    analysis.timecode.analyzed = true;
+    analysis.timecode.primary = model::TimecodeFromString("00:59:58:00", 25.0);
+    analysis.timecode.has_primary = true;
+    analysis.timecode.primary_frame_rate = 25.0;
+    model::ChapterInfo chapter;
+    chapter.index = 0;
+    chapter.start_seconds = 0.0;
+    chapter.end_seconds = 6.0;
+    chapter.title = "开场";
+    analysis.timecode.chapters.push_back(chapter);
+
+    analysis.aux_data.analyzed = true;
+    analysis.aux_data.scte35_cue_count = 1;
+    analysis.aux_data.scte35_out_count = 1;
+    model::Scte35Cue scte;
+    scte.index = 0;
+    scte.stream_index = 4;
+    scte.command = model::Scte35Command::SpliceInsert;
+    scte.out_of_network = true;
+    scte.has_splice_time = true;
+    scte.splice_time_seconds = 10.0;
+    scte.valid = true;
+    analysis.aux_data.cues.push_back(scte);
+    model::MetadataTagEntry tag;
+    tag.scope = "流 3";
+    tag.stream_index = 3;
+    tag.key = "language";
+    tag.value = "zh";
+    analysis.aux_data.metadata.push_back(tag);
+
     // 流列表：一条视频 + 一张封面 + 一条音频。
     // 封面必须显示成"封面"而不是"视频" —— 它在码流里是一轨 MJPEG，但用户眼里不是画面。
     model::StreamDigest video_stream;
@@ -1445,6 +1517,7 @@ const SectionPair kSectionPairs[] = {
     {"音频 QC（逐轨）", "音频 QC（逐轨）"},
     {"响度（主音轨）", "响度与音频 QC（主音轨）"},
     {"MPEG-TS 传输层", "MPEG-TS 传输层"},
+    {"字幕与辅助数据", "字幕与辅助数据"},
     {"对比", "文件对比"},
     {"规则快照", "规则快照"},
 };
@@ -1519,6 +1592,38 @@ TEST(QcReportExporterTest, TextAndHtmlEmitTheSameSetOfSections) {
     EXPECT_EQ(matched, static_cast<int>(pairs.size()))
         << "两端同时命中的章节只有 " << matched << " / " << pairs.size()
         << " 节 —— fixture 少喂了数据，或某一端不再渲染某一节。一致性检查正在退化成空操作";
+}
+
+// 「字幕与辅助数据」不能只落个标题：流与解析状态、cue 级时间点、流级问题、
+// 时码与章节、SCTE-35 都要出现 —— 否则读者仍不知道字幕为什么被判问题。
+TEST(QcReportExporterTest, SubtitleAuxChapterCarriesStreamsCuesAndTimecode) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+    const std::string text = QcReportExporter::BuildText(bundle);
+    for (const char* needle : {"--- 字幕与辅助数据 ---", "字幕流 1 条（文本 1 / 图形 0）", "cue 1 条",
+                               "[流 #3] 文本 SubRip (SRT)", "cue 1 1.000-1.100 s", "没有可见文本", "流级",
+                               "首帧时码 00:59:58:00", "章节 1 个", "SCTE-35 cue 1 条（OUT 1 / IN 0）"}) {
+        EXPECT_NE(text.find(needle), std::string::npos) << "纯文本（以及复用它的 PDF）里找不到: " << needle;
+    }
+
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* aux = root.Find("subtitle_aux");
+    ASSERT_NE(aux, nullptr) << "JSON 顶层缺少 subtitle_aux";
+    ASSERT_NE(aux->Find("streams"), nullptr);
+    ASSERT_EQ(aux->Find("streams")->Size(), 1u);
+    const JsonValue& stream = aux->Find("streams")->Items()[0];
+    EXPECT_TRUE(stream.Find("parsed")->BoolValueOr(false));
+    EXPECT_FALSE(stream.Find("truncated")->BoolValueOr(true));
+    ASSERT_NE(aux->Find("issues"), nullptr);
+    ASSERT_EQ(aux->Find("issues")->Size(), 2u);
+    // 流级问题不带 cue_index：下游用 scope 判断，不能靠 cue_index=0 猜
+    EXPECT_EQ(Str(&aux->Find("issues")->Items()[1], "scope"), "stream");
+    const JsonValue* timecode = aux->Find("timecode");
+    ASSERT_NE(timecode, nullptr);
+    EXPECT_EQ(Str(timecode, "primary"), "00:59:58:00");
+    EXPECT_EQ(timecode->Find("chapters")->Size(), 1u);
+    EXPECT_EQ(aux->Find("auxiliary_data")->Find("scte35_cue_count")->NumberValueOr(), 1.0);
 }
 
 // 章节**齐全**还不够，**顺序**也有语义：

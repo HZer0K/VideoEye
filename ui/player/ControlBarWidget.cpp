@@ -46,7 +46,9 @@ void ControlBarWidget::SetupUI() {
     play_pause_button_->setObjectName("playPauseButton");
     play_pause_button_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
     play_pause_button_->setIconSize(QSize(16, 16));
-    play_pause_button_->setToolTip(tr("播放/暂停"));
+    play_pause_button_->setToolTip(tr("播放/暂停 (空格)"));
+    play_pause_button_->setAccessibleName(tr("播放/暂停"));
+    play_pause_button_->setAccessibleDescription(tr("画面获得焦点时也可按空格切换"));
     control_layout->addWidget(play_pause_button_);
 
     // 停止按钮
@@ -55,20 +57,27 @@ void ControlBarWidget::SetupUI() {
     stop_button_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     stop_button_->setIconSize(QSize(14, 14));
     stop_button_->setToolTip(tr("停止"));
+    stop_button_->setAccessibleName(tr("停止"));
     control_layout->addWidget(stop_button_);
 
     // 上一帧/下一帧 (仅 raw 序列模式显示)
     prev_frame_button_ = new QPushButton(tr("上一帧"), this);
+    prev_frame_button_->setToolTip(tr("上一帧 (Shift+←)"));
+    prev_frame_button_->setAccessibleName(tr("上一帧"));
     prev_frame_button_->setVisible(false);
     control_layout->addWidget(prev_frame_button_);
 
     next_frame_button_ = new QPushButton(tr("下一帧"), this);
+    next_frame_button_->setToolTip(tr("下一帧 (Shift+→)"));
+    next_frame_button_->setAccessibleName(tr("下一帧"));
     next_frame_button_->setVisible(false);
     control_layout->addWidget(next_frame_button_);
 
     // 进度条
     seek_slider_ = new QSlider(Qt::Horizontal, this);
     seek_slider_->setRange(0, 0);
+    seek_slider_->setToolTip(tr("播放进度（画面获得焦点时 ←/→ 快退/快进 5 秒）"));
+    seek_slider_->setAccessibleName(tr("播放进度"));
     control_layout->addWidget(seek_slider_, 1);
 
     // 时间显示
@@ -76,6 +85,7 @@ void ControlBarWidget::SetupUI() {
     time_label_->setObjectName("TimeLabel");
     time_label_->setMinimumWidth(140);
     time_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    time_label_->setAccessibleName(tr("播放时间"));
     control_layout->addWidget(time_label_);
 
     // 时码显示（SMPTE HH:MM:SS:FF）：放在时间标签旁，方便与交付单上的时码对表。
@@ -86,6 +96,7 @@ void ControlBarWidget::SetupUI() {
     timecode_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     timecode_label_->setToolTip(
         tr("按当前帧率换算的 SMPTE 时码；素材自带起始时码时（tmcd 轨 / timecode tag）以此为基准累加"));
+    timecode_label_->setAccessibleName(tr("SMPTE 时码"));
     control_layout->addWidget(timecode_label_);
 
     // 音量控制
@@ -94,7 +105,8 @@ void ControlBarWidget::SetupUI() {
     volume_button_->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
     volume_button_->setIconSize(QSize(16, 16));
     volume_button_->setFixedSize(32, 28);
-    volume_button_->setToolTip(tr("静音/取消静音"));
+    volume_button_->setToolTip(tr("静音/取消静音 (M)"));
+    volume_button_->setAccessibleName(tr("静音"));
     volume_button_->setStyleSheet("QPushButton#volumeButton {"
                                   "  background-color: transparent; border: none;"
                                   "}"
@@ -108,7 +120,8 @@ void ControlBarWidget::SetupUI() {
     volume_slider_->setRange(0, 100);
     volume_slider_->setValue(100);
     volume_slider_->setFixedWidth(80);
-    volume_slider_->setToolTip(tr("音量: 100%"));
+    volume_slider_->setToolTip(tr("音量: 100%（画面获得焦点时 ↑/↓ 调整）"));
+    volume_slider_->setAccessibleName(tr("音量"));
     volume_slider_->setStyleSheet("QSlider#volumeSlider::groove:horizontal {"
                                   "  border: none; height: 4px; background: #30363D; border-radius: 2px;"
                                   "}"
@@ -129,6 +142,7 @@ void ControlBarWidget::SetupUI() {
     mv_overlay_button_->setObjectName("MvOverlayButton");
     mv_overlay_button_->setCheckable(true);
     mv_overlay_button_->setToolTip(tr("运动矢量叠加显示 (需软件解码；HEVC/AV1/VP9 解码器不导出运动矢量)"));
+    mv_overlay_button_->setAccessibleName(tr("运动矢量叠加"));
     mv_overlay_button_->setFixedSize(40, 28);
     mv_overlay_button_->setStyleSheet("QPushButton#MvOverlayButton {"
                                       "  background-color: #21262D; border: 1px solid #30363D;"
@@ -149,6 +163,7 @@ void ControlBarWidget::SetupUI() {
     collapse_player_button_->setIconSize(QSize(16, 16));
     collapse_player_button_->setFixedSize(32, 28);
     collapse_player_button_->setToolTip(tr("收起播放区 (F9)"));
+    collapse_player_button_->setAccessibleName(tr("收起播放区"));
     collapse_player_button_->setStyleSheet("QPushButton#collapsePlayerButton {"
                                            "  background-color: transparent; border: none;"
                                            "}"
@@ -166,6 +181,7 @@ void ControlBarWidget::BuildOverflowMenu() {
     overflow_button_->setObjectName("OverflowButton");
     overflow_button_->setText(QStringLiteral("\xE2\x8B\xAF")); // ⋯
     overflow_button_->setToolTip(tr("次要控件（窄宽度时收进这里）"));
+    overflow_button_->setAccessibleName(tr("次要控件"));
     overflow_button_->setPopupMode(QToolButton::InstantPopup);
     overflow_button_->setFixedSize(32, 28);
     overflow_button_->setVisible(false);
@@ -267,7 +283,7 @@ void ControlBarWidget::OnVolumeChanged(int value) {
     if (player_) {
         player_->SetVolume(value);
     }
-    volume_slider_->setToolTip(tr("音量: %1%").arg(value));
+    volume_slider_->setToolTip(tr("音量: %1%（画面获得焦点时 ↑/↓ 调整）").arg(value));
 
     // 更新音量按钮图标: 音量为 0 时显示静音图标
     if (value == 0) {

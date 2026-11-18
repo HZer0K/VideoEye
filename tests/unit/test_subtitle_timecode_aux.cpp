@@ -1,4 +1,4 @@
-// 功能 9（字幕 / 时码 / 辅助数据轨）的解析与校验单元测试
+﻿// 功能 9（字幕 / 时码 / 辅助数据轨）的解析与校验单元测试
 //
 // 与分析器测试的常规分工：
 //   * 文本字幕、时码换算、SCTE-35 位流解析都做成不依赖 FFmpeg 的纯函数，
@@ -8,7 +8,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -304,6 +307,35 @@ TEST(SubtitleAnalyzerTest, OverlappingCuesProduceWarning) {
     EXPECT_FALSE(cues[0].has_issue);
 }
 
+// ASS/SSA 分层：不同文本同时上屏是合法排版（正片字幕 + 屏幕字），不能报重叠；
+// 同一句话重复上屏才是时间轴写错 —— 用文本是否相同区分这两种情况。
+TEST(SubtitleAnalyzerTest, AssLayeredCuesAreNotOverlapButDuplicatesAre) {
+    std::vector<model::SubtitleCue> layered;
+    model::SubtitleCue dialogue = MakeCue(0, 1.0, 4.0, "正片字幕");
+    dialogue.format = model::SubtitleFormat::Ass;
+    model::SubtitleCue sign = MakeCue(1, 3.0, 5.0, "屏幕字");
+    sign.format = model::SubtitleFormat::Ass;
+    layered.push_back(dialogue);
+    layered.push_back(sign);
+
+    std::vector<model::SubtitleIssue> issues;
+    videoeye::SubtitleAnalyzer::ValidateCues(layered, issues, videoeye::SubtitleOptions{}, 60.0);
+    EXPECT_EQ(CountType(issues, model::SubtitleIssueType::Overlap), 0);
+    EXPECT_FALSE(layered[1].has_issue);
+
+    std::vector<model::SubtitleCue> duplicate;
+    model::SubtitleCue first = MakeCue(0, 1.0, 4.0, "同一句");
+    first.format = model::SubtitleFormat::Ass;
+    model::SubtitleCue second = MakeCue(1, 3.0, 5.0, "同一句");
+    second.format = model::SubtitleFormat::Ass;
+    duplicate.push_back(first);
+    duplicate.push_back(second);
+
+    std::vector<model::SubtitleIssue> dup_issues;
+    videoeye::SubtitleAnalyzer::ValidateCues(duplicate, dup_issues, videoeye::SubtitleOptions{}, 60.0);
+    EXPECT_EQ(CountType(dup_issues, model::SubtitleIssueType::Overlap), 1);
+}
+
 TEST(SubtitleAnalyzerTest, EmptyCueProducesWarning) {
     std::vector<model::SubtitleCue> cues;
     cues.push_back(MakeCue(0, 1.0, 4.0, ""));
@@ -505,4 +537,196 @@ TEST(Scte35AnalyzerTest, TruncatedPayloadFails) {
 
     model::Scte35Cue empty;
     EXPECT_FALSE(videoeye::Scte35Analyzer::ParseSection(nullptr, 0, empty));
+}
+
+// ============================================================
+// 字幕：文本规范化 / 格式覆盖 / 整文件解析 / 截断
+// ============================================================
+
+namespace {
+
+// 落一个临时字幕文件，析构时删掉：这些用例要真过一遍 demuxer，不能只测纯函数
+class TempSubtitleFile {
+public:
+    TempSubtitleFile(const std::string& name, const std::string& content) {
+        path_ = (std::filesystem::temp_directory_path() / ("videoeye_sub_" + name)).string();
+        std::ofstream out(path_, std::ios::binary);
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    }
+    ~TempSubtitleFile() {
+        std::error_code ec;
+        std::filesystem::remove(path_, ec);
+    }
+    TempSubtitleFile(const TempSubtitleFile&) = delete;
+    TempSubtitleFile& operator=(const TempSubtitleFile&) = delete;
+    const std::string& path() const {
+        return path_;
+    }
+
+private:
+    std::string path_;
+};
+
+// 完整跑一遍：打开 -> RegisterStreams -> 逐包 -> Finish
+videoeye::model::SubtitleAnalysisResult AnalyzeLocalFile(const std::string& path,
+                                                         const videoeye::SubtitleOptions& options) {
+    videoeye::model::SubtitleAnalysisResult empty;
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0 || fmt == nullptr)
+        return empty;
+    avformat_find_stream_info(fmt, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(options);
+    analyzer.SetSourcePath(path);
+    analyzer.RegisterStreams(fmt);
+
+    AVPacket* packet = av_packet_alloc();
+    while (packet != nullptr && av_read_frame(fmt, packet) >= 0) {
+        if (packet->stream_index >= 0 && packet->stream_index < static_cast<int>(fmt->nb_streams))
+            analyzer.OnPacket(packet, fmt->streams[packet->stream_index]);
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+
+    const double duration = (fmt->duration > 0) ? static_cast<double>(fmt->duration) / AV_TIME_BASE : 10.0;
+    analyzer.Finish(duration);
+    videoeye::model::SubtitleAnalysisResult result = analyzer.result();
+    avformat_close_input(&fmt);
+    return result;
+}
+
+} // namespace
+
+TEST(SubtitleAnalyzerTest, SrtTextStripsAssOverridesButKeepsComparisonSymbols) {
+    // SRT 里常见的 {\an8} 必须剥掉；正文里的比较符号不是标签，不能连内容一起删
+    const std::string srt = "1\n"
+                            "00:00:01,000 --> 00:00:04,000\n"
+                            "{\\an8}2<3,5>1,4<6\n";
+
+    std::vector<videoeye::ParsedSubtitleCue> cues;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseSrtText(srt, cues));
+    ASSERT_EQ(cues.size(), 1u);
+    EXPECT_EQ(cues[0].text, "2<3,5>1,4<6");
+}
+
+TEST(SubtitleAnalyzerTest, ParseMicroDvdSkipsClearEvents) {
+    const std::string text = "{0}{25}Hello|World\n"
+                             "{26}{26}\n" // 空文本 + 单帧 = 清屏指令，不是空字幕
+                             "{50}{75}{\\i1}Italic\n";
+
+    std::vector<videoeye::ParsedSubtitleCue> cues;
+    ASSERT_TRUE(videoeye::SubtitleAnalyzer::ParseMicroDvdText(text, 25.0, cues));
+    ASSERT_EQ(cues.size(), 2u);
+    EXPECT_NEAR(cues[0].start_seconds, 0.0, 1e-6);
+    EXPECT_NEAR(cues[0].end_seconds, 1.0, 1e-6);
+    EXPECT_EQ(cues[0].text, "Hello World");
+    EXPECT_NEAR(cues[1].start_seconds, 2.0, 1e-6);
+    EXPECT_EQ(cues[1].text, "Italic");
+}
+
+TEST(SubtitleAnalyzerTest, WholeFileParseRecoversEmptyEvents) {
+    // demuxer 会把空事件直接丢掉；纯字幕文件必须整文件重解析才能检出空字幕
+    const std::string srt = "1\n"
+                            "00:00:01,000 --> 00:00:02,000\n"
+                            "\n"
+                            "2\n"
+                            "00:00:03,000 --> 00:00:04,000\n"
+                            "有内容\n";
+    const TempSubtitleFile file("empty_events.srt", srt);
+    const videoeye::model::SubtitleAnalysisResult result = AnalyzeLocalFile(file.path(), videoeye::SubtitleOptions{});
+
+    ASSERT_EQ(result.cues.size(), 2u);
+    EXPECT_TRUE(result.cues[0].empty);
+    EXPECT_FALSE(result.cues[1].empty);
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::EmptyText), 1);
+}
+
+TEST(SubtitleAnalyzerTest, MicroDvdDecodedThroughFfmpegDecoder) {
+    // 非原生格式走 FFmpeg 解码器：时间来自 PTS，文本由解码器还原（不含 {帧号} 前缀）
+    // 至少 3 行，microdvd 的 probe 才会认（2 行会被判成无法识别的输入）
+    const std::string text = "{0}{25}Hello|World\n"
+                             "{25}{50}Second line\n"
+                             "{50}{75}Third line\n";
+    const TempSubtitleFile file("demo.sub", text);
+    const videoeye::model::SubtitleAnalysisResult result = AnalyzeLocalFile(file.path(), videoeye::SubtitleOptions{});
+
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_EQ(result.streams[0].format, videoeye::model::SubtitleFormat::MicroDvd);
+    ASSERT_EQ(result.cues.size(), 3u);
+    EXPECT_EQ(result.cues[0].text, "Hello World");
+    EXPECT_NEAR(result.cues[0].start_seconds, 0.0, 0.2);
+    EXPECT_EQ(result.cues[1].text, "Second line");
+}
+
+TEST(SubtitleAnalyzerTest, UnsupportedSubtitleStreamIsReported) {
+    // 认不出承载方式的流必须留下明确结论，不能静默当成"没问题"
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* st = avformat_new_stream(fmt, nullptr);
+    ASSERT_NE(st, nullptr);
+    st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+    st->codecpar->codec_id = AV_CODEC_ID_NONE;
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+    analyzer.Finish(10.0);
+    const videoeye::model::SubtitleAnalysisResult result = analyzer.result();
+    avformat_free_context(fmt);
+
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::UnsupportedFormat), 1);
+    EXPECT_EQ(result.text_stream_count, 0); // 不能把未知流算成"文本字幕已检查"
+}
+
+TEST(SubtitleAnalyzerTest, TextStreamWithoutCuesIsReported) {
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* st = avformat_new_stream(fmt, nullptr);
+    ASSERT_NE(st, nullptr);
+    st->codecpar->codec_type = AVMEDIA_TYPE_SUBTITLE;
+    st->codecpar->codec_id = AV_CODEC_ID_TEXT;
+    av_dict_set(&st->metadata, "language", "chi", 0);
+    av_dict_set(&st->metadata, "handler_name", "SubtitleHandler", 0);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+    analyzer.Finish(10.0);
+    const videoeye::model::SubtitleAnalysisResult result = analyzer.result();
+    avformat_free_context(fmt);
+
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::NoCues), 1);
+}
+
+TEST(SubtitleAnalyzerTest, CueLimitMarksTruncated) {
+    const std::string srt = "1\n"
+                            "00:00:01,000 --> 00:00:02,000\n"
+                            "一\n"
+                            "\n"
+                            "2\n"
+                            "00:00:03,000 --> 00:00:04,000\n"
+                            "二\n";
+    const TempSubtitleFile file("truncate.srt", srt);
+    videoeye::SubtitleOptions options;
+    options.max_cues_per_stream = 1;
+    const videoeye::model::SubtitleAnalysisResult result = AnalyzeLocalFile(file.path(), options);
+
+    EXPECT_EQ(result.cues.size(), 1u);
+    EXPECT_TRUE(result.cues_truncated);
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].truncated);
+}
+
+TEST(SubtitleAnalyzerTest, NonUtf8SubtitleIsReported) {
+    // CP1251 的 "Привет"：不是合法 UTF-8，但字节仍可当近似字符统计
+    std::string srt = "1\n"
+                      "00:00:01,000 --> 00:00:04,000\n";
+    srt += "\xCF\xF0\xE8\xE2\xE5\xF2";
+    srt += "\n";
+    const TempSubtitleFile file("cp1251.srt", srt);
+    const videoeye::model::SubtitleAnalysisResult result = AnalyzeLocalFile(file.path(), videoeye::SubtitleOptions{});
+
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::NonUtf8Encoding), 1);
+    ASSERT_EQ(result.cues.size(), 1u);
 }

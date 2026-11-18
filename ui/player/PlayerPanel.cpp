@@ -102,6 +102,15 @@ void PlayerPanel::SetupConnections() {
 
     connect(control_bar_->collapseButton(), &QPushButton::clicked, this, [this]() { SetPlayerAreaVisible(false); });
 
+    // 画面快捷键：空格播放/暂停、←/→ ±5s、Shift+←/→ 逐帧、↑/↓ 音量、M 静音。
+    // 绑定在视频 widget 上（要求画面有焦点），不抢分析表格与输入框的方向键。
+    connect(video_widget_, &VideoWidget::TogglePlayRequested, this, &PlayerPanel::OnPlayPause);
+    connect(video_widget_, &VideoWidget::SeekRelativeRequested, this, &PlayerPanel::OnSeekRelative);
+    connect(video_widget_, &VideoWidget::StepFrameRequested, this, &PlayerPanel::OnStepFrame);
+    connect(video_widget_, &VideoWidget::VolumeDeltaRequested, this, &PlayerPanel::OnVolumeDelta);
+    connect(video_widget_, &VideoWidget::MuteToggleRequested, this,
+            [this]() { control_bar_->volumeButton()->click(); });
+
     // 进度条交互:
     //  - 拖动中由 sliderMoved 做"节流的关键帧预览" (画面跟手且不过度占用 UI 线程)
     //  - valueChanged 仅在非拖动时生效 (键盘方向键/程序化跳转), 按当前模式定位
@@ -542,6 +551,47 @@ void PlayerPanel::OnSeek(int value) {
         video_widget_->SetMotionVectors(videoeye::model::MacroblockFrameAnalysis{});
     // 按当前选择的定位方式 (关键帧 / 精确帧) 执行 seek
     player_->Seek(value, player_->GetSeekMode());
+}
+
+void PlayerPanel::OnSeekRelative(int delta_ms) {
+    QSlider* slider = control_bar_ ? control_bar_->seekSlider() : nullptr;
+    if (slider == nullptr || slider->maximum() <= slider->minimum())
+        return;
+    // 走 slider::setValue 而不是直接 player_->Seek：Raw 序列模式下进度条
+    // 是唯一的"帧位置"来源，setValue 会按当前模式分派（ShowRawFrame / OnSeek）。
+    slider->setValue(std::clamp(slider->value() + delta_ms, slider->minimum(), slider->maximum()));
+}
+
+void PlayerPanel::OnStepFrame(int direction) {
+    if (direction == 0)
+        return;
+    if (raw_seq_->IsShowingRawImage()) {
+        if (direction < 0)
+            raw_seq_->OnPrevRawFrame();
+        else
+            raw_seq_->OnNextRawFrame();
+        return;
+    }
+    if (player_ == nullptr)
+        return;
+    // 视频模式没有独立的逐帧接口：按当前帧率折算一帧时长，再用精确帧定位。
+    // 帧率未知时用 25fps（与字幕 MicroDVD 缺省帧率一致），至少 1ms。
+    double fps = timecode_fps_;
+    if (fps <= 0.0)
+        fps = 25.0;
+    const int step_ms = std::max(1, static_cast<int>(std::lround(1000.0 / fps)));
+    const int duration = player_->GetDuration();
+    const int target = std::clamp(player_->GetCurrentPosition() + direction * step_ms, 0, std::max(0, duration));
+    player_->Seek(target, model::SeekMode::ExactFrame);
+}
+
+void PlayerPanel::OnVolumeDelta(int delta_percent) {
+    QSlider* slider = control_bar_ ? control_bar_->volumeSlider() : nullptr;
+    if (slider == nullptr)
+        return;
+    // 直接改滑块：ControlBarWidget::OnVolumeChanged 会同步 player_->SetVolume
+    // 与静音图标，和用户拖音量条走同一条路径，不会出现两套音量状态。
+    slider->setValue(std::clamp(slider->value() + delta_percent, slider->minimum(), slider->maximum()));
 }
 
 // 音量 / 静音 handler 已迁移至 ControlBarWidget::OnVolumeChanged / OnMuteClicked，

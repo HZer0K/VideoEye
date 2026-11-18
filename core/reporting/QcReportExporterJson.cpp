@@ -424,6 +424,142 @@ JsonValue BuildVisualQcObject(const model::AnalysisResult& result) {
     return node;
 }
 
+// 字幕与辅助数据（功能 9）。
+//
+// 字幕问题的**规则结论**已经按规则 id 进了 issues；这里落的是被检查对象本身：
+// 每条字幕流的格式 / 语言 / 解析状态、cue 级问题的时间点、时码与章节、SCTE-35。
+// 下游（交付审核 / 回归比对）需要能区分"字幕没解析出来"和"解析了但没 cue"，
+// 所以 parsed / truncated / cues_truncated 必须显式落盘，不能只靠 cue_count 推断。
+JsonValue BuildSubtitleAuxObject(const model::AnalysisResult& result) {
+    JsonValue node = JsonValue::MakeObject();
+    node.Set("subtitle_executed", JsonValue(result.DimensionExecuted(model::AnalysisDimension::Subtitle)));
+    node.Set("timecode_executed", JsonValue(result.DimensionExecuted(model::AnalysisDimension::Timecode)));
+    node.Set("auxiliary_data_executed", JsonValue(result.DimensionExecuted(model::AnalysisDimension::AuxiliaryData)));
+
+    const model::SubtitleAnalysisResult& sub = result.subtitle;
+    node.Set("text_stream_count", JNumber(sub.text_stream_count));
+    node.Set("bitmap_stream_count", JNumber(sub.bitmap_stream_count));
+    node.Set("cue_count", JNumber(static_cast<double>(sub.cues.size())));
+    node.Set("cues_truncated", JsonValue(sub.cues_truncated));
+
+    JsonValue streams = JsonValue::MakeArray();
+    for (const model::SubtitleStreamInfo& stream : sub.streams) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("stream_index", JNumber(stream.stream_index));
+        item.Set("codec_name", JText(stream.codec_name));
+        item.Set("format", JText(model::ToString(stream.format)));
+        item.Set("kind", JText(model::ToString(stream.kind)));
+        item.Set("language", JText(stream.language));
+        item.Set("handler_name", JText(stream.handler_name));
+        item.Set("default", JsonValue(stream.default_disposition));
+        item.Set("forced", JsonValue(stream.forced));
+        item.Set("hearing_impaired", JsonValue(stream.hearing_impaired));
+        item.Set("cue_count", JNumber(stream.cue_count));
+        item.Set("packet_count", JNumber(static_cast<double>(stream.packet_count)));
+        item.Set("parsed", JsonValue(stream.parsed));
+        item.Set("truncated", JsonValue(stream.truncated));
+        item.Set("note", JText(stream.note));
+        streams.PushBack(item);
+    }
+    node.Set("streams", streams);
+
+    JsonValue issues = JsonValue::MakeArray();
+    for (const model::SubtitleIssue& issue : sub.issues) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("type", JText(model::SubtitleIssueCode(issue.type)));
+        item.Set("name", JText(model::ToString(issue.type)));
+        item.Set("severity", JText(model::ToString(issue.severity)));
+        item.Set("stream_index", JNumber(issue.stream_index));
+        item.Set("scope", JText(issue.IsStreamLevel() ? "stream" : "cue"));
+        if (!issue.IsStreamLevel()) {
+            item.Set("cue_index", JNumber(issue.cue_index));
+            item.Set("start_seconds", JNumber(issue.start_seconds));
+            item.Set("end_seconds", JNumber(issue.end_seconds));
+        }
+        item.Set("detail", JText(issue.detail));
+        issues.PushBack(item);
+    }
+    node.Set("issues", issues);
+
+    const model::TimecodeAnalysisResult& tc = result.timecode;
+    JsonValue timecode = JsonValue::MakeObject();
+    timecode.Set("has_primary", JsonValue(tc.has_primary));
+    if (tc.has_primary) {
+        timecode.Set("primary", JText(tc.primary.ToString()));
+        timecode.Set("frame_rate", JNumber(tc.primary_frame_rate));
+        timecode.Set("drop_frame", JsonValue(tc.primary_drop_frame));
+    }
+    timecode.Set("chapter_count", JNumber(static_cast<double>(tc.chapters.size())));
+    timecode.Set("chapter_issue_count", JNumber(static_cast<double>(tc.chapter_issues.size())));
+    JsonValue chapters = JsonValue::MakeArray();
+    for (const model::ChapterInfo& chapter : tc.chapters) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("index", JNumber(chapter.index));
+        item.Set("start_seconds", JNumber(chapter.start_seconds));
+        item.Set("end_seconds", JNumber(chapter.end_seconds));
+        item.Set("duration_seconds", JNumber(chapter.Duration()));
+        item.Set("title", JText(chapter.title));
+        item.Set("language", JText(chapter.language));
+        chapters.PushBack(item);
+    }
+    timecode.Set("chapters", chapters);
+    JsonValue chapter_issues = JsonValue::MakeArray();
+    for (const model::ChapterIssue& issue : tc.chapter_issues) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("type", JText(model::ChapterIssueCode(issue.type)));
+        item.Set("name", JText(model::ToString(issue.type)));
+        item.Set("severity", JText(model::ToString(issue.severity)));
+        item.Set("chapter_index", JNumber(issue.chapter_index));
+        item.Set("start_seconds", JNumber(issue.start_seconds));
+        item.Set("end_seconds", JNumber(issue.end_seconds));
+        item.Set("detail", JText(issue.detail));
+        chapter_issues.PushBack(item);
+    }
+    timecode.Set("chapter_issues", chapter_issues);
+    node.Set("timecode", timecode);
+
+    const model::AuxiliaryDataResult& aux = result.aux_data;
+    JsonValue auxiliary = JsonValue::MakeObject();
+    auxiliary.Set("scte35_cue_count", JNumber(aux.scte35_cue_count));
+    auxiliary.Set("scte35_out_count", JNumber(aux.scte35_out_count));
+    auxiliary.Set("scte35_in_count", JNumber(aux.scte35_in_count));
+    auxiliary.Set("metadata_count", JNumber(static_cast<double>(aux.metadata.size())));
+    JsonValue aux_streams = JsonValue::MakeArray();
+    for (const model::AuxDataStream& stream : aux.streams) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("stream_index", JNumber(stream.stream_index));
+        item.Set("kind", JText(model::ToString(stream.kind)));
+        item.Set("codec_name", JText(stream.codec_name));
+        item.Set("language", JText(stream.language));
+        item.Set("packet_count", JNumber(static_cast<double>(stream.packet_count)));
+        item.Set("byte_count", JNumber(static_cast<double>(stream.byte_count)));
+        item.Set("note", JText(stream.note));
+        aux_streams.PushBack(item);
+    }
+    auxiliary.Set("streams", aux_streams);
+    JsonValue scte35_cues = JsonValue::MakeArray();
+    for (const model::Scte35Cue& cue : aux.cues) {
+        JsonValue item = JsonValue::MakeObject();
+        item.Set("index", JNumber(cue.index));
+        item.Set("stream_index", JNumber(cue.stream_index));
+        item.Set("command", JText(model::Scte35CommandCode(cue.command)));
+        item.Set("out_of_network", JsonValue(cue.out_of_network));
+        item.Set("has_splice_time", JsonValue(cue.has_splice_time));
+        if (cue.has_splice_time)
+            item.Set("splice_time_seconds", JNumber(cue.splice_time_seconds));
+        if (cue.has_duration)
+            item.Set("break_duration_seconds", JNumber(cue.break_duration_seconds));
+        item.Set("valid", JsonValue(cue.valid));
+        if (!cue.parse_error.empty())
+            item.Set("parse_error", JText(cue.parse_error));
+        scte35_cues.PushBack(item);
+    }
+    auxiliary.Set("scte35_cues", scte35_cues);
+    node.Set("auxiliary_data", auxiliary);
+
+    return node;
+}
+
 JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     JsonValue metrics = JsonValue::MakeObject();
 
@@ -831,6 +967,7 @@ std::string QcReportExporter::BuildJson(const QcExportBundle& bundle) {
     // 视觉画质 QC（无参考、需要完整解码视频）。无条件落：analyzed=false 表示
     // 没开这一维度，与"跑了但没检出缺陷"（analyzed=true + 空数组）必须可区分。
     root.Set("visual_qc", BuildVisualQcObject(run.analysis));
+    root.Set("subtitle_aux", BuildSubtitleAuxObject(run.analysis));
 
     if (bundle.has_comparison) {
         const qc::QcComparison& comparison = bundle.comparison;

@@ -52,15 +52,18 @@ public:
 
 signals:
     void ScanRequested();
+    // 与码率 / 音频 / HDR 页一致：扫描中可以中止共用那一次全文件扫描。
+    void CancelRequested();
     // 全文件扫描拿到素材自带起始时码（tmcd 轨 / metadata timecode tag）时发出，
     // 由 AnalysisPanel 转给 MainWindow，让播放器时间轴旁显示真实 SMPTE 时码。
     void StartTimecodeReady(const QString& timecode, double fps);
-    // 点 cue 行 / 章节行跳转到对应时间点
+    // 双击 cue 行（或选中后按回车）跳转到该 cue 的开始时间
     void SeekRequested(double seconds);
 
 private:
     void SetupUi();
     void OnStartAnalysis();
+    void OnCancelAnalysis();
     void OnSubtitleStreamChanged(int index);
     // 汇总 + 6 张表 + SCTE-35 标记图 一次刷新（SetResult 进来时调）
     void RefreshUi();
@@ -73,20 +76,25 @@ private:
     void RebuildScte35Table();
     void RebuildMetadataTable();
     void UpdateScte35MarkerChart();
-    void OnCueCellClicked(int row, int column);
+    void OnCueRowActivated(int row);
     void OnExportSubtitleCsv();
     void OnExportTimecodeCsv();
     void OnExportScte35Csv();
     void OnExportMetadataCsv();
+    void OnExportIssueCsv();
     // 当前 cue 表要展示的流（-1 = 全部字幕流）
     int CurrentSubtitleStreamIndex() const;
 
     // 非空默认值（一份空结果）：刷新路径在 SetResult 之前也会解引用它。
     std::shared_ptr<const model::AnalysisResult> result_ = std::make_shared<const model::AnalysisResult>();
     bool scan_active_ = false;
+    // cue 表的列宽只按本次结果量一次：每丢一行都 resizeColumnsToContents 是
+    // O(行数) 的全文宽度计算，几万条 cue 时切换流过滤器会明显卡顿。
+    bool cue_columns_sized_ = false;
 
     QLabel* summary_label_ = nullptr;
     QPushButton* start_button_ = nullptr;
+    QPushButton* cancel_button_ = nullptr;
     QTabWidget* sub_tabs_ = nullptr;
     QComboBox* stream_combo_ = nullptr;
     QCheckBox* issues_only_check_ = nullptr;

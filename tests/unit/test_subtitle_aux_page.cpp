@@ -107,7 +107,7 @@ QString Cell(const QTableWidget* table, int row, int column) {
 }
 
 void ClickCell(QTableWidget* table, int row, int column) {
-    QMetaObject::invokeMethod(table, "cellClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
+    QMetaObject::invokeMethod(table, "cellDoubleClicked", Qt::DirectConnection, Q_ARG(int, row), Q_ARG(int, column));
 }
 
 // 页面只认 dimensions 表里的 executed（AnalysisResult::DimensionExecuted），
@@ -131,6 +131,7 @@ void FillSubtitle(AnalysisResult& result) {
     s0.handler_name = "SubRip";
     s0.cue_count = 2;
     s0.packet_count = 100;
+    s0.parsed = true;
     SubtitleStreamInfo s1;
     s1.stream_index = 3;
     s1.format = SubtitleFormat::DvbSubtitle;
@@ -326,6 +327,32 @@ TEST(SubtitleAuxPageTests, UnanalyzedShowsHintAndEmptyTables) {
     EXPECT_EQ(scan_requests, 1);
 }
 
+// 「开始 / 取消」成对：扫描中开始禁用、取消可用；点取消发出 CancelRequested，
+// 结束后恢复。共用同一次全文件扫描的页面必须都能中止，不能只挂个开始的按钮。
+TEST(SubtitleAuxPageTests, CancelButtonIsPairedWithScanState) {
+    EnsureApp();
+    SubtitleAuxPage page;
+    QPushButton* start = FindButton(&page, QStringLiteral("开始分析"));
+    QPushButton* cancel = FindButton(&page, QStringLiteral("取消"));
+    ASSERT_NE(start, nullptr);
+    ASSERT_NE(cancel, nullptr);
+    EXPECT_TRUE(start->isEnabled());
+    EXPECT_FALSE(cancel->isEnabled());
+
+    int cancel_requests = 0;
+    QObject::connect(&page, &SubtitleAuxPage::CancelRequested, [&cancel_requests] { ++cancel_requests; });
+
+    page.SetScanActive(true);
+    EXPECT_FALSE(start->isEnabled());
+    EXPECT_TRUE(cancel->isEnabled());
+    cancel->click();
+    EXPECT_EQ(cancel_requests, 1);
+
+    page.SetScanActive(false);
+    EXPECT_TRUE(start->isEnabled());
+    EXPECT_FALSE(cancel->isEnabled());
+}
+
 // 字幕流表 / cue 表 + 两个过滤器 + 问题行整行标红
 TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     EnsureApp();
@@ -349,7 +376,7 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     ASSERT_NE(streams, nullptr);
     ASSERT_NE(cue, nullptr);
 
-    // 流表：编码 / 格式 / 承载 / 语言 / handler / 默认与强制 / cue 与包数
+    // 流表：编码 / 格式 / 承载 / 语言 / handler / 默认与强制 / 听障 / 已解析 / cue 与包数
     ASSERT_EQ(streams->rowCount(), 2);
     EXPECT_EQ(Cell(streams, 0, 0), QStringLiteral("2"));
     EXPECT_EQ(Cell(streams, 0, 1), QStringLiteral("subrip"));
@@ -359,10 +386,14 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     EXPECT_EQ(Cell(streams, 0, 5), QStringLiteral("SubRip"));
     EXPECT_EQ(Cell(streams, 0, 6), QStringLiteral("否"));
     EXPECT_EQ(Cell(streams, 0, 7), QStringLiteral("否"));
-    EXPECT_EQ(Cell(streams, 0, 8), QStringLiteral("2"));
-    EXPECT_EQ(Cell(streams, 0, 9), QStringLiteral("100"));
+    EXPECT_EQ(Cell(streams, 0, 8), QStringLiteral("否"));
+    EXPECT_EQ(Cell(streams, 0, 9), QStringLiteral("是"));
+    EXPECT_EQ(Cell(streams, 0, 10), QStringLiteral("2"));
+    EXPECT_EQ(Cell(streams, 0, 11), QStringLiteral("100"));
     EXPECT_EQ(Cell(streams, 1, 3), QString::fromStdString(videoeye::model::ToString(SubtitleKind::Bitmap)));
-    EXPECT_EQ(Cell(streams, 1, 10), QStringLiteral("图形字幕仅输出 metadata"));
+    // 图形字幕不派生 cue，已解析列给 "-" 而不是"否"
+    EXPECT_EQ(Cell(streams, 1, 9), QStringLiteral("-"));
+    EXPECT_EQ(Cell(streams, 1, 12), QStringLiteral("图形字幕仅输出 metadata"));
 
     // 流下拉：全部 + 两条流，data 为流号
     auto* combo = page.findChild<QComboBox*>();
@@ -408,6 +439,26 @@ TEST(SubtitleAuxPageTests, SubtitleTablesAndFilters) {
     combo->setCurrentIndex(0);
     issues_only->setChecked(false);
     EXPECT_EQ(cue->rowCount(), 3);
+}
+
+// 截断与流级问题：Cue 数要显式标注截断，汇总里给出流级问题数量与截断提示
+TEST(SubtitleAuxPageTests, StreamTableShowsTruncationAndStreamLevelIssues) {
+    EnsureApp();
+    SubtitleAuxPage page;
+    AnalysisResult result;
+    FillSubtitle(result);
+    result.subtitle.streams[0].truncated = true;
+    result.subtitle.cues_truncated = true;
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+
+    QTableWidget* streams = TableInTab(&page, 0, QStringLiteral("流"));
+    ASSERT_NE(streams, nullptr);
+    EXPECT_EQ(Cell(streams, 0, 10), QStringLiteral("2（已截断）"));
+
+    QLabel* summary = FindLabelContaining(&page, QStringLiteral("问题 2 处"));
+    ASSERT_NE(summary, nullptr);
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("流级 1 / cue 级 1")));
+    EXPECT_TRUE(summary->text().contains(QStringLiteral("截断")));
 }
 
 // 换文件后旧字幕 / 时码 / 辅助数据必须全部清掉，流下拉回到「全部字幕流」
@@ -597,8 +648,9 @@ TEST(SubtitleAuxPageTests, ApplyRuleThresholdsUsesRulesWithPositiveGuard) {
     EXPECT_DOUBLE_EQ(defaults.max_chars_per_second, 21.0);
 }
 
-// 点 cue 行 -> SeekRequested（时间取自「开始」列文本）；越界行不跳
-TEST(SubtitleAuxPageTests, SeekRequestedOnCueRowClick) {
+// 双击 cue 行 -> SeekRequested（时间取自「开始」列文本）；越界行不跳。
+// 用双击而不是单击：单击要留给选中/复制文本，跟着跳播放头会让人读不下去。
+TEST(SubtitleAuxPageTests, SeekRequestedOnCueRowDoubleClick) {
     EnsureApp();
     SubtitleAuxPage page;
     std::vector<double> seeks;

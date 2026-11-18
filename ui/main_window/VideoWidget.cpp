@@ -3,6 +3,8 @@
 #include "ui/main_window/MotionVectorGeometry.h"
 #include <QFont>
 #include <QFontMetrics>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -386,6 +388,10 @@ VideoWidget::VideoWidget(QWidget* parent) : QWidget(parent) {
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     setStyleSheet("background-color: #01060E;");
     setAutoFillBackground(true);
+    // 播放器快捷键（空格/方向键/M）只在画面获得焦点时生效，避免抢分析表格的按键。
+    setFocusPolicy(Qt::StrongFocus);
+    setAccessibleName(tr("视频画面"));
+    setAccessibleDescription(tr("空格 播放/暂停；←/→ 快退/快进 5 秒；Shift+←/→ 逐帧；↑/↓ 音量；M 静音"));
 
     // 创建叠加层 (子 widget, 透明背景)
     overlay_ = new VideoOverlayWidget(this);
@@ -395,6 +401,47 @@ VideoWidget::VideoWidget(QWidget* parent) : QWidget(parent) {
 }
 
 VideoWidget::~VideoWidget() = default;
+
+void VideoWidget::mousePressEvent(QMouseEvent* event) {
+    // 点一下画面就把焦点收过来，随后空格/方向键才作用于播放器。
+    setFocus(Qt::MouseFocusReason);
+    QWidget::mousePressEvent(event);
+}
+
+void VideoWidget::keyPressEvent(QKeyEvent* event) {
+    switch (event->key()) {
+    case Qt::Key_Space:
+        emit TogglePlayRequested();
+        return;
+    case Qt::Key_Left:
+        if (event->modifiers() & Qt::ShiftModifier)
+            emit StepFrameRequested(-1);
+        else
+            emit SeekRelativeRequested(-5000);
+        return;
+    case Qt::Key_Right:
+        if (event->modifiers() & Qt::ShiftModifier)
+            emit StepFrameRequested(+1);
+        else
+            emit SeekRelativeRequested(5000);
+        return;
+    case Qt::Key_Up:
+        emit VolumeDeltaRequested(5);
+        return;
+    case Qt::Key_Down:
+        emit VolumeDeltaRequested(-5);
+        return;
+    case Qt::Key_M:
+        if (event->modifiers() == Qt::NoModifier) {
+            emit MuteToggleRequested();
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    QWidget::keyPressEvent(event);
+}
 
 void VideoWidget::SetFrame(const QImage& image) {
     frame_ = image;

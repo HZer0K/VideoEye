@@ -26,6 +26,8 @@
 struct AVFormatContext;
 struct AVPacket;
 struct AVStream;
+struct AVCodecContext;
+struct AVSubtitle;
 
 namespace videoeye {
 
@@ -41,7 +43,17 @@ struct ParsedSubtitleCue {
 
 class SubtitleAnalyzer {
 public:
+    SubtitleAnalyzer() = default;
+    ~SubtitleAnalyzer();
+    SubtitleAnalyzer(const SubtitleAnalyzer&) = delete;
+    SubtitleAnalyzer& operator=(const SubtitleAnalyzer&) = delete;
+
     void Reset(const SubtitleOptions& options = SubtitleOptions{});
+
+    // 本地源路径。只有"纯字幕文件"（无音视频流）才会用到：
+    // 这类文件的 demuxer 会丢掉空事件/畸形事件，必须整文件重解析才能检出。
+    // 网络源传空串即可。
+    void SetSourcePath(std::string path);
 
     // find_stream_info 之后调用：登记字幕流（含语言 tag / handler name / disposition）
     void RegisterStreams(const AVFormatContext* fmt);
@@ -70,6 +82,10 @@ public:
     static bool ParseWebVttText(const std::string& text, std::vector<ParsedSubtitleCue>& out);
     static bool ParseAssText(const std::string& text, std::vector<ParsedSubtitleCue>& out);
     static bool ParseAssDialogueLine(const std::string& line, ParsedSubtitleCue& out);
+    // MicroDVD：{起始帧}{结束帧}文本，帧号按 frame_rate 换算；{n}{n} 空文本是"清屏"，不算 cue
+    static bool ParseMicroDvdText(const std::string& text, double frame_rate, std::vector<ParsedSubtitleCue>& out);
+    // 文本里有没有合法 UTF-8 编码（用来识别 GBK/CP1251 等旧编码字幕）
+    static bool IsValidUtf8(const std::string& text);
 
     // 去掉 ASS 的 {覆盖指令} 与 \N 换行
     static std::string StripAssOverrides(const std::string& in);
@@ -104,9 +120,31 @@ private:
     // 把 decoder 产出的 cue 转成通用 SubtitleCue，挂到流上（含通道/服务归属）
     void AppendCaptionCues(CaptionSlot& slot, double end_seconds);
 
+    // 非原生格式（MicroDVD / SAMI / RealText / STL ...）走 FFmpeg 字幕解码器：
+    // 各 demuxer 已经把时间轴写进 PTS，解码器负责把载荷还原成干净文本。
+    // 自己按字节猜格式既不可靠，也覆盖不了 STL 这种二进制容器。
+    struct TextDecoderSlot {
+        int stream_index = -1;
+        AVCodecContext* context = nullptr;
+    };
+    AVCodecContext* EnsureTextDecoder(const AVStream* stream);
+    void AppendDecodedSubtitle(const AVSubtitle& subtitle, double pts_seconds, double duration_seconds,
+                               model::SubtitleStreamInfo& info);
+    void ReleaseTextDecoders();
+
+    // 纯字幕文件的整文件重解析（只对本地文件 + 无音视频流 + 单条文本字幕流生效）
+    bool TryParseWholeFile(const AVFormatContext* fmt);
+    void AppendParsedCue(const ParsedSubtitleCue& parsed, model::SubtitleStreamInfo& info);
+
     SubtitleOptions options_;
     model::SubtitleAnalysisResult result_;
     std::vector<CaptionSlot> caption_slots_;
+    std::vector<TextDecoderSlot> text_decoders_;
+    std::string source_path_;
+    // 已整文件解析完毕的流：逐包阶段跳过，避免同一批 cue 入两遍
+    std::vector<int> whole_file_streams_;
+    // 明确无法解析的流：不再尝试逐包解析，避免把二进制载荷当文本
+    std::vector<int> unsupported_streams_;
 };
 
 } // namespace videoeye

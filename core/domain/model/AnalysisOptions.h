@@ -200,6 +200,10 @@ struct SubtitleOptions {
     bool check_order = true;
     bool check_reading_speed = true;
     bool check_language = true;
+
+    // MicroDVD 的 {起始帧}{结束帧} 只有帧号，没有时间；纯字幕文件里拿不到视频帧率，
+    // 只能按约定帧率换算（与 FFmpeg 的 -subfps 默认口径一致）。
+    double microdvd_frame_rate = 25.0;
 };
 
 struct TimecodeOptions {

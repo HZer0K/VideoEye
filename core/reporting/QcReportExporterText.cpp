@@ -369,6 +369,87 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         }
     }
 
+    // ---- 字幕与辅助数据（功能 9）----
+    //
+    // 字幕问题已经按规则 id 进了「问题清单」，这一节落的是被检查的对象本身：
+    // 每条字幕流的格式 / 语言 / 解析状态 + cue 级问题的具体时间点。
+    // 三个维度都没跑时不落节 —— 空节会被读成"查过且没问题"。
+    const bool subtitle_analyzed = run.analysis.subtitle.analyzed;
+    const bool timecode_analyzed = run.analysis.timecode.analyzed;
+    const bool aux_analyzed = run.analysis.aux_data.analyzed;
+    if (subtitle_analyzed || timecode_analyzed || aux_analyzed) {
+        out << "\n--- 字幕与辅助数据 ---\n";
+        if (subtitle_analyzed) {
+            const model::SubtitleAnalysisResult& sub = run.analysis.subtitle;
+            int stream_level = 0;
+            for (const model::SubtitleIssue& issue : sub.issues) {
+                if (issue.IsStreamLevel())
+                    ++stream_level;
+            }
+            out << "  字幕流 " << sub.streams.size() << " 条（文本 " << sub.text_stream_count << " / 图形 "
+                << sub.bitmap_stream_count << "），cue " << sub.cues.size() << " 条，问题 " << sub.issues.size()
+                << " 处（流级 " << stream_level << " / cue 级 " << (sub.issues.size() - stream_level) << "）\n";
+            if (sub.cues_truncated)
+                out << "  注意: cue 明细已达每流上限并截断，下面是前若干条，不是全量\n";
+            for (const model::SubtitleStreamInfo& stream : sub.streams) {
+                out << "  [流 #" << stream.stream_index << "] " << model::ToString(stream.kind) << " "
+                    << model::ToString(stream.format) << "（" << stream.codec_name << "）｜ 语言 "
+                    << (stream.language.empty() ? std::string("-") : stream.language) << " ｜ cue " << stream.cue_count;
+                if (stream.truncated)
+                    out << "（已截断）";
+                if (stream.IsText()) {
+                    out << " ｜ ";
+                    out << (stream.parsed ? "已解析" : "未解析");
+                }
+                if (stream.default_disposition)
+                    out << " ｜ 默认";
+                if (stream.forced)
+                    out << " ｜ 强制";
+                if (stream.hearing_impaired)
+                    out << " ｜ 听障";
+                if (!stream.note.empty())
+                    out << " ｜ " << stream.note;
+                out << "\n";
+            }
+            constexpr std::size_t kMaxListedIssues = 100;
+            std::size_t listed = 0;
+            for (const model::SubtitleIssue& issue : sub.issues) {
+                if (listed++ >= kMaxListedIssues)
+                    break;
+                out << "  - [流 #" << issue.stream_index << "] ";
+                if (issue.IsStreamLevel()) {
+                    out << "流级 ";
+                } else {
+                    out << "cue " << (issue.cue_index + 1) << " ";
+                    if (issue.start_seconds >= 0.0)
+                        out << Fixed(issue.start_seconds, 3) << "-" << Fixed(issue.end_seconds, 3) << " s ";
+                }
+                out << model::ToString(issue.severity) << " " << model::ToString(issue.type);
+                if (!issue.detail.empty())
+                    out << ": " << issue.detail;
+                out << "\n";
+            }
+            if (sub.issues.size() > kMaxListedIssues) {
+                out << "  ...（另有 " << (sub.issues.size() - kMaxListedIssues)
+                    << " 条字幕问题未列出，完整列表见 JSON 报告的 subtitle_aux.issues）\n";
+            }
+        } else {
+            out << "  字幕分析未产出结果\n";
+        }
+        if (timecode_analyzed) {
+            const model::TimecodeAnalysisResult& tc = run.analysis.timecode;
+            out << "  首帧时码 " << (tc.has_primary ? tc.primary.ToString() : std::string("无")) << " ｜ 帧率 "
+                << (tc.primary_frame_rate > 0.0 ? Fixed(tc.primary_frame_rate, 3) : std::string("未知")) << " fps"
+                << (tc.primary_drop_frame ? "（drop-frame）" : "") << " ｜ 章节 " << tc.chapters.size() << " 个，问题 "
+                << tc.chapter_issues.size() << " 处\n";
+        }
+        if (aux_analyzed) {
+            const model::AuxiliaryDataResult& aux = run.analysis.aux_data;
+            out << "  SCTE-35 cue " << aux.scte35_cue_count << " 条（OUT " << aux.scte35_out_count << " / IN "
+                << aux.scte35_in_count << "）｜ metadata " << aux.metadata.size() << " 条\n";
+        }
+    }
+
     if (bundle.has_comparison) {
         out << "\n--- 对比 ---\n" << BuildComparisonText(bundle.comparison);
     }

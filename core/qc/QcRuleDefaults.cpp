@@ -786,6 +786,22 @@ std::vector<QcRule> DefaultQcRules() {
         QcRuleOp::NonZero, 0.0, "条", "MP4/MOV 的字幕轨没有 hdlr handler name，部分工具识别不出这是字幕轨。",
         "用支持写 hdlr 的 muxer 重新封装（FFmpeg 的 mov/mp4 muxer 默认会写）。");
 
+    add("subtitle.text.no_cues", "文本字幕没有解析出内容", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "条",
+        "有文本字幕轨，但一条 cue 都没解析出来：常见于编码不匹配、时间轴语法畸形，"
+        "或封装里的字幕轨其实是空轨。这类情况此前会被当成「没有问题」。",
+        "用字幕编辑器或 ffmpeg -i 确认这条轨是否真的可读；必要时按正确编码重新导入字幕。");
+
+    add("subtitle.text.unsupported_format", "字幕格式不支持解析", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "条", "该字幕轨的格式既没有内置解析器，FFmpeg 也没有对应解码器，因此没有做文本级检查。",
+        "确认字幕轨是否真的需要保留；如需检查，请先转成 SRT/ASS 等通用文本格式再重新封装。");
+
+    add("subtitle.text.non_utf8", "字幕文本不是 UTF-8", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "条",
+        "字幕文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码），字符统计与阅读速度判定会失真，"
+        "部分播放器还会显示乱码。",
+        "转成 UTF-8：iconv -f GBK -t UTF-8 in.srt > out.srt，或封装时用 -sub_charenc 指定源编码。");
+
     // ---- 隐藏字幕服务层（CEA-608 通道 / CEA-708 服务，见 CeaCaptionDecoder.h）----
     add("subtitle.cc.no_text", "隐藏字幕流没有解出文本", IssueCategory::Metadata, IssueSeverity::Warning,
         QcRuleOp::NonZero, 0.0, "条",

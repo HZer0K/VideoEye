@@ -18,6 +18,7 @@
 
 #include <QApplication>
 #include <QImage>
+#include <QKeyEvent>
 
 #include <vector>
 
@@ -145,4 +146,69 @@ TEST(AudioVizRendererTests, SpectrumAndWaveformDataReachRenderTarget) {
     rich_renderer.OnAudioLevelReady(0.7, 1.0);
     const QImage after_reset = RenderToImage(rich_widget);
     EXPECT_NE(placeholder_image, after_reset);
+}
+
+// ---------------------------------------------------------------------------
+// VideoWidget 的播放器快捷键：控件只把按键翻译成信号，具体动作由 PlayerPanel 决定。
+// 用 sendEvent 直接投递，不依赖真实窗口焦点（offscreen 下也没有焦点）。
+// ---------------------------------------------------------------------------
+TEST(VideoWidgetShortcutTests, KeysEmitPlayerIntents) {
+    EnsureApp();
+    VideoWidget widget;
+    int toggles = 0;
+    int seeks = 0;
+    int steps = 0;
+    int volumes = 0;
+    int mutes = 0;
+    int last_seek = 0;
+    int last_step = 0;
+    int last_volume = 0;
+    QObject::connect(&widget, &VideoWidget::TogglePlayRequested, [&] { ++toggles; });
+    QObject::connect(&widget, &VideoWidget::SeekRelativeRequested, [&](int delta) {
+        ++seeks;
+        last_seek = delta;
+    });
+    QObject::connect(&widget, &VideoWidget::StepFrameRequested, [&](int direction) {
+        ++steps;
+        last_step = direction;
+    });
+    QObject::connect(&widget, &VideoWidget::VolumeDeltaRequested, [&](int delta) {
+        ++volumes;
+        last_volume = delta;
+    });
+    QObject::connect(&widget, &VideoWidget::MuteToggleRequested, [&] { ++mutes; });
+
+    const auto press = [&widget](int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        QKeyEvent event(QEvent::KeyPress, key, modifiers);
+        QApplication::sendEvent(&widget, &event);
+    };
+
+    press(Qt::Key_Space);
+    EXPECT_EQ(toggles, 1);
+
+    press(Qt::Key_Right);
+    EXPECT_EQ(last_seek, 5000);
+    press(Qt::Key_Left);
+    EXPECT_EQ(last_seek, -5000);
+    EXPECT_EQ(seeks, 2);
+
+    // Shift+方向键是逐帧，不能再同时触发 5 秒快进/快退
+    press(Qt::Key_Right, Qt::ShiftModifier);
+    EXPECT_EQ(last_step, 1);
+    press(Qt::Key_Left, Qt::ShiftModifier);
+    EXPECT_EQ(last_step, -1);
+    EXPECT_EQ(steps, 2);
+    EXPECT_EQ(seeks, 2);
+
+    press(Qt::Key_Up);
+    EXPECT_EQ(last_volume, 5);
+    press(Qt::Key_Down);
+    EXPECT_EQ(last_volume, -5);
+    EXPECT_EQ(volumes, 2);
+
+    press(Qt::Key_M);
+    EXPECT_EQ(mutes, 1);
+    // 带修饰键的 M 留给菜单/编辑快捷键，不当作静音
+    press(Qt::Key_M, Qt::ControlModifier);
+    EXPECT_EQ(mutes, 1);
 }

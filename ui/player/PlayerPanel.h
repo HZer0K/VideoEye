@@ -128,6 +128,10 @@ private slots:
     void OnPlayPause();
     void OnStop();
     void OnSeek(int value);
+    // 画面获得焦点时的快捷键（见 VideoWidget::keyPressEvent）
+    void OnSeekRelative(int delta_ms);
+    void OnStepFrame(int direction);
+    void OnVolumeDelta(int delta_percent);
 
     // MediaPlayer 信号
     void OnStateChanged(model::PlayerState state);

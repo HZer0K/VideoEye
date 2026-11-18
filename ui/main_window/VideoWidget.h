@@ -89,10 +89,21 @@ public:
     void SetMotionVectors(const model::MacroblockFrameAnalysis& analysis);
     void SetMvOverlayMode(MvOverlayMode mode);
 
+signals:
+    // 播放器键盘意图。快捷键绑在视频画面上而不是主窗口：分析表格/输入框获得
+    // 焦点时方向键必须留给它们自己（表格移动单元格、滑块微调），不能被播放器抢走。
+    void TogglePlayRequested();
+    void SeekRelativeRequested(int delta_ms);
+    void StepFrameRequested(int direction); // -1 上一帧, +1 下一帧
+    void VolumeDeltaRequested(int delta_percent);
+    void MuteToggleRequested();
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
 
 private:
     QImage frame_;

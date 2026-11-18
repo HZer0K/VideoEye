@@ -36,6 +36,16 @@ enum class SubtitleFormat {
     Teletext,    // DVB/图文电视字幕
     OtherText,   // 其它可当文本读的字幕
     OtherBitmap, // 其它图形字幕
+    MicroDvd,    // MicroDVD(*.sub)，{起始帧}{结束帧}文本，时间靠帧率换算
+    SubViewer,   // SubViewer 1.0/2.0
+    Sami,        // SAMI(*.smi)，HTML 风格的同步字幕
+    RealText,    // RealText(*.rt)，<time begin=.../> 流式字幕
+    Stl,         // EBU STL(*.stl)，广电交换用的二进制字幕
+    JacoSub,     // JACOsub
+    Mpl2,        // MPL2
+    Pjs,         // PJS
+    VPlayer,     // VPlayer
+    AqTitle,     // AQTitle
 };
 
 // 字幕承载方式
@@ -48,16 +58,19 @@ enum class SubtitleKind {
 
 // 单条 cue 的问题类型。顺序即 UI 表格里的默认顺序。
 enum class SubtitleIssueType {
-    EmptyText = 0,   // 空字幕（无可见文本）
-    Overlap,         // 与上一条 cue 时间重叠
-    TooShort,        // 停留时间过短（来不及读）
-    TooLong,         // 停留时间过长（通常意味着忘记结束）
-    NonMonotonic,    // 时间倒序（开始时间早于上一条）
-    InvalidDuration, // end <= start
-    TooFast,         // 阅读速度过快（字符/秒）
-    OutOfRange,      // 超出媒体时长
-    MissingLanguage, // 流级：缺少 language tag
-    MissingHandler,  // 流级：缺少 handler name（MP4 hdlr）
+    EmptyText = 0,     // 空字幕（无可见文本）
+    Overlap,           // 与上一条 cue 时间重叠
+    TooShort,          // 停留时间过短（来不及读）
+    TooLong,           // 停留时间过长（通常意味着忘记结束）
+    NonMonotonic,      // 时间倒序（开始时间早于上一条）
+    InvalidDuration,   // end <= start
+    TooFast,           // 阅读速度过快（字符/秒）
+    OutOfRange,        // 超出媒体时长
+    MissingLanguage,   // 流级：缺少 language tag
+    MissingHandler,    // 流级：缺少 handler name（MP4 hdlr）
+    NoCues,            // 流级：文本字幕一条 cue 都没解析出来（解析失败）
+    UnsupportedFormat, // 流级：格式无法解析（既无原生解析器也无 FFmpeg 解码器）
+    NonUtf8Encoding,   // 流级：文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码）
 };
 
 // 一条字幕 problem（QC 报告里以 category=Metadata 呈现）
@@ -129,6 +142,8 @@ struct SubtitleStreamInfo {
 
     // 文本字幕是否已真正解析出 cue（图形字幕为 false，只给 metadata）
     bool parsed = false;
+    // cue 是否因为 max_cues_per_stream 上限被截断（true 时 cue_count 只是前 N 条）
+    bool truncated = false;
     std::string note; // 降级/来源说明（如"图形字幕仅输出 metadata"）
 
     // 隐藏字幕（CEA-608/708）的服务层统计。只有 ClosedCaption 流会填：
@@ -153,6 +168,8 @@ struct SubtitleAnalysisResult {
     int text_stream_count = 0;
     int bitmap_stream_count = 0;
     int total_cue_count = 0;
+    // 是否有任一字幕流因上限被截断（UI/报告要显式提示，不能当成"就这么多"）
+    bool cues_truncated = false;
     bool analyzed = false;
     std::string error_message;
 

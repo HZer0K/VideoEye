@@ -5,10 +5,14 @@
 #include <QFileDialog>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QShortcut>
+#include <QStringList>
 #include <QTextStream>
 #include <QVBoxLayout>
 
@@ -73,6 +77,35 @@ QString AuxSecondsText(double seconds) {
     return QString::number(seconds, 'f', 3);
 }
 
+// cue 级问题索引：key = (流号 << 32) | cue 序号。
+//
+// 原来重建 cue 表与导出 cue CSV 都是「每条 cue 再扫一遍全部问题」的 O(N×M)：
+// 长片 cue 数千条、问题上千条时，切一次流过滤器就要跑几百万次比较，
+// 而且每次比较还在拼 QString。这里先把问题按 cue 归拢一次。
+// 流级问题（cue_index < 0）没有 cue 行可挂，不进索引 —— 它们由汇总、
+// 流表「已解析」列与「问题清单 CSV」体现。
+struct CueIssueText {
+    QStringList names;
+    QStringList codes;
+};
+
+qint64 CueIssueKey(int stream_index, int cue_index) {
+    return (static_cast<qint64>(stream_index) << 32) | static_cast<qint64>(static_cast<quint32>(cue_index));
+}
+
+QHash<qint64, CueIssueText> BuildCueIssueIndex(const std::vector<model::SubtitleIssue>& issues) {
+    QHash<qint64, CueIssueText> index;
+    index.reserve(static_cast<int>(issues.size()));
+    for (const model::SubtitleIssue& issue : issues) {
+        if (issue.IsStreamLevel())
+            continue;
+        CueIssueText& entry = index[CueIssueKey(issue.stream_index, issue.cue_index)];
+        entry.names << QString::fromStdString(model::ToString(issue.type));
+        entry.codes << QString::fromUtf8(model::SubtitleIssueCode(issue.type));
+    }
+    return index;
+}
+
 } // namespace
 
 void SubtitleAuxPage::SetupUi() {
@@ -97,12 +130,22 @@ void SubtitleAuxPage::SetupUi() {
         connect(start_button_, &QPushButton::clicked, this, &SubtitleAuxPage::OnStartAnalysis);
         tl->addWidget(start_button_);
 
+        // 「开始 / 取消」成对出现：全文件扫描可能跑很久，入口页必须能中止，
+        // 否则用户只能等完或去切「诊断与报告」页。
+        cancel_button_ = new QPushButton(tr("取消"), title_row);
+        cancel_button_->setToolTip(tr("中止正在进行的全文件扫描（所有共用这次扫描的页一起停）"));
+        cancel_button_->setEnabled(false);
+        connect(cancel_button_, &QPushButton::clicked, this, &SubtitleAuxPage::OnCancelAnalysis);
+        tl->addWidget(cancel_button_);
+
         // 页头唯一的「导出」入口：四个子页的 CSV 都收进这里
         tl->addWidget(MakeExportMenuButton(
             title_row, {{tr("字幕 cue CSV…"), [this]() { OnExportSubtitleCsv(); }, tr("导出字幕流与 cue 明细")},
                         {tr("时码与章节 CSV…"), [this]() { OnExportTimecodeCsv(); }, tr("导出时码轨参数与章节列表")},
                         {tr("SCTE-35 CSV…"), [this]() { OnExportScte35Csv(); }, tr("导出 SCTE-35 splice 标记")},
-                        {tr("metadata CSV…"), [this]() { OnExportMetadataCsv(); }, tr("导出容器 / 流级 metadata")}}));
+                        {tr("metadata CSV…"), [this]() { OnExportMetadataCsv(); }, tr("导出容器 / 流级 metadata")},
+                        {tr("问题清单 CSV…"), [this]() { OnExportIssueCsv(); },
+                         tr("导出全部字幕问题（含 cue 级与流级，流级无时间码）")}}));
         layout->addWidget(title_row);
 
         summary_label_ = new QLabel(
@@ -142,17 +185,27 @@ void SubtitleAuxPage::SetupUi() {
         fl->addStretch();
         pl->addWidget(filter_row);
 
-        stream_table_ = MakeAuxTable({tr("流"), tr("编码"), tr("格式"), tr("承载"), tr("语言"), tr("handler"),
-                                      tr("默认"), tr("强制"), tr("Cue 数"), tr("包数"), tr("说明")},
-                                     page);
+        stream_table_ =
+            MakeAuxTable({tr("流"), tr("编码"), tr("格式"), tr("承载"), tr("语言"), tr("handler"), tr("默认"),
+                          tr("强制"), tr("听障"), tr("已解析"), tr("Cue 数"), tr("包数"), tr("说明")},
+                         page);
         stream_table_->setMaximumHeight(150);
         pl->addWidget(stream_table_);
 
         cue_table_ = MakeAuxTable(
             {tr("#"), tr("开始"), tr("结束"), tr("时长"), tr("字符"), tr("语言"), tr("问题"), tr("文本")}, page);
         cue_table_->setMinimumHeight(240);
-        cue_table_->setToolTip(tr("点击一行可让播放器跳到该字幕的开始时间"));
-        connect(cue_table_, &QTableWidget::cellClicked, this, &SubtitleAuxPage::OnCueCellClicked);
+        cue_table_->setToolTip(tr("双击一行（或选中后按回车）让播放器跳到该字幕的开始时间"));
+        // 用双击而不是单击跳转：单击会同时改变选中行，想看/复制文本时播放头
+        // 一跟着跳就没法读了；双击是"确认要看这里"的明确意图。
+        connect(cue_table_, &QTableWidget::cellDoubleClicked, this,
+                [this](int row, int /*column*/) { OnCueRowActivated(row); });
+        for (const int key : {Qt::Key_Return, Qt::Key_Enter}) {
+            QShortcut* activate = new QShortcut(QKeySequence(key), cue_table_);
+            activate->setContext(Qt::WidgetShortcut);
+            connect(activate, &QShortcut::activated, this,
+                    [this]() { OnCueRowActivated(cue_table_ ? cue_table_->currentRow() : -1); });
+        }
         pl->addWidget(cue_table_, 1);
 
         sub_tabs_->addTab(page, tr("字幕"));
@@ -249,10 +302,16 @@ void SubtitleAuxPage::OnStartAnalysis() {
     emit ScanRequested();
 }
 
+void SubtitleAuxPage::OnCancelAnalysis() {
+    emit CancelRequested();
+}
+
 void SubtitleAuxPage::SetScanActive(bool active) {
     scan_active_ = active;
     if (start_button_)
         start_button_->setEnabled(!active);
+    if (cancel_button_)
+        cancel_button_->setEnabled(active);
 }
 
 int SubtitleAuxPage::CurrentSubtitleStreamIndex() const {
@@ -296,13 +355,25 @@ void SubtitleAuxPage::UpdateSummary() {
     }
 
     // 主行只留"字幕本身"的结论，其余维度另起一行：原来 5 段用「｜」拼成一条长句，
-    // 窄窗下会折成 2~3 行参差短行。
-    QString text = tr("字幕流 %1 条（文本 %2 / 图形 %3），cue %4 条，问题 %5 处")
+    // 窄窗下会折成 2~3 行参差短行。流级问题（缺语言 / 无 cue / 格式不支持 / 非 UTF-8）
+    // 没有 cue 行可挂，必须在汇总里单独给出数量，否则表格里只看得到 cue 级问题。
+    int stream_level_issues = 0;
+    for (const model::SubtitleIssue& issue : r.subtitle.issues) {
+        if (issue.IsStreamLevel())
+            ++stream_level_issues;
+    }
+    const int cue_level_issues = static_cast<int>(r.subtitle.issues.size()) - stream_level_issues;
+
+    QString text = tr("字幕流 %1 条（文本 %2 / 图形 %3），cue %4 条，问题 %5 处（流级 %6 / cue 级 %7）")
                        .arg(r.subtitle.streams.size())
                        .arg(r.subtitle.text_stream_count)
                        .arg(r.subtitle.bitmap_stream_count)
                        .arg(r.subtitle.cues.size())
-                       .arg(r.subtitle.issues.size());
+                       .arg(r.subtitle.issues.size())
+                       .arg(stream_level_issues)
+                       .arg(cue_level_issues);
+    if (r.subtitle.cues_truncated)
+        text += tr("\n注意：cue 明细已达每流上限并截断，下表与导出 CSV 只包含前若干条。");
     QStringList detail;
     if (r.DimensionExecuted(model::AnalysisDimension::Timecode)) {
         detail << (r.timecode.has_primary ? tr("首帧时码 %1 @ %2 fps%3")
@@ -355,7 +426,19 @@ void SubtitleAuxPage::RebuildSubtitleStreamTable() {
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(s.handler_name)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(s.default_disposition ? tr("是") : tr("否")));
         stream_table_->setItem(row, col++, new QTableWidgetItem(s.forced ? tr("是") : tr("否")));
-        stream_table_->setItem(row, col++, new QTableWidgetItem(QString::number(s.cue_count)));
+        stream_table_->setItem(row, col++, new QTableWidgetItem(s.hearing_impaired ? tr("是") : tr("否")));
+        // 已解析只对文本字幕有意义：图形字幕本来就只给流级 metadata，
+        // 这里显示 "-" 而不是"否"，避免读成"解析失败"。
+        QTableWidgetItem* parsed_item =
+            new QTableWidgetItem(s.IsText() ? (s.parsed ? tr("是") : tr("否")) : QStringLiteral("-"));
+        if (s.IsText() && !s.parsed)
+            parsed_item->setToolTip(tr("该文本字幕流没有解析出任何 cue，见「问题」列与问题清单 CSV"));
+        stream_table_->setItem(row, col++, parsed_item);
+        QTableWidgetItem* cue_count_item =
+            new QTableWidgetItem(s.truncated ? tr("%1（已截断）").arg(s.cue_count) : QString::number(s.cue_count));
+        if (s.truncated)
+            cue_count_item->setToolTip(tr("已达每流 cue 上限，这只是前 %1 条").arg(s.cue_count));
+        stream_table_->setItem(row, col++, cue_count_item);
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::number(s.packet_count)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(s.note)));
         ++row;
@@ -370,7 +453,8 @@ void SubtitleAuxPage::RebuildSubtitleCueTable() {
     const int stream_filter = CurrentSubtitleStreamIndex();
     const bool issues_only = (issues_only_check_ != nullptr) && issues_only_check_->isChecked();
 
-    // 先按条件筛出要展示的 cue
+    // 先按条件筛出要展示的 cue，问题按 cue 建一次索引（见 BuildCueIssueIndex）
+    const QHash<qint64, CueIssueText> issue_index = BuildCueIssueIndex(r.subtitle.issues);
     std::vector<const model::SubtitleCue*> rows;
     for (const model::SubtitleCue& cue : r.subtitle.cues) {
         if (stream_filter >= 0 && cue.stream_index != stream_filter)
@@ -384,12 +468,7 @@ void SubtitleAuxPage::RebuildSubtitleCueTable() {
     for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
         const model::SubtitleCue& cue = *rows[static_cast<size_t>(row)];
         // 该 cue 上挂了哪些问题（同一条可能命中多条规则）
-        QStringList problems;
-        for (const model::SubtitleIssue& issue : r.subtitle.issues) {
-            if (issue.stream_index == cue.stream_index && issue.cue_index == cue.index) {
-                problems << QString::fromStdString(model::ToString(issue.type));
-            }
-        }
+        const CueIssueText problems = issue_index.value(CueIssueKey(cue.stream_index, cue.index));
 
         int col = 0;
         cue_table_->setItem(row, col++, new QTableWidgetItem(QString::number(cue.index + 1)));
@@ -401,10 +480,10 @@ void SubtitleAuxPage::RebuildSubtitleCueTable() {
                                                      : QStringLiteral("-")));
         cue_table_->setItem(row, col++, new QTableWidgetItem(QString::number(cue.char_count)));
         cue_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(cue.language)));
-        cue_table_->setItem(row, col++, new QTableWidgetItem(problems.join(tr("、"))));
+        cue_table_->setItem(row, col++, new QTableWidgetItem(problems.names.join(tr("、"))));
         cue_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(cue.text)));
 
-        if (problems.isEmpty())
+        if (problems.names.isEmpty())
             continue;
         // 有问题的行标红，跟"诊断与报告"里的问题色保持一致
         QColor tint("#5a1f1f");
@@ -414,7 +493,12 @@ void SubtitleAuxPage::RebuildSubtitleCueTable() {
                 item->setBackground(tint);
         }
     }
-    cue_table_->resizeColumnsToContents();
+    // 只在本次结果第一次填充时量一次列宽：每次切换流过滤器都量是 O(行数) 的
+    // 全文宽度计算，几万条 cue 时会明显卡顿。
+    if (!cue_columns_sized_) {
+        cue_table_->resizeColumnsToContents();
+        cue_columns_sized_ = true;
+    }
 }
 
 void SubtitleAuxPage::RebuildTimecodeTable() {
@@ -619,7 +703,7 @@ void SubtitleAuxPage::UpdateScte35MarkerChart() {
     scte35_marker_chart_->update();
 }
 
-void SubtitleAuxPage::OnCueCellClicked(int row, int /*column*/) {
+void SubtitleAuxPage::OnCueRowActivated(int row) {
     if (cue_table_ == nullptr || row < 0)
         return;
     QTableWidgetItem* start_item = cue_table_->item(row, 1);
@@ -640,24 +724,48 @@ void SubtitleAuxPage::OnExportSubtitleCsv() {
     }
     ExportCsvStream(
         this, tr("导出字幕 cue CSV"), QStringLiteral("subtitle_cues.csv"),
-        [this, &r](QTextStream& out) {
+        [&r](QTextStream& out) {
+            const QHash<qint64, CueIssueText> issue_index = BuildCueIssueIndex(r.subtitle.issues);
             out << "流,序号,开始(秒),结束(秒),时长(秒),字符数,语言,问题代码,文本\n";
             for (const model::SubtitleCue& cue : r.subtitle.cues) {
-                QStringList codes;
-                for (const model::SubtitleIssue& issue : r.subtitle.issues) {
-                    if (issue.stream_index == cue.stream_index && issue.cue_index == cue.index) {
-                        codes << QString::fromUtf8(model::SubtitleIssueCode(issue.type));
-                    }
-                }
+                const CueIssueText problems = issue_index.value(CueIssueKey(cue.stream_index, cue.index));
                 out << cue.stream_index << ',' << cue.index + 1 << ',' << QString::number(cue.start_seconds, 'f', 3)
                     << ',' << QString::number(cue.end_seconds, 'f', 3) << ','
                     << QString::number(cue.duration_seconds, 'f', 3) << ',' << cue.char_count << ','
                     << AuxCsvField(QString::fromStdString(cue.language)) << ','
-                    << AuxCsvField(codes.join(QStringLiteral(" "))) << ','
+                    << AuxCsvField(problems.codes.join(QStringLiteral(" "))) << ','
                     << AuxCsvField(QString::fromStdString(cue.text)) << '\n';
             }
         },
         static_cast<int>(r.subtitle.cues.size()));
+}
+
+void SubtitleAuxPage::OnExportIssueCsv() {
+    const model::AnalysisResult& r = *result_;
+    if (r.subtitle.issues.empty()) {
+        QMessageBox::information(this, tr("提示"), tr("当前没有字幕问题可导出"));
+        return;
+    }
+    ExportCsvStream(
+        this, tr("导出字幕问题清单 CSV"), QStringLiteral("subtitle_issues.csv"),
+        [&r](QTextStream& out) {
+            out << "流,cue序号,级别,问题代码,问题,开始(秒),结束(秒),说明\n";
+            for (const model::SubtitleIssue& issue : r.subtitle.issues) {
+                // 流级问题（缺语言 / 无 cue / 格式不支持 / 非 UTF-8）没有 cue 与时间码，
+                // 这里留 "-"；用 cue_index<0 判定，不要靠 start_seconds 猜。
+                const bool stream_level = issue.IsStreamLevel();
+                out << issue.stream_index << ','
+                    << (stream_level ? QStringLiteral("-") : QString::number(issue.cue_index + 1)) << ','
+                    << QString::fromUtf8(model::ToString(issue.severity)) << ','
+                    << QString::fromUtf8(model::SubtitleIssueCode(issue.type)) << ','
+                    << QString::fromUtf8(model::ToString(issue.type)) << ','
+                    << (issue.start_seconds >= 0.0 ? QString::number(issue.start_seconds, 'f', 3) : QStringLiteral("-"))
+                    << ','
+                    << (issue.end_seconds >= 0.0 ? QString::number(issue.end_seconds, 'f', 3) : QStringLiteral("-"))
+                    << ',' << AuxCsvField(QString::fromStdString(issue.detail)) << '\n';
+            }
+        },
+        static_cast<int>(r.subtitle.issues.size()));
 }
 
 void SubtitleAuxPage::OnExportTimecodeCsv() {
@@ -745,11 +853,13 @@ void SubtitleAuxPage::OnExportMetadataCsv() {
 
 void SubtitleAuxPage::SetResult(std::shared_ptr<const model::AnalysisResult> result) {
     result_ = std::move(result);
+    cue_columns_sized_ = false;
     RefreshUi();
 }
 
 void SubtitleAuxPage::ClearResult() {
     result_ = std::make_shared<const model::AnalysisResult>();
+    cue_columns_sized_ = false;
     RefreshUi();
 }
 

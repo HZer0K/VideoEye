@@ -427,6 +427,10 @@ public:
     AnalysisPipeline(const AnalysisPipeline&) = delete;
     AnalysisPipeline& operator=(const AnalysisPipeline&) = delete;
 
+    // 本地源路径：纯字幕文件（无音视频流）需要整文件重解析才能看到被 demuxer
+    // 丢掉的空事件。必须在 Prepare() 之前调用；网络源传空串。
+    void SetSourcePath(std::string path);
+
     // ---- 扫描之前：建分析器、注册流、解析 extradata、打开解码器 ----
     // 必须在 avformat_close_input 之前（要读 codecpar / extradata），只调用一次。
     // file_duration 来自容器头，供时码轨"没有流级时长时回退"使用。
@@ -563,6 +567,9 @@ private:
     SubtitleAnalyzer subtitle_;
     TimecodeAnalyzer timecode_;
     AuxDataAnalyzer aux_;
+
+    // 本地源路径（纯字幕文件整文件解析用）；网络源为空
+    std::string source_path_;
 
     // 质量维度
     ColorHdrAnalyzer color_hdr_;
