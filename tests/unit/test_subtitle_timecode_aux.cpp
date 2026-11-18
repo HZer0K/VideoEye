@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -729,4 +730,174 @@ TEST(SubtitleAnalyzerTest, NonUtf8SubtitleIsReported) {
 
     EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::NonUtf8Encoding), 1);
     ASSERT_EQ(result.cues.size(), 1u);
+}
+
+// ============================================================
+// 视频内嵌 CC（A53）/ 时间轴偏移 / 文本质量
+// ============================================================
+
+namespace {
+
+// MPEG-2 user_data 包：00 00 01 B2 + "GA94" + 0x03 + cc_data 头 + 保留字节 + 三元组 + 0xFF
+std::vector<uint8_t> Mpeg2UserDataPacket(const std::vector<uint8_t>& triplets) {
+    const size_t cc_count = triplets.size() / 3;
+    std::vector<uint8_t> packet = {
+        0x00, 0x00, 0x01, 0xB2, 'G', 'A', '9', '4', 0x03, static_cast<uint8_t>(0x40 | cc_count), 0xFF};
+    packet.insert(packet.end(), triplets.begin(), triplets.end());
+    packet.push_back(0xFF);
+    return packet;
+}
+
+// H.264 Annex B 包：一条 SEI NAL，payload type 4（T.35 / GA94）
+std::vector<uint8_t> H264SeiPacket(const std::vector<uint8_t>& triplets) {
+    const size_t cc_count = triplets.size() / 3;
+    std::vector<uint8_t> payload = {0xB5, 0x00, 0x31, 'G', 'A', '9', '4', 0x03, static_cast<uint8_t>(0x40 | cc_count),
+                                    0xFF};
+    payload.insert(payload.end(), triplets.begin(), triplets.end());
+    payload.push_back(0x80); // rbsp_trailing_bits
+
+    std::vector<uint8_t> packet = {0x00, 0x00, 0x00, 0x01, 0x06, 0x04, static_cast<uint8_t>(payload.size())};
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    return packet;
+}
+
+void FeedPacket(videoeye::SubtitleAnalyzer& analyzer, AVStream* stream, const std::vector<uint8_t>& data,
+                int64_t pts_ms) {
+    AVPacket* packet = av_packet_alloc();
+    if (packet == nullptr)
+        return;
+    av_new_packet(packet, static_cast<int>(data.size()));
+    std::memcpy(packet->data, data.data(), data.size());
+    packet->stream_index = stream->index;
+    packet->pts = pts_ms;
+    analyzer.OnPacket(packet, stream);
+    av_packet_free(&packet);
+}
+
+AVStream* AddStream(AVFormatContext* fmt, AVMediaType type, AVCodecID codec_id) {
+    AVStream* stream = avformat_new_stream(fmt, nullptr);
+    if (stream == nullptr)
+        return nullptr;
+    stream->codecpar->codec_type = type;
+    stream->codecpar->codec_id = codec_id;
+    stream->time_base = AVRational{1, 1000};
+    return stream;
+}
+
+} // namespace
+
+TEST(SubtitleAnalyzerTest, EmbeddedMpeg2UserDataProducesCaptionCue) {
+    // 608 控制码：RCL(0x14 0x20) / EOC(0x14 0x2F) / EDM(0x14 0x2C)
+    const std::vector<uint8_t> rcl = {0xFC, 0x14, 0x20};
+    const std::vector<uint8_t> hi = {0xFC, 'H', 'I'};
+    const std::vector<uint8_t> eoc = {0xFC, 0x14, 0x2F};
+    const std::vector<uint8_t> edm = {0xFC, 0x14, 0x2C};
+
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_MPEG2VIDEO);
+    ASSERT_NE(video, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    FeedPacket(analyzer, video, Mpeg2UserDataPacket(rcl), 0);
+    FeedPacket(analyzer, video, Mpeg2UserDataPacket(hi), 500);
+    FeedPacket(analyzer, video, Mpeg2UserDataPacket(eoc), 1000);
+    FeedPacket(analyzer, video, Mpeg2UserDataPacket(edm), 3000);
+    analyzer.Finish(10.0);
+
+    const videoeye::model::SubtitleAnalysisResult result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].embedded);
+    EXPECT_EQ(result.streams[0].format, videoeye::model::SubtitleFormat::Cea608);
+    ASSERT_EQ(result.cues.size(), 1u);
+    EXPECT_EQ(result.cues[0].text, "HI");
+    EXPECT_NEAR(result.cues[0].start_seconds, 1.0, 1e-6);
+    EXPECT_NEAR(result.cues[0].end_seconds, 3.0, 1e-6);
+    // 内嵌 CC 没有独立字幕轨，不应被要求补 language tag
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::MissingLanguage), 0);
+
+    avformat_free_context(fmt);
+}
+
+TEST(SubtitleAnalyzerTest, EmbeddedH264SeiProducesCaptionCue) {
+    const std::vector<uint8_t> preload = {0xFC, 0x14, 0x20, 0xFC, 'O', 'K', 0xFC, 0x14, 0x2F};
+    const std::vector<uint8_t> erase = {0xFC, 0x14, 0x2C};
+
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264);
+    ASSERT_NE(video, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    FeedPacket(analyzer, video, H264SeiPacket(preload), 2000);
+    FeedPacket(analyzer, video, H264SeiPacket(erase), 5000);
+    analyzer.Finish(10.0);
+
+    const videoeye::model::SubtitleAnalysisResult result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].embedded);
+    ASSERT_EQ(result.cues.size(), 1u);
+    EXPECT_EQ(result.cues[0].text, "OK");
+    EXPECT_NEAR(result.cues[0].start_seconds, 2.0, 1e-6);
+    EXPECT_NEAR(result.cues[0].end_seconds, 5.0, 1e-6);
+
+    avformat_free_context(fmt);
+}
+
+TEST(SubtitleAnalyzerTest, TimelineOffsetBetweenCueAndPacketPtsIsReported) {
+    const std::string srt = "1\n"
+                            "00:00:01,000 --> 00:00:04,000\n"
+                            "hello\n";
+
+    auto run = [&srt](int64_t pts_ms) {
+        AVFormatContext* fmt = avformat_alloc_context();
+        AVStream* subtitle = AddStream(fmt, AVMEDIA_TYPE_SUBTITLE, AV_CODEC_ID_SRT);
+        videoeye::SubtitleAnalyzer analyzer;
+        analyzer.Reset(videoeye::SubtitleOptions{});
+        analyzer.RegisterStreams(fmt);
+
+        std::vector<uint8_t> bytes(srt.begin(), srt.end());
+        FeedPacket(analyzer, subtitle, bytes, pts_ms);
+        analyzer.Finish(60.0);
+        const auto result = analyzer.result();
+        avformat_free_context(fmt);
+        return result;
+    };
+
+    // 包 PTS 与 cue 文本时间一致：不应报偏移
+    EXPECT_EQ(CountType(run(1000).issues, videoeye::model::SubtitleIssueType::TimelineOffset), 0);
+    // 包 PTS 比 cue 晚 4 秒：容器时间轴与字幕文本整体错位
+    EXPECT_EQ(CountType(run(5000).issues, videoeye::model::SubtitleIssueType::TimelineOffset), 1);
+}
+
+TEST(SubtitleAnalyzerTest, TextQualityFindsGarbledCodePoints) {
+    std::vector<videoeye::model::SubtitleCue> cues;
+    cues.push_back(MakeCue(0, 1.0, 4.0, "正常文本"));
+    cues.push_back(MakeCue(1, 5.0, 8.0, "bad \xEF\xBF\xBD")); // U+FFFD 替换字符
+    cues.push_back(MakeCue(2, 9.0, 12.0, "ctrl\x01"));        // C0 控制字符
+    cues.push_back(MakeCue(3, 13.0, 16.0, "\xEE\x80\x80"));   // 私用区 U+E000
+
+    std::vector<videoeye::model::SubtitleIssue> issues;
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
+
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::GarbledText), 3);
+}
+
+TEST(SubtitleAnalyzerTest, TextQualityFindsDuplicateAndOverlongLines) {
+    std::vector<videoeye::model::SubtitleCue> cues;
+    cues.push_back(MakeCue(0, 1.0, 4.0, "同一句"));
+    cues.push_back(MakeCue(1, 5.0, 8.0, "同一句"));
+    cues.push_back(MakeCue(2, 9.0, 12.0, std::string(61, 'A')));
+
+    std::vector<videoeye::model::SubtitleIssue> issues;
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
+
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::DuplicateCue), 1);
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::LineTooLong), 1);
 }

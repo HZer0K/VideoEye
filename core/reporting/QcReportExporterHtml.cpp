@@ -633,7 +633,8 @@ void AppendSubtitleAux(std::ostringstream& out, const model::AnalysisResult& ana
                    "<th>默认</th><th>强制</th><th>听障</th><th>已解析</th><th>Cue 数</th><th>说明</th></tr>\n";
             for (const model::SubtitleStreamInfo& stream : sub.streams) {
                 out << "    <tr><td>" << stream.stream_index << "</td><td>" << Html(stream.codec_name) << "</td><td>"
-                    << Html(model::ToString(stream.format)) << "</td><td>" << Html(model::ToString(stream.kind))
+                    << Html(model::ToString(stream.format)) << "</td><td>"
+                    << Html(stream.embedded ? std::string("视频内嵌 CC") : std::string(model::ToString(stream.kind)))
                     << "</td><td>" << Html(stream.language.empty() ? std::string("-") : stream.language) << "</td><td>"
                     << (stream.default_disposition ? "是" : "否") << "</td><td>" << (stream.forced ? "是" : "否")
                     << "</td><td>" << (stream.hearing_impaired ? "是" : "否") << "</td><td>"

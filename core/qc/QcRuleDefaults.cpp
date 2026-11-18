@@ -802,6 +802,24 @@ std::vector<QcRule> DefaultQcRules() {
         "部分播放器还会显示乱码。",
         "转成 UTF-8：iconv -f GBK -t UTF-8 in.srt > out.srt，或封装时用 -sub_charenc 指定源编码。");
 
+    add("subtitle.timeline_offset", "字幕时间轴整体偏移", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "条",
+        "字幕 cue 的时间与承载包的 PTS 整体相差一个常量，通常是 MP4 的 elst 编辑列表或 HLS WebVTT 的 "
+        "X-TIMESTAMP-MAP 没有生效，播放器上字幕会整体提前或延后。",
+        "核对容器的编辑列表/时间戳映射；HLS 需要正确的 X-TIMESTAMP-MAP，MP4 需要检查 elst 偏移量。");
+
+    add("subtitle.text.garbled", "字幕文本疑似乱码", IssueCategory::Metadata, IssueSeverity::Warning, QcRuleOp::NonZero,
+        0.0, "条", "字幕文本里出现 U+FFFD 替换字符、私用区码点或控制字符，通常是编码转换错误或字体映射错位。",
+        "确认源字幕编码并按 UTF-8 重新导入；私用区字符需要替换成标准码点。");
+
+    add("subtitle.text.duplicate", "相邻字幕重复", IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero, 0.0,
+        "条", "相邻两条 cue 的文本完全相同，常见于字幕机重复触发或时间轴复制粘贴。",
+        "在字幕编辑器里合并重复事件，保留一条正确的时间范围。");
+
+    add("subtitle.text.line_too_long", "字幕单行过长", IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero,
+        0.0, "条", "单行字符数超过建议上限，播放器会自动折行或缩小字号，影响阅读体验。",
+        "按语义拆成两行，中文每行建议不超过 20 字，英文不超过 42 字符。");
+
     // ---- 隐藏字幕服务层（CEA-608 通道 / CEA-708 服务，见 CeaCaptionDecoder.h）----
     add("subtitle.cc.no_text", "隐藏字幕流没有解出文本", IssueCategory::Metadata, IssueSeverity::Warning,
         QcRuleOp::NonZero, 0.0, "条",

@@ -80,6 +80,10 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
         {"subtitle.text.no_cues", model::SubtitleIssueType::NoCues},
         {"subtitle.text.unsupported_format", model::SubtitleIssueType::UnsupportedFormat},
         {"subtitle.text.non_utf8", model::SubtitleIssueType::NonUtf8Encoding},
+        {"subtitle.timeline_offset", model::SubtitleIssueType::TimelineOffset},
+        {"subtitle.text.garbled", model::SubtitleIssueType::GarbledText},
+        {"subtitle.text.duplicate", model::SubtitleIssueType::DuplicateCue},
+        {"subtitle.text.line_too_long", model::SubtitleIssueType::LineTooLong},
     };
     bool matched = false;
     model::SubtitleIssueType target = model::SubtitleIssueType::EmptyText;

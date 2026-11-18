@@ -392,7 +392,8 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
             if (sub.cues_truncated)
                 out << "  注意: cue 明细已达每流上限并截断，下面是前若干条，不是全量\n";
             for (const model::SubtitleStreamInfo& stream : sub.streams) {
-                out << "  [流 #" << stream.stream_index << "] " << model::ToString(stream.kind) << " "
+                out << "  [流 #" << stream.stream_index << "] "
+                    << (stream.embedded ? "视频内嵌 CC" : model::ToString(stream.kind)) << " "
                     << model::ToString(stream.format) << "（" << stream.codec_name << "）｜ 语言 "
                     << (stream.language.empty() ? std::string("-") : stream.language) << " ｜ cue " << stream.cue_count;
                 if (stream.truncated)

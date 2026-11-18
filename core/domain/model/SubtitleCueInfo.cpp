@@ -130,6 +130,14 @@ const char* ToString(SubtitleIssueType type) {
         return "格式不支持解析";
     case SubtitleIssueType::NonUtf8Encoding:
         return "编码不是 UTF-8";
+    case SubtitleIssueType::TimelineOffset:
+        return "时间轴整体偏移";
+    case SubtitleIssueType::GarbledText:
+        return "文本乱码";
+    case SubtitleIssueType::DuplicateCue:
+        return "相邻字幕重复";
+    case SubtitleIssueType::LineTooLong:
+        return "单行过长";
     default:
         return "未知问题";
     }
@@ -219,6 +227,14 @@ const char* SubtitleIssueCode(SubtitleIssueType type) {
         return "unsupported_format";
     case SubtitleIssueType::NonUtf8Encoding:
         return "non_utf8";
+    case SubtitleIssueType::TimelineOffset:
+        return "timeline_offset";
+    case SubtitleIssueType::GarbledText:
+        return "garbled_text";
+    case SubtitleIssueType::DuplicateCue:
+        return "duplicate_cue";
+    case SubtitleIssueType::LineTooLong:
+        return "line_too_long";
     default:
         return "unknown";
     }

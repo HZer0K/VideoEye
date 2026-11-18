@@ -421,7 +421,9 @@ void SubtitleAuxPage::RebuildSubtitleStreamTable() {
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::number(s.stream_index)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(s.codec_name)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(model::ToString(s.format))));
-        stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(model::ToString(s.kind))));
+        stream_table_->setItem(
+            row, col++,
+            new QTableWidgetItem(s.embedded ? tr("视频内嵌 CC") : QString::fromStdString(model::ToString(s.kind))));
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(s.language)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(s.handler_name)));
         stream_table_->setItem(row, col++, new QTableWidgetItem(s.default_disposition ? tr("是") : tr("否")));

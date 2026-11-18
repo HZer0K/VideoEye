@@ -454,6 +454,7 @@ JsonValue BuildSubtitleAuxObject(const model::AnalysisResult& result) {
         item.Set("default", JsonValue(stream.default_disposition));
         item.Set("forced", JsonValue(stream.forced));
         item.Set("hearing_impaired", JsonValue(stream.hearing_impaired));
+        item.Set("embedded", JsonValue(stream.embedded));
         item.Set("cue_count", JNumber(stream.cue_count));
         item.Set("packet_count", JNumber(static_cast<double>(stream.packet_count)));
         item.Set("parsed", JsonValue(stream.parsed));

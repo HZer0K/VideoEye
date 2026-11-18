@@ -103,8 +103,11 @@ public:
     static std::string DecodeCea608Field(const uint8_t* data, size_t size);
 
     // 校验一组同流 cue（按出现顺序）。problem 追加到 issues，并回填 cue.has_issue。
+    // skip_garbled_check：流本身已确认不是 UTF-8 时不再逐条报乱码 —— 真正的修复动作是
+    // 整体转码，50 条 cue 逐条报"含 U+FFFD"只会把编码问题变成噪声。
     static void ValidateCues(std::vector<model::SubtitleCue>& cues, std::vector<model::SubtitleIssue>& issues,
-                             const SubtitleOptions& options, double media_duration_seconds);
+                             const SubtitleOptions& options, double media_duration_seconds,
+                             bool skip_garbled_check = false);
 
     // 可见字符数（按 UTF-8 码点算，不算空白）
     static size_t CountVisibleChars(const std::string& text);
@@ -132,14 +135,44 @@ private:
                                model::SubtitleStreamInfo& info);
     void ReleaseTextDecoders();
 
+    // ---- 视频内嵌 CC（A53） ----
+    // MPEG-2 的 user_data 与 H.264/HEVC 的 SEI 里都可能带 A53 cc_data，这类 CC
+    // 不在独立字幕轨里，只能从视频包中提取后喂给同一套 CeaCaptionDecoder。
+    void HandleVideoPacket(const AVPacket* pkt, const AVStream* stream);
+    model::SubtitleStreamInfo* EnsureEmbeddedCaptionStream(const AVStream* stream);
+    void PushEmbeddedTriplets(int stream_index, const AVStream* stream, const uint8_t* data, size_t size, double ts);
+
     // 纯字幕文件的整文件重解析（只对本地文件 + 无音视频流 + 单条文本字幕流生效）
     bool TryParseWholeFile(const AVFormatContext* fmt);
-    void AppendParsedCue(const ParsedSubtitleCue& parsed, model::SubtitleStreamInfo& info);
+    // packet_ts >= 0 时顺带记录 cue 时间与包 PTS 的偏差，供时间轴偏移校验使用
+    void AppendParsedCue(const ParsedSubtitleCue& parsed, model::SubtitleStreamInfo& info, double packet_ts = -1.0);
 
     SubtitleOptions options_;
     model::SubtitleAnalysisResult result_;
     std::vector<CaptionSlot> caption_slots_;
     std::vector<TextDecoderSlot> text_decoders_;
+
+    // 视频流的内嵌 CC 提取状态（按视频流索引）
+    struct EmbeddedVideoSlot {
+        int stream_index = -1;
+        int codec_id = 0;
+        int nal_prefix_bytes = 0;    // MP4 的 AVC/HEVC 是长度前缀；0 = Annex B
+        bool top_field_first = true; // MPEG-2 picture coding extension 里的标志
+    };
+    std::vector<EmbeddedVideoSlot> video_slots_;
+
+    // 文本流 cue 时间与包 PTS 的最小偏差：只要有一条 cue 的时间对得上 PTS，
+    // 就说明时间轴没有整体平移；最小偏差都很明显才是容器偏移。
+    struct TimelineProbe {
+        int stream_index = -1;
+        bool has_sample = false;
+        double min_abs_delta = 0.0;
+        double sample_delta = 0.0;
+    };
+    std::vector<TimelineProbe> timeline_probes_;
+    // 已确认不是合法 UTF-8 的流：乱码检查交给流级 non_utf8 规则，不再逐条报
+    std::vector<int> non_utf8_streams_;
+
     std::string source_path_;
     // 已整文件解析完毕的流：逐包阶段跳过，避免同一批 cue 入两遍
     std::vector<int> whole_file_streams_;

@@ -201,6 +201,18 @@ struct SubtitleOptions {
     bool check_reading_speed = true;
     bool check_language = true;
 
+    // 时间轴整体偏移：把 cue 文本里解析出的时间与承载该 cue 的包 PTS 对比，
+    // 两者差一个常量就说明容器偏移（MP4 elst / HLS WebVTT 的 X-TIMESTAMP-MAP）
+    // 没有生效，播放器上字幕会整体提前或延后。正常文件两者相差在毫秒级。
+    bool check_timeline_offset = true;
+    double timeline_offset_tolerance_seconds = 1.0;
+
+    // 文本质量：替换字符/私用区/控制字符乱码、相邻 cue 重复、单行过长。
+    // 全半角混排不在此列 —— 中英混排本身合法，按规则拦会大面积误报。
+    bool check_text_quality = true;
+    // 单行可见字符数上限。中文一行通常 <= 20 字，英文 <= 42 字符，60 是"明显排版失控"的界线。
+    uint32_t max_line_chars = 60;
+
     // MicroDVD 的 {起始帧}{结束帧} 只有帧号，没有时间；纯字幕文件里拿不到视频帧率，
     // 只能按约定帧率换算（与 FFmpeg 的 -subfps 默认口径一致）。
     double microdvd_frame_rate = 25.0;

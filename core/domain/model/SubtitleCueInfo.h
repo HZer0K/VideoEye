@@ -71,6 +71,10 @@ enum class SubtitleIssueType {
     NoCues,            // 流级：文本字幕一条 cue 都没解析出来（解析失败）
     UnsupportedFormat, // 流级：格式无法解析（既无原生解析器也无 FFmpeg 解码器）
     NonUtf8Encoding,   // 流级：文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码）
+    TimelineOffset,    // 流级：cue 时间轴与容器时间戳整体偏移（elst / X-TIMESTAMP-MAP）
+    GarbledText,       // 文本乱码：U+FFFD 替换符、私用区码点、控制字符
+    DuplicateCue,      // 相邻两条 cue 文本完全相同（重复上屏）
+    LineTooLong,       // 单行字符数超过建议上限（排版/阅读性）
 };
 
 // 一条字幕 problem（QC 报告里以 category=Metadata 呈现）
@@ -133,6 +137,11 @@ struct SubtitleStreamInfo {
     bool forced = false;
     bool hearing_impaired = false;
     bool burned_in_note = false; // 占位：容器标记了"已烧录"的旁注
+
+    // 内嵌在视频码流里的隐藏字幕（MPEG-2 user_data / H.264·HEVC SEI 的 A53 数据）。
+    // 这类 CC 没有独立的 subtitle stream，流表里借用视频流的索引，报告与 UI
+    // 必须靠这个标志区分"字幕轨"与"视频里带的 CC"，否则会让人误以为文件有字幕轨。
+    bool embedded = false;
 
     int cue_count = 0; // 解析出的 cue 数
     int64_t packet_count = 0;
