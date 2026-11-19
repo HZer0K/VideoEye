@@ -154,6 +154,10 @@ protected:
     QLabel* hit_label_ = nullptr;
     QLabel* detail_label_ = nullptr;
     StructureMapCanvas* canvas_ = nullptr;
+    // 缩放 / 聚焦只对层级带视图成立：树图与包带没有字节视窗，置灰避免假交互。
+    QToolButton* zoom_in_btn_ = nullptr;
+    QToolButton* zoom_out_btn_ = nullptr;
+    QToolButton* focus_btn_ = nullptr;
 
     model::ContainerStructureResult result_;
     std::vector<structure_map_detail::MapNode> nodes_;

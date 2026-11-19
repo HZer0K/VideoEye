@@ -1054,7 +1054,13 @@ double MapLayoutProjection::Project(double nx) const {
         return Clamp01(nx);
     if (nx <= segments.front().raw0)
         return Clamp01(segments.front().layout0);
-    for (size_t i = 0; i < segments.size(); ++i) {
+    // 顶层段按 raw0 有序：先二分到「第一个 raw0 > nx」的段，再向前回看。
+    // 正常文件回看一步就命中；畸形文件中重叠的顶层 box 才需要多看几段。
+    // 原来每个样本线性扫全部段，fMP4 上千个 moof 时会把窗口拖到几百毫秒。
+    const auto first_after = std::upper_bound(segments.begin(), segments.end(), nx,
+                                              [](double value, const Segment& s) { return value < s.raw0; });
+    const size_t end = static_cast<size_t>(first_after - segments.begin());
+    for (size_t i = end; i-- > 0;) {
         const Segment& s = segments[i];
         if (nx <= s.raw1) {
             const double t = s.raw1 > s.raw0 ? (nx - s.raw0) / (s.raw1 - s.raw0) : 0.0;

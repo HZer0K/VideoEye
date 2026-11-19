@@ -166,7 +166,6 @@ struct MapVisual {
     QColor fill;
     QColor border;
     QString label;
-    bool emphasize = false; // 选中 / 命中 / 异常时的强调边框
     // 样本表被截断后的「未展开」区：斜纹装饰，只画不命中。
     // 不标出来，右侧空白会被读成「这条轨没有数据」。
     bool hatched = false;

@@ -194,6 +194,13 @@ public:
         if (enabled_ == enabled)
             return;
         enabled_ = enabled;
+        if (!enabled_) {
+            // 关闭绘制后画布只剩一行提示；残留的按压 / 悬停状态会让下面的
+            // 命中逻辑继续按「不可见矩形」工作，必须一起复位。
+            pressed_ = false;
+            dragging_ = false;
+            hovered_ = -1;
+        }
         update();
     }
     void SetHits(const QVector<int>& hits) {
@@ -351,7 +358,11 @@ protected:
         }
         if (view_kind_ != smd::MapViewKind::PacketBands && view_kind_ != smd::MapViewKind::FormatOverview &&
             nodes_.empty()) {
-            DrawCenteredHint(painter, tr("打开媒体文件后将自动生成结构图谱"));
+            // 已识别格式却画不出节点 ≠ 还没打开文件：前者是解析成功但树为空，
+            // 不能再提示"打开媒体文件后将自动生成"。
+            DrawCenteredHint(painter, profile_.family == smd::MapFormatFamily::Unknown
+                                          ? tr("打开媒体文件后将自动生成结构图谱")
+                                          : tr("结构树为空：该格式没有产出可展示的结构节点"));
             return;
         }
 
@@ -420,6 +431,10 @@ protected:
     }
 
     void wheelEvent(QWheelEvent* event) override {
+        if (!enabled_) {
+            event->ignore();
+            return;
+        }
         const int delta = event->angleDelta().y();
         if (delta == 0) {
             event->ignore();
@@ -441,7 +456,7 @@ protected:
     }
 
     void mousePressEvent(QMouseEvent* event) override {
-        if (event->button() != Qt::LeftButton) {
+        if (!enabled_ || event->button() != Qt::LeftButton) {
             QWidget::mousePressEvent(event);
             return;
         }
@@ -454,6 +469,10 @@ protected:
     }
 
     void mouseMoveEvent(QMouseEvent* event) override {
+        if (!enabled_) {
+            event->ignore();
+            return;
+        }
         const QPoint pos = event->position().toPoint();
         if (pressed_) {
             const QPoint moved = pos - press_pos_;
@@ -492,6 +511,12 @@ protected:
     }
 
     void mouseReleaseEvent(QMouseEvent* event) override {
+        if (!enabled_) {
+            pressed_ = false;
+            dragging_ = false;
+            event->ignore();
+            return;
+        }
         if (pressed_ && !dragging_ && event->button() == Qt::LeftButton)
             DispatchSelection(event->position().toPoint());
         pressed_ = false;
@@ -500,7 +525,7 @@ protected:
     }
 
     void mouseDoubleClickEvent(QMouseEvent* event) override {
-        if (event->button() != Qt::LeftButton) {
+        if (!enabled_ || event->button() != Qt::LeftButton) {
             QWidget::mouseDoubleClickEvent(event);
             return;
         }
@@ -532,6 +557,15 @@ protected:
     }
 
     void keyPressEvent(QKeyEvent* event) override {
+        if (!enabled_) {
+            QWidget::keyPressEvent(event);
+            return;
+        }
+        // 缩放 / 平移只对层级带成立；树图与包带没有字节视窗，别按键有效果、画面没变化。
+        if (view_kind_ != smd::MapViewKind::Icicle && event->key() != Qt::Key_Escape) {
+            QWidget::keyPressEvent(event);
+            return;
+        }
         switch (event->key()) {
         case Qt::Key_Escape:
             view_ = smd::MapViewport{};
@@ -921,7 +955,7 @@ void FileStructureMapPage::SetupUi() {
                                           tr("导出结构树、流、元数据与完整性标记（分五维，不合成一个完成态）")},
                                          {tr("当前视图 SVG…"), [this]() { OnExportSvg(); },
                                           tr("把当前视图导出为矢量图：矩形 / 标签 / 信息栏 / 图例 / 流带与斜纹都一致"
-                                             "（不含坐标轴刻度与悬停态）")}}));
+                                             "（不含坐标轴刻度、悬停与选中高亮）")}}));
     layout->addWidget(title_row);
 
     status_label_ = new QLabel(tr("打开媒体文件并启用分析后将生成结构图谱"), this);
@@ -1014,11 +1048,14 @@ void FileStructureMapPage::SetupUi() {
         FocusNode(hits_[hit_cursor_]);
         UpdateHitLabel();
     });
-    add_tool(QStringLiteral("＋"), tr("放大当前字节区间"),
-             [this]() { canvas_->SetView(smd::ZoomAt(canvas_->view(), canvas_->view().FromScreen(0.5), 1.4)); });
-    add_tool(QStringLiteral("－"), tr("缩小当前字节区间"),
-             [this]() { canvas_->SetView(smd::ZoomAt(canvas_->view(), canvas_->view().FromScreen(0.5), 1.0 / 1.4)); });
-    add_tool(tr("聚焦选中"), tr("把选中节点的字节区间铺满画布（Shift+双击同效）"), [this]() { FocusNode(selected_); });
+    zoom_in_btn_ = add_tool(QStringLiteral("＋"), tr("放大当前字节区间"), [this]() {
+        canvas_->SetView(smd::ZoomAt(canvas_->view(), canvas_->view().FromScreen(0.5), 1.4));
+    });
+    zoom_out_btn_ = add_tool(QStringLiteral("－"), tr("缩小当前字节区间"), [this]() {
+        canvas_->SetView(smd::ZoomAt(canvas_->view(), canvas_->view().FromScreen(0.5), 1.0 / 1.4));
+    });
+    focus_btn_ = add_tool(tr("聚焦选中"), tr("把选中节点的字节区间铺满画布（Shift+双击同效）"),
+                          [this]() { FocusNode(selected_); });
     add_tool(tr("定位结构树"), tr("切到「文件结构」页并选中同名节点（双击节点同效）"),
              [this]() { RequestJumpToTree(); });
     add_tool(tr("适应窗口"), tr("复位缩放、平移与垂直滚动"), [this]() { ResetView(); });
@@ -1648,6 +1685,12 @@ void FileStructureMapPage::SetViewKind(smd::MapViewKind kind) {
         depth_combo_->setEnabled(icicle);
     if (search_edit_)
         search_edit_->setEnabled(icicle);
+    if (zoom_in_btn_)
+        zoom_in_btn_->setEnabled(icicle);
+    if (zoom_out_btn_)
+        zoom_out_btn_->setEnabled(icicle);
+    if (focus_btn_)
+        focus_btn_->setEnabled(icicle);
     if (canvas_) {
         canvas_->SetViewKind(kind);
         canvas_->SetBinSelection(-1, -1);

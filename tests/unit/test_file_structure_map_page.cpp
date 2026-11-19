@@ -21,11 +21,14 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QStandardItemModel>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -2038,4 +2041,115 @@ TEST(FileStructureMapPageTest, NewResultAndClearResetViewport) {
     page->Clear();
     EXPECT_DOUBLE_EQ(page->ViewScale(), 1.0);
     EXPECT_EQ(page->FirstVisibleRow(), 0);
+}
+
+TEST(StructureMapModelTest, LayoutProjectionKeepsGapContinuityWithSortedSegments) {
+    // 600 个顶层 box：改造后的二分投影必须与「段内线性插值」逐点一致。
+    ContainerStructureResult dense;
+    dense.valid = true;
+    dense.format_name = "MP4";
+    const quint64 box_size = 10;
+    for (int i = 0; i < 600; ++i)
+        dense.element_tree.push_back(
+            Element("box" + std::to_string(i), static_cast<quint64>(i) * box_size, box_size, 0));
+    const auto nodes = detail::CollectNodes(dense, 20, 4000, detail::MapLayoutMode::Balanced);
+    ASSERT_EQ(nodes.size(), 600u);
+    const detail::MapLayoutProjection projection = detail::BuildLayoutProjection(nodes);
+    ASSERT_EQ(projection.segments.size(), 600u);
+    const double span = 600.0 * static_cast<double>(box_size);
+    for (int i = 0; i < 600; ++i) {
+        const double raw = (static_cast<double>(i) * box_size + box_size * 0.5) / span;
+        const double want = nodes[static_cast<size_t>(i)].x0 +
+                            (nodes[static_cast<size_t>(i)].x1 - nodes[static_cast<size_t>(i)].x0) * 0.5;
+        EXPECT_NEAR(projection.Project(raw), want, 1e-9) << "index " << i;
+    }
+    EXPECT_DOUBLE_EQ(projection.Project(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(projection.Project(1.0), 1.0);
+
+    // 顶层 box 之间的真实空隙仍要线性过渡，不能跳到下一个段的端点。
+    ContainerStructureResult gapped;
+    gapped.valid = true;
+    gapped.format_name = "MP4";
+    gapped.element_tree.push_back(Element("a", 0, 32, 0));
+    gapped.element_tree.push_back(Element("b", 4132, 800000, 0));
+    const auto gap_nodes = detail::CollectNodes(gapped, 20, 4000, detail::MapLayoutMode::Balanced);
+    ASSERT_EQ(gap_nodes.size(), 2u);
+    const double gap_split = gap_nodes[1].x0;
+    const detail::MapLayoutProjection gap_projection = detail::BuildLayoutProjection(gap_nodes);
+    const double gap_mid = (32.0 + 4132.0) * 0.5 / 804132.0;
+    EXPECT_NEAR(gap_projection.Project(gap_mid), gap_split, 1e-9) << "空隙内应连续过渡，而不是跳到下一段端点";
+    EXPECT_NEAR(gap_projection.Project(16.0 / 804132.0), gap_split * 0.5, 1e-9);
+    EXPECT_NEAR(gap_projection.Project(4132.0 / 804132.0), gap_split, 1e-9);
+}
+
+TEST(FileStructureMapPageTest, DisabledDrawingIgnoresInvisibleHitTargets) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+    page.resize(900, 600);
+    page.show();
+    QApplication::processEvents();
+    QApplication::processEvents();
+
+    QWidget* canvas = page.findChild<QWidget*>(QStringLiteral("StructureMapCanvas"));
+    ASSERT_NE(canvas, nullptr);
+    // 左上区域：落在第一层顶层 box 里，且避开展示栏与右侧详情面板。
+    const QPoint pos(canvas->width() / 8, detail::kInfoHeight + 10);
+
+    const auto click = [&] {
+        QMouseEvent press(QEvent::MouseButtonPress, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, pos, canvas->mapToGlobal(pos), Qt::LeftButton, Qt::NoButton,
+                            Qt::NoModifier);
+        QApplication::sendEvent(canvas, &press);
+        QApplication::sendEvent(canvas, &release);
+    };
+
+    click();
+    EXPECT_GE(page.SelectedNode(), 0) << "启用绘制时点击可见节点应能选中";
+
+    page.SetFeatureChecked(false);
+    page.SelectNode(-1);
+    const double scale = page.ViewScale();
+    click();
+    EXPECT_EQ(page.SelectedNode(), -1) << "关闭绘制后画布只剩提示语，不能再命中看不见的矩形";
+
+    QKeyEvent plus(QEvent::KeyPress, Qt::Key_Plus, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &plus);
+    EXPECT_DOUBLE_EQ(page.ViewScale(), scale) << "关闭绘制后缩放快捷键也不该生效";
+}
+
+TEST(FileStructureMapPageTest, ByteViewportToolsDisableOutsideIcicle) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+
+    QToolButton* zoom_in = nullptr;
+    QToolButton* zoom_out = nullptr;
+    QToolButton* focus = nullptr;
+    for (QToolButton* button : page.findChildren<QToolButton*>()) {
+        if (button->text() == QStringLiteral("＋"))
+            zoom_in = button;
+        else if (button->text() == QStringLiteral("－"))
+            zoom_out = button;
+        else if (button->text() == QStringLiteral("聚焦选中"))
+            focus = button;
+    }
+    ASSERT_NE(zoom_in, nullptr);
+    ASSERT_NE(zoom_out, nullptr);
+    ASSERT_NE(focus, nullptr);
+    EXPECT_TRUE(zoom_in->isEnabled());
+    EXPECT_TRUE(zoom_out->isEnabled());
+    EXPECT_TRUE(focus->isEnabled());
+
+    // 树图 / 包带没有字节视窗：缩放与聚焦必须置灰，不能"按了有反应、画面没变化"。
+    page.SetViewKind(detail::MapViewKind::Treemap);
+    EXPECT_FALSE(zoom_in->isEnabled());
+    EXPECT_FALSE(zoom_out->isEnabled());
+    EXPECT_FALSE(focus->isEnabled());
+
+    page.SetViewKind(detail::MapViewKind::Icicle);
+    EXPECT_TRUE(zoom_in->isEnabled());
+    EXPECT_TRUE(zoom_out->isEnabled());
+    EXPECT_TRUE(focus->isEnabled());
 }
