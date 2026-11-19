@@ -162,6 +162,34 @@ TEST(QcRunnerTest, ReturnsEngineFailureWithinBudgetWithoutTimeout) {
 // 断言之外的关键：函数返回后测试不立刻结束，继续睡 ~1.5s —— 被 detach 的 worker
 // 仍在跑（盒子由它自己保活）。在"引擎挂局部 shared_ptr"的旧实现下，这段时间里
 // worker 访问 box->engine 就是 use-after-free，ASan 构建必报；现在的实现应当安静。
+// MP4 打开失败时要把容器结构原因补进 error：语料里的 sample-corrupt.mp4 只有
+// ftyp、没有 moov，FFmpeg 只会回 "Invalid data..."。这里用等价的最小样本断言
+// 错误里带出了「容器结构 / moov」，也就是结构页与 QC 页对同一份坏文件口径一致。
+TEST(QcRunnerTest, OpenFailureCarriesMp4StructureReason) {
+    const fs::path dir = MakeScratchDir("videoeye_qc_runner_mp4_structure");
+    const fs::path file = dir / "no_moov.mp4";
+    {
+        std::ofstream out(file, std::ios::binary);
+        // ftyp: size=20, major=isom, minor=0, compatible=isom
+        const unsigned char ftyp[] = {0x00, 0x00, 0x00, 0x14, 'f',  't',  'y', 'p', 'i', 's',
+                                      'o',  'm',  0x00, 0x00, 0x00, 0x00, 'i', 's', 'o', 'm'};
+        out.write(reinterpret_cast<const char*>(ftyp), sizeof(ftyp));
+        // 再补一个空 mdat：确保文件非空（否则会被"文件为空"挡下，测不到打开失败路径）
+        const unsigned char mdat[] = {0x00, 0x00, 0x00, 0x10, 'm',  'd',  'a',  't',
+                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+        out.write(reinterpret_cast<const char*>(mdat), sizeof(mdat));
+    }
+
+    QcRunner runner;
+    const QcRunResult result = runner.AnalyzeFile(file.string(), FastProfile(), OptionsForDepth(QcAnalysisDepth::Fast));
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("容器结构"), std::string::npos) << result.error;
+    EXPECT_NE(result.error.find("moov"), std::string::npos) << result.error;
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 TEST(QcRunnerTest, TinyAnalysisBudgetAbandonsAndDetachesWithoutCrash) {
     const fs::path dir = MakeScratchDir("videoeye_qc_runner_timeout");
     const fs::path file = WriteGarbageMediaFile(dir, "garbage.mp4");

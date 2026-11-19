@@ -444,3 +444,29 @@ TEST(AnalysisPipelineEdges, TruncatedBucketsStillYieldFullMeasuredDuration) {
     // 结束时刻 = (last_bucket_index + 1) * interval，覆盖被丢弃的尾部
     EXPECT_NEAR(measured, static_cast<double>(cap + 20) * interval, 1e-9);
 }
+
+// 裸流 / 无 STREAMINFO 的 FLAC 等容器不声明时长。此时必须把逐桶实测时长写回结果，
+// 否则 QC 的 container.duration_invalid（< 0.01s，Critical）会把合法素材判成"不通过"，
+// 报告里的时长也会一直是 0。逐流码率同理：先补时长再算，避免停在 0 触发 low_bpp 误报。
+TEST(AnalysisPipelineEdges, MissingContainerDurationFallsBackToMeasuredDuration) {
+    constexpr double interval = 1.0;
+    videoeye::ScanBuckets buckets;
+    for (int64_t i = 0; i < 10; ++i)
+        ASSERT_NE(buckets.Acquire(i), nullptr);
+
+    videoeye::model::AnalysisResult result; // duration_seconds == 0 -> 走桶兜底
+    videoeye::model::StreamDigest video;
+    video.index = 0;
+    video.media_type = 0;       // AVMEDIA_TYPE_VIDEO
+    video.byte_count = 1250000; // 10s @ 1 Mbps
+    result.streams.push_back(video);
+
+    videoeye::AnalysisResultAssembler assembler(result, QuietOptions());
+    const double measured = assembler.FinalizeBuckets(buckets, interval);
+
+    EXPECT_NEAR(measured, 10.0, 1e-9);
+    EXPECT_DOUBLE_EQ(result.duration_seconds, measured);
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_DOUBLE_EQ(result.streams[0].duration_seconds, measured);
+    EXPECT_EQ(result.streams[0].bitrate_bps, 1000000);
+}

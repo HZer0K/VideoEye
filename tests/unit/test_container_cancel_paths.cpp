@@ -89,6 +89,30 @@ std::vector<std::uint8_t> Box(const std::string& type, const std::vector<std::ui
     return out;
 }
 
+std::vector<std::uint8_t> Cat(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+    std::vector<std::uint8_t> out = a;
+    out.insert(out.end(), b.begin(), b.end());
+    return out;
+}
+
+// 一个最小的 vide trak: mdia 里只有 mdhd(媒体时基) 与 hdlr(handler)。
+// 结构有效性现在会检查"moov 里至少有一个 trak"，所以空 moov 的样本不能再当
+// 对照组使用；这两条记录正是 IsobmffParser 保留一条轨道的最低要求。
+std::vector<std::uint8_t> MakeMinimalTrak() {
+    std::vector<std::uint8_t> mdhd_body(4, 0); // version/flags
+    Put32(mdhd_body, 0);                       // creation_time
+    Put32(mdhd_body, 0);                       // modification_time
+    Put32(mdhd_body, 30000);                   // timescale
+    Put32(mdhd_body, 60000);                   // duration
+
+    std::vector<std::uint8_t> hdlr_body(4, 0); // version/flags
+    Put32(hdlr_body, 0);                       // pre_defined
+    for (char c : std::string("vide"))
+        hdlr_body.push_back(static_cast<std::uint8_t>(c));
+
+    return Box("trak", Box("mdia", Cat(Box("mdhd", mdhd_body), Box("hdlr", hdlr_body))));
+}
+
 std::vector<std::uint8_t> MakeMp4(int extra_boxes) {
     std::vector<std::uint8_t> ftyp_body;
     for (char c : std::string("isom"))
@@ -98,7 +122,7 @@ std::vector<std::uint8_t> MakeMp4(int extra_boxes) {
         ftyp_body.push_back(static_cast<std::uint8_t>(c));
 
     std::vector<std::uint8_t> out = Box("ftyp", ftyp_body);
-    for (const auto& b : {Box("moov", {}), Box("mdat", std::vector<std::uint8_t>(64, 0))})
+    for (const auto& b : {Box("moov", MakeMinimalTrak()), Box("mdat", std::vector<std::uint8_t>(64, 0))})
         out.insert(out.end(), b.begin(), b.end());
     for (int i = 0; i < extra_boxes; ++i) {
         const std::vector<std::uint8_t> free_box = Box("free", {});

@@ -1,0 +1,22 @@
+{
+  "expectations": [
+    {
+      "path": "abnormal/corrupted/sample-corrupt.mp4",
+      "struct_valid": "0",
+      "failure_kind": "parse_failed",
+      "why": "只有 ftyp + mdat、缺 moov；结构页必须判无效，不能因为能解析出 box 头就报结构有效"
+    },
+    {
+      "path": "normal/fate-suite/h264-conformance/AUD_MW_E.264",
+      "struct_valid": "1",
+      "failure_kind": "none",
+      "why": "裸 H.264 没有容器时长；时长缺失不是结构损坏，不能触发 Critical"
+    },
+    {
+      "path": "normal/exoplayer-media3/libraries/test_data/src/test/assets/media/flac/bear_no_num_samples.flac",
+      "struct_valid": "1",
+      "failure_kind": "none",
+      "why": "FLAC 缺 STREAMINFO 样本数（因此没有时长）；结构有效，不能误判为损坏"
+    }
+  ]
+}

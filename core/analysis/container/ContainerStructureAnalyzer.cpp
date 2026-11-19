@@ -221,7 +221,12 @@ bool ContainerStructureAnalyzer::Analyze(const std::string& file_path, model::Co
                 return MarkCancelled(result);
 
             // valid 只在所有阶段都跑完之后才置：中间任何一步被取消都要能把它清掉。
-            result.valid = true;
+            // 但"能解析出 box 树"不等于"文件可播放"：Mp4BoxAnalyzer 会对缺少
+            // moov/moof 或 trak 的结构置 valid=false，这里必须如实传递 —— 否则一份
+            // 连 moov 都没有的 MP4 会以 struct_valid=1 通过结构体检。
+            result.valid = result.mp4_detail.valid;
+            if (!result.valid && !result.mp4_detail.error_message.empty())
+                result.error_message = result.mp4_detail.error_message;
 
             // 样本级一致性校验（stbl 全表交叉校验 / elst / moof-traf-trun / faststart）。
             // 与 Mp4BoxAnalyzer 是两次独立解析：那边走 Inspector 字符串（为了展示 box 树），

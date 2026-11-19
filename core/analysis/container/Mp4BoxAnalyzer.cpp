@@ -222,6 +222,26 @@ bool Mp4BoxAnalyzer::AnalyzeFile(const std::string& file_path, model::Mp4BoxAnal
         result.track_tables.push_back(ConvertTrackTables(t));
     }
 
+    // 结构有效性：能解析出 box 树不等于文件可播放。
+    //   * 既没有 moov 也没有 moof（分片 MP4）：缺少实际的媒体描述，无法解码；
+    //   * 有 moov 但一个 trak 都没有：同样没有可播放的轨道。
+    // 这两种情况仍返回 true（解析本身成功），只把 valid 置 false —— 维度状态会因此
+    // 记为 Failed，QcRuleEngine 会把总结论降为"不通过"，而不是静默通过。
+    const bool has_movie = file.found_moov;
+    const bool has_fragment = !file.fragments.empty();
+    if (!has_movie && !has_fragment) {
+        result.valid = false;
+        result.error_message = "缺少 moov（或 moof）box，无法构成可播放的 MP4";
+        LOG_WARN("Mp4BoxAnalyzer: " + result.error_message);
+        return true;
+    }
+    if (has_movie && file.tracks.empty()) {
+        result.valid = false;
+        result.error_message = "moov 中没有任何 trak, 文件不可播放";
+        LOG_WARN("Mp4BoxAnalyzer: " + result.error_message);
+        return true;
+    }
+
     result.valid = true;
     LOG_INFO("MP4 Box 分析完成: " + std::to_string(result.box_tree.size()) + " 个顶级 Box, " +
              std::to_string(result.track_tables.size()) + " 个 Track 表");

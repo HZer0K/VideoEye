@@ -119,6 +119,30 @@ TEST(ContainerFailureKindTest, ValidMediaYieldsNoneAndNoError) {
     EXPECT_TRUE(result.error_message.empty());
 }
 
+// 能解析出 box 树 ≠ 文件可播放：只有 ftyp、没有 moov 的 MP4 是语料里
+// sample-corrupt.mp4 的实际形态。IsobmffParser 会成功返回一棵树，以前结构页
+// 也就 valid=true 签收；现在必须落成 parse_failed 并保留具体原因。
+TEST(ContainerFailureKindTest, Mp4WithoutMoovIsParseFailed) {
+    const fs::path dir = ScratchDir("mp4_no_moov");
+    const fs::path file = dir / "no_moov.mp4";
+    // ftyp: size=20, major_brand=isom, minor_version=0, compatible=isom
+    const unsigned char kBytes[] = {0x00, 0x00, 0x00, 0x14, 'f',  't',  'y', 'p', 'i', 's',
+                                    'o',  'm',  0x00, 0x00, 0x00, 0x00, 'i', 's', 'o', 'm'};
+    {
+        std::ofstream out(file, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(kBytes), sizeof(kBytes));
+    }
+
+    videoeye::ContainerStructureAnalyzer analyzer;
+    ContainerStructureResult result;
+    EXPECT_FALSE(analyzer.Analyze(file.string(), result));
+    EXPECT_FALSE(result.valid);
+    EXPECT_EQ(result.failure_kind, ContainerFailureKind::ParseFailed);
+    EXPECT_NE(result.error_message.find("moov"), std::string::npos);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 TEST(ContainerFailureKindTest, CancelledYieldsCancelled) {
     auto cancel = std::make_shared<std::atomic<bool>>(true);
     videoeye::ContainerStructureAnalyzer analyzer;

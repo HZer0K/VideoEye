@@ -27,6 +27,7 @@
 #include "core/analysis/container/AsfStructureAnalyzer.h"
 #include "core/analysis/container/AviStructureAnalyzer.h"
 #include "core/analysis/container/FlvStructureAnalyzer.h"
+#include "core/analysis/container/Mp4BoxAnalyzer.h"
 #include "core/analysis/container/Mp4SampleTableAnalyzer.h"
 #include "core/analysis/container/MpegPsStructureAnalyzer.h"
 #include "core/analysis/container/MxfStructureAnalyzer.h"
@@ -784,6 +785,63 @@ TEST(RealContainerSampleTest, RealFragmentedMp4ExposesMoofSamples) {
     EXPECT_TRUE(result.fragmented) << "真实 fMP4 的分片结构没有被识别";
     ASSERT_FALSE(result.fragments.empty()) << "moof/traf/trun 没有展开出样本";
     EXPECT_GT(result.fragments.front().sample_count, 0u);
+}
+
+// ===========================================================================
+// MP4 结构有效性：能解析出 box 树 ≠ 文件可播放
+//
+// 语料里的 sample-corrupt.mp4 只有 ftyp，没有 moov —— 自研解析器能把它读成一棵树
+// （解析本身成功），以前结构体检却照样按 valid=true 签收。这里用最小合成样本钉住
+// 两条结构契约：
+//   * 没有 moov 也没有 moof（分片）-> 不可播放；
+//   * 有 moov 但一个 trak 都没有 -> 不可播放。
+// ===========================================================================
+
+namespace {
+
+// ftyp: size=20, major_brand=isom, minor_version=0, compatible=isom
+QByteArray FtypOnlyBox() {
+    return QByteArray::fromHex("000000146674797069736F6D0000000069736F6D");
+}
+
+QByteArray MoovBox(const QByteArray& payload) {
+    const quint32 size = static_cast<quint32>(8 + payload.size());
+    QByteArray b;
+    b.append(char((size >> 24) & 0xFF));
+    b.append(char((size >> 16) & 0xFF));
+    b.append(char((size >> 8) & 0xFF));
+    b.append(char(size & 0xFF));
+    b.append("moov");
+    b.append(payload);
+    return b;
+}
+
+} // namespace
+
+TEST(Mp4BoxAnalyzerStructureTest, FtypOnlyIsParsedButNotPlayable) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "ftyp_only.mp4", FtypOnlyBox());
+    ASSERT_FALSE(path.empty());
+
+    model::Mp4BoxAnalysisResult result;
+    // 解析成功（拿到 box 树），但结构不可播放 —— 两者必须分开表达
+    EXPECT_TRUE(videoeye::Mp4BoxAnalyzer().AnalyzeFile(path, result));
+    EXPECT_FALSE(result.valid);
+    EXPECT_FALSE(result.error_message.empty());
+    EXPECT_EQ(result.box_tree.size(), 1u);
+}
+
+TEST(Mp4BoxAnalyzerStructureTest, MoovWithoutTrakIsNotPlayable) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = WriteTemp(dir, "no_trak.mp4", FtypOnlyBox() + MoovBox(QByteArray()));
+    ASSERT_FALSE(path.empty());
+
+    model::Mp4BoxAnalysisResult result;
+    EXPECT_TRUE(videoeye::Mp4BoxAnalyzer().AnalyzeFile(path, result));
+    EXPECT_FALSE(result.valid);
+    EXPECT_NE(result.error_message.find("trak"), std::string::npos);
 }
 
 } // namespace

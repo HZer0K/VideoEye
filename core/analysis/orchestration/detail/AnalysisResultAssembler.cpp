@@ -712,15 +712,21 @@ double AnalysisResultAssembler::FinalizeBuckets(const ScanBuckets& buckets, doub
             : ((buckets.last_bucket_index >= 0)
                    ? (static_cast<double>(buckets.last_bucket_index) + 1.0) * interval_seconds
                    : 0.0);
+    // 裸流、无 STREAMINFO 的 FLAC 等容器不声明时长。这里把逐桶实测时长写回结果，
+    // 否则报告与 QC 规则会看到 duration=0，把合法素材误判成「时长异常」。
+    if (result_.duration_seconds <= 0.0 && measured_duration > 0.0)
+        result_.duration_seconds = measured_duration;
     if (result_.overall_bitrate_bps <= 0 && measured_duration > 0.0) {
         result_.overall_bitrate_bps = static_cast<int64_t>(result_.total_bytes * 8 / measured_duration);
     }
     for (auto& digest : result_.streams) {
-        if (digest.bitrate_bps <= 0 && digest.duration_seconds > 0.0) {
-            digest.bitrate_bps = static_cast<int64_t>(digest.byte_count * 8 / digest.duration_seconds);
-        }
+        // 先补时长再算码率: 容器不声明逐流时长时，码率必须以实测时长兜底，
+        // 否则 bitrate_bps 会停在 0 并触发 video.bitrate.low_bpp 误报。
         if (digest.duration_seconds <= 0.0)
             digest.duration_seconds = measured_duration;
+        if (digest.bitrate_bps <= 0 && digest.duration_seconds > 0.0 && digest.byte_count > 0) {
+            digest.bitrate_bps = static_cast<int64_t>(digest.byte_count * 8 / digest.duration_seconds);
+        }
     }
 
     const double kbps_per_byte_per_sec = 8.0 / 1000.0 / interval_seconds;

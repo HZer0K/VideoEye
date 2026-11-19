@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -11,8 +12,10 @@
 #include <thread>
 #include <utility>
 
+#include "core/analysis/container/Mp4BoxAnalyzer.h"
 #include "core/analysis/orchestration/AnalysisEngine.h"
 #include "core/analysis/orchestration/AnalysisTerminalState.h"
+#include "core/analysis/orchestration/FormatDetector.h"
 #include "core/domain/io/MediaInputPreflight.h"
 #include "core/domain/task/ThreadBody.h"
 #include "infrastructure/logging/Logger.h"
@@ -82,6 +85,42 @@ std::string AbandonErrorText(QcAbandonReason reason) {
         break;
     }
     return "分析在等待预算内没有结束";
+}
+
+// 打开失败时补一条容器结构原因。
+//
+// FFmpeg 对坏容器通常只回一句 "Invalid data found when processing input"，用户无法
+// 判断是编码损坏还是容器缺了 moov。这里只在**本地文件且探测为 MP4/MOV** 时，用自研
+// 解析器做一次只读 box 结构的轻量判定（不解码、不读样本数据），把具体原因附加在原
+// 错误后面；其它格式或结构正常时原样返回，不改变既有错误文案。
+std::string ExplainOpenFailure(const std::string& path, const std::string& error) {
+    if (path.empty() || error.empty() || IsNetworkUri(path))
+        return error;
+    // 已经带过结构原因（重复结算路径）就不再追加，避免出现两遍。
+    if (error.find("容器结构") != std::string::npos)
+        return error;
+    // FFmpeg 自己已经点明缺 moov 时，结构探测不会带来新信息，省掉一次解析。
+    // 只认明确的 "moov atom/box" 措辞：错误里常带文件路径，路径名恰好含 moov
+    // （如 no_moov.mp4）时不能当成"已经解释过"。
+    if (error.find("moov atom") != std::string::npos || error.find("moov box") != std::string::npos)
+        return error;
+    const model::ContainerFormat format = FormatDetector::Detect(path);
+    if (format != model::ContainerFormat::MP4 && format != model::ContainerFormat::MOV)
+        return error;
+    // 批量里可能有成百上千个坏文件：失败路径上再完整解析一遍 box 树是双倍 I/O，
+    // 超大文件直接跳过，保留 FFmpeg 的原始错误（用户仍能从结构页单独查看）。
+    constexpr std::uintmax_t kMaxProbeBytes = 64ull * 1024 * 1024;
+    std::error_code size_error;
+    const std::uintmax_t size = std::filesystem::file_size(path, size_error);
+    if (!size_error && size > kMaxProbeBytes)
+        return error;
+
+    model::Mp4BoxAnalysisResult structure;
+    if (!videoeye::Mp4BoxAnalyzer().AnalyzeFile(path, structure) || structure.valid)
+        return error;
+    if (structure.error_message.empty())
+        return error;
+    return error + "（容器结构：" + structure.error_message + "）";
 }
 
 QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& profile, videoeye::AnalysisOptions options,
@@ -345,11 +384,12 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
 
     if (box->failed) {
         output.ok = false;
-        output.error = box->error;
+        // 引擎打开失败时补容器结构原因（缺 moov / 无 trak 等），见 ExplainOpenFailure。
+        output.error = ExplainOpenFailure(path, box->error);
         // 把扫描失败的状态也带出来，便于上层区分
         output.analysis.scan_status = model::AnalysisStatus::Failed;
-        if (!box->error.empty())
-            output.analysis.error_message = box->error;
+        if (!output.error.empty())
+            output.analysis.error_message = output.error;
         return output;
     }
 
@@ -364,7 +404,8 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
         return output;
     case model::AnalysisStatus::Failed:
         output.ok = false;
-        output.error = output.analysis.error_message.empty() ? "分析失败" : output.analysis.error_message;
+        output.error = ExplainOpenFailure(path, output.analysis.error_message.empty() ? "分析失败"
+                                                                                      : output.analysis.error_message);
         return output;
     case model::AnalysisStatus::Complete:
     case model::AnalysisStatus::Sampled:
@@ -373,7 +414,7 @@ QcRunResult QcRunner::AnalyzeFile(const MediaInput& input, const QcProfile& prof
 
     if (!output.analysis.error_message.empty()) {
         output.ok = false;
-        output.error = output.analysis.error_message;
+        output.error = ExplainOpenFailure(path, output.analysis.error_message);
         return output;
     }
 

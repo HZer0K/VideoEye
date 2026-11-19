@@ -34,6 +34,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHITELIST = REPO_ROOT / "tests" / "corpus" / "defect_gate_whitelist.json"
+# 少量"口径钉死"的样本：它们要么曾把正常样本误判成 Critical（无容器时长），
+# 要么是结构层刚补上校验的关键负样本。分组判据是统计式的，管不住单个样本回退。
+DEFAULT_EXPECTATIONS = REPO_ROOT / "tests" / "corpus" / "defect_gate_expectations.json"
 # 语料树属于外部环境，统一从 VIDEOEYE_CORPUS_ROOT 注入，见 corpus_format_gate.py。
 DEFAULT_ROOT = os.environ.get("VIDEOEYE_CORPUS_ROOT", "").strip()
 DEFAULT_INDEX = os.environ.get("VIDEOEYE_CORPUS_INDEX", "").strip() or (
@@ -86,10 +89,52 @@ def load_whitelist(path: Path | None) -> dict:
     return data.get("exceptions", {}) if isinstance(data, dict) else {}
 
 
-def check(results: Path, index: Path, root: str, whitelist_path: Path | None) -> int:
+def load_expectations(path: Path | None) -> list[dict]:
+    """读取逐样本期望（可选）。文件缺失 = 不做逐样本钉死，不影响原有判据。"""
+    if not path or not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    items = data.get("expectations", []) if isinstance(data, dict) else []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def check_expectations(rows: list[dict], expectations: list[dict], root: str) -> list[str]:
+    """逐样本核对结构结论。
+
+    这类样本数量少但价值高：它们能抓住"整类判断回退"——比如无容器时长的
+    正常裸流被重新判成 Critical，或只有 ftyp 的坏 MP4 又被报成结构有效。
+    统计式分组判据（覆盖/多样性）抓不到单点回退。
+    """
+    failures: list[str] = []
+    normalized = [(rel_key(row.get("path", ""), root), row) for row in rows]
+    for item in expectations:
+        expected_path = rel_key(str(item.get("path", "")), "").strip("/")
+        if not expected_path:
+            continue
+        matches = [row for key, row in normalized if key == expected_path]
+        if len(matches) != 1:
+            failures.append(f"期望样本匹配 {len(matches)} 行（应为 1）: {item.get('path')}")
+            continue
+        row = matches[0]
+        if "struct_valid" in item:
+            want = str(item["struct_valid"]).strip()
+            got = "1" if row.get("struct_valid") == "1" else "0"
+            if got != want:
+                failures.append(f"期望样本 {item.get('path')} struct_valid={got}，期望 {want}")
+        if "failure_kind" in item:
+            want = str(item["failure_kind"]).strip()
+            got = (row.get("struct_failure_kind") or "").strip()
+            if got != want:
+                failures.append(f"期望样本 {item.get('path')} failure_kind={got!r}，期望 {want!r}")
+    return failures
+
+
+def check(results: Path, index: Path, root: str, whitelist_path: Path | None,
+          expectations_path: Path | None = None) -> int:
     failures: list[str] = []
     whitelist = load_whitelist(whitelist_path)
     whitelist_hits: set[str] = set()
+    expectations = load_expectations(expectations_path)
 
     rows = load_tsv(results)
     if not rows:
@@ -197,6 +242,11 @@ def check(results: Path, index: Path, root: str, whitelist_path: Path | None) ->
     if stale:
         failures.append(f"白名单失效（这些行本来就没违反判据）: {sorted(stale)[:8]}")
 
+    # ---- 5b. 逐样本钉死（可选）-----------------------------------------
+    failures.extend(check_expectations(rows, expectations, root))
+    if expectations:
+        print(f"[defect] 逐样本期望 {len(expectations)} 条已核对")
+
     # ---- 6. 口径落空样本（只报告，不判红）-------------------------------
     # INDEX 的 parse 列是 ffprobe（制作语料时的版本）的结论，不是产品的真值。
     # category=normal 但 parse=fail 的样本既没有缺陷标注（不进分组判据），
@@ -239,12 +289,16 @@ def main() -> int:
     parser.add_argument("--root", default=DEFAULT_ROOT, help="语料根目录（用于把绝对路径剥成相对键）")
     parser.add_argument("--whitelist", default=str(DEFAULT_WHITELIST),
                         help="例外白名单 JSON，形如 {\"exceptions\": {\"<相对路径>\": \"原因\"}}")
+    parser.add_argument("--expectations", default=str(DEFAULT_EXPECTATIONS),
+                        help="逐样本期望 JSON（可选），形如 {\"expectations\": [{\"path\": ..., "
+                             "\"struct_valid\": \"0\", \"failure_kind\": \"parse_failed\"}]}")
     args = parser.parse_args()
     if not args.root or not args.index:
         parser.error("缺少语料路径：请传 --root/--index，或设置环境变量 VIDEOEYE_CORPUS_ROOT"
                      "（INDEX.tsv 默认在该目录下，可用 VIDEOEYE_CORPUS_INDEX 单独指定）")
     wl = Path(args.whitelist) if args.whitelist else None
-    return check(Path(args.results), Path(args.index), args.root, wl)
+    exp = Path(args.expectations) if args.expectations else None
+    return check(Path(args.results), Path(args.index), args.root, wl, exp)
 
 
 if __name__ == "__main__":
