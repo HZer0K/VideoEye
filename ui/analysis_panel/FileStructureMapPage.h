@@ -87,6 +87,8 @@ public:
     int VisibleRowCount() const;
     QString DetailText() const;
     QString SearchQuery() const;
+    // 画布中央的空态文案：区分「未分析 / 失败 / 结构树为空」。
+    QString EmptyHintText() const;
     QString CoverageText() const;
     structure_map_detail::MapCoverage Coverage() const;
     structure_map_detail::PacketBandData Bands() const;
@@ -115,6 +117,9 @@ public:
     // 当前视图的 SVG 快照（「导出当前视图 SVG」用的同一份实现，供单测直接校验）。
     // 空结果 / 无可见矩形时返回空，不产"看起来像成功导出"的空图。
     QByteArray ExportSvgBytes() const;
+    // CSV / JSON 与菜单导出共用：空结果返回空字节，供单测钉住"不产假文件"的约定。
+    QByteArray ExportCsvBytes() const;
+    QByteArray ExportJsonBytes() const;
 
 signals:
     // 跨页联动：路径 + 偏移 + 大小是身份，不是行号。由 AnalysisPanel 上抛给
@@ -131,6 +136,9 @@ private:
     void RevealNodeRow(int index);
     void ScheduleRelayout();
     void RebuildDepthCombo();
+    void RebuildHitCombo();
+    // Ctrl+方向键：dx = 父/子（-1/1），dy = 同层前后（-1/1）。
+    void StepSelection(int dx, int dy);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -151,6 +159,7 @@ protected:
     QComboBox* layout_combo_ = nullptr;
     QComboBox* depth_combo_ = nullptr;
     QLineEdit* search_edit_ = nullptr;
+    QComboBox* hits_combo_ = nullptr;
     QLabel* hit_label_ = nullptr;
     QLabel* detail_label_ = nullptr;
     StructureMapCanvas* canvas_ = nullptr;

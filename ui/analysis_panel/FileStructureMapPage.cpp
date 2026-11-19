@@ -61,10 +61,13 @@ QString HtmlEscape(const QString& text) {
 class StructureMapCanvas : public QWidget {
 public:
     explicit StructureMapCanvas(QWidget* parent) : QWidget(parent) {
+        setObjectName(QStringLiteral("StructureMapCanvas"));
         setAutoFillBackground(false);
         setMouseTracking(true);
         setFocusPolicy(Qt::StrongFocus);
         setMinimumHeight(340);
+        setAccessibleName(tr("文件结构图谱画布"));
+        setToolTip(tr("Ctrl+方向键：父/子节点与同层节点；Esc 取消选中；+/− 缩放；方向键平移"));
     }
 
     void SetData(const std::vector<smd::MapNode>& nodes, const std::vector<model::ContainerStreamInfo>& streams,
@@ -88,8 +91,32 @@ public:
         SetRows(rows, total_layers);
         if (selected_ >= static_cast<int>(nodes_.size()))
             selected_ = -1;
+        UpdateAccessibleDescription();
         InvalidateVisuals();
         update();
+    }
+
+    QString ViewLabel() const {
+        switch (view_kind_) {
+        case smd::MapViewKind::Treemap:
+            return tr("树图");
+        case smd::MapViewKind::PacketBands:
+            return tr("包带");
+        case smd::MapViewKind::FormatOverview:
+            return tr("格式总览");
+        case smd::MapViewKind::Icicle:
+            break;
+        }
+        return tr("层级带");
+    }
+
+    void UpdateAccessibleDescription() {
+        QString text = tr("%1，共 %2 个节点").arg(ViewLabel()).arg(nodes_.size());
+        if (truncated_)
+            text += tr("，已按绘制预算裁剪");
+        if (selected_ >= 0 && selected_ < static_cast<int>(nodes_.size()))
+            text += tr("，已选中 %1").arg(nodes_[static_cast<size_t>(selected_)].name);
+        setAccessibleDescription(text);
     }
 
     void SetRows(int rows, int total_layers) {
@@ -119,6 +146,7 @@ public:
         hits_.clear();
         view_ = smd::MapViewport{};
         first_row_ = 0;
+        UpdateAccessibleDescription();
         InvalidateVisuals();
         update();
     }
@@ -187,6 +215,7 @@ public:
     }
     void SetSelection(int index) {
         selected_ = index;
+        UpdateAccessibleDescription();
         update();
     }
     // 只切换「是否绘制」，不重建节点 / 包带；开关联动时用。
@@ -202,6 +231,15 @@ public:
             hovered_ = -1;
         }
         update();
+    }
+    void SetEmptyHint(const QString& hint) {
+        if (empty_hint_ == hint)
+            return;
+        empty_hint_ = hint;
+        update();
+    }
+    QString EmptyHint() const {
+        return empty_hint_;
     }
     void SetHits(const QVector<int>& hits) {
         hits_ = hits;
@@ -329,6 +367,7 @@ public:
     }
 
     std::function<void(int)> on_select;          // node index（或 -1 取消选中）
+    std::function<void(int, int)> on_step;       // Ctrl+方向键：dx = 父/子，dy = 同层前后
     std::function<void(int, int)> on_bin_select; // track / bin
     std::function<void(int)> on_fact_select;     // 格式概览里的事实卡片
     std::function<void(int, int)> on_stream_bin; // 流字节分布的行 / 桶
@@ -358,11 +397,9 @@ protected:
         }
         if (view_kind_ != smd::MapViewKind::PacketBands && view_kind_ != smd::MapViewKind::FormatOverview &&
             nodes_.empty()) {
-            // 已识别格式却画不出节点 ≠ 还没打开文件：前者是解析成功但树为空，
-            // 不能再提示"打开媒体文件后将自动生成"。
-            DrawCenteredHint(painter, profile_.family == smd::MapFormatFamily::Unknown
-                                          ? tr("打开媒体文件后将自动生成结构图谱")
-                                          : tr("结构树为空：该格式没有产出可展示的结构节点"));
+            // 空态由页面按状态给出：未分析 / 失败 / 解析成功但树为空，三种不能共用一句话。
+            DrawCenteredHint(painter,
+                             empty_hint_.isEmpty() ? tr("打开媒体文件并启用分析后将生成结构图谱") : empty_hint_);
             return;
         }
 
@@ -460,6 +497,8 @@ protected:
             QWidget::mousePressEvent(event);
             return;
         }
+        // 点一下画布就把键盘焦点交过来，Ctrl+方向键 / 缩放不用先手动 Tab。
+        setFocus(Qt::MouseFocusReason);
         pressed_ = true;
         dragging_ = false;
         press_pos_ = event->position().toPoint();
@@ -560,6 +599,17 @@ protected:
         if (!enabled_) {
             QWidget::keyPressEvent(event);
             return;
+        }
+        // Ctrl+方向键在节点间移动：普通方向键保留平移，避免和既有操作冲突。
+        if ((event->modifiers() & Qt::ControlModifier) &&
+            (view_kind_ == smd::MapViewKind::Icicle || view_kind_ == smd::MapViewKind::Treemap)) {
+            const int dx = event->key() == Qt::Key_Left ? -1 : (event->key() == Qt::Key_Right ? 1 : 0);
+            const int dy = event->key() == Qt::Key_Up ? -1 : (event->key() == Qt::Key_Down ? 1 : 0);
+            if ((dx != 0 || dy != 0) && on_step) {
+                on_step(dx, dy);
+                event->accept();
+                return;
+            }
         }
         // 缩放 / 平移只对层级带成立；树图与包带没有字节视窗，别按键有效果、画面没变化。
         if (view_kind_ != smd::MapViewKind::Icicle && event->key() != Qt::Key_Escape) {
@@ -682,7 +732,8 @@ private:
 
     void DrawCenteredHint(QPainter& painter, const QString& text) {
         painter.setPen(QColor(theme::color::kTextSecondary));
-        painter.drawText(rect(), Qt::AlignCenter, text);
+        // 失败原因可能很长，允许换行，避免被画布左右边缘裁掉。
+        painter.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap, text);
     }
 
     void DrawInfoBar(QPainter& painter, const smd::MapGeometry& geom) {
@@ -871,6 +922,7 @@ private:
     smd::FormatProfile profile_;
     QString format_name_;
     QString summary_;
+    QString empty_hint_;
     bool truncated_ = false;
     bool enabled_ = true;
     quint64 file_span_ = 0;
@@ -1023,6 +1075,28 @@ void FileStructureMapPage::SetupUi() {
     hit_label_->setMinimumWidth(90);
     tools->addWidget(hit_label_);
 
+    // 同名节点（stsd / 多个 moof / 大量重复表项）只靠"上一个 / 下一个"很难定位，
+    // 命中列表把路径和字节区间直接摊开，供用户按名字挑。
+    hits_combo_ = new QComboBox(toolbar);
+    hits_combo_->setObjectName(QStringLiteral("StructureMapHitList"));
+    hits_combo_->setMinimumWidth(160);
+    hits_combo_->setMaximumWidth(320);
+    // 路径可能很长：按"最短字符数"定宽，避免下拉框把工具条撑爆；弹层里仍显示完整路径。
+    hits_combo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    hits_combo_->setMinimumContentsLength(18);
+    hits_combo_->setMaxVisibleItems(20);
+    hits_combo_->setEnabled(false);
+    hits_combo_->setAccessibleName(tr("结构图谱搜索命中列表"));
+    connect(hits_combo_, &QComboBox::activated, this, [this](int row) {
+        if (row < 0 || row >= hits_.size())
+            return;
+        hit_cursor_ = row;
+        SelectNode(hits_[row]);
+        FocusNode(hits_[row]);
+        UpdateHitLabel();
+    });
+    tools->addWidget(hits_combo_);
+
     auto add_tool = [&](const QString& text, const QString& tip, const std::function<void()>& action) {
         QToolButton* button = new QToolButton(toolbar);
         button->setText(text);
@@ -1070,6 +1144,7 @@ void FileStructureMapPage::SetupUi() {
     canvas_->setObjectName(QStringLiteral("StructureMapCanvas"));
     content_layout->addWidget(canvas_, 1);
     canvas_->on_select = [this](int index) { SelectNode(index); };
+    canvas_->on_step = [this](int dx, int dy) { StepSelection(dx, dy); };
     canvas_->on_bin_select = [this](int track, int bin) {
         selected_bin_track_ = track;
         selected_bin_index_ = bin;
@@ -1248,6 +1323,10 @@ QString FileStructureMapPage::DetailText() const {
     return detail_label_->text();
 }
 
+QString FileStructureMapPage::EmptyHintText() const {
+    return canvas_ ? canvas_->EmptyHint() : QString();
+}
+
 QString FileStructureMapPage::SearchQuery() const {
     return search_edit_->text();
 }
@@ -1277,7 +1356,6 @@ void FileStructureMapPage::RebuildNodes() {
     hit_cursor_ = -1;
     RebuildDepthCombo();
     UpdateHitLabel();
-    UpdateCoverageUi();
 
     // 包带桶数跟画布宽度走：窄窗口少画几个桶，但每桶仍覆盖同样长的时间窗。
     // 包带只由 result_ 与桶数决定，跟层级 / 布局无关：窗口缩放时不必重扫全部样本。
@@ -1416,23 +1494,30 @@ void FileStructureMapPage::Refresh() {
     if (!result_.valid) {
         if (!has_attempt_) {
             // 「还没分析」不是失败：默认关闭的 feature、刚换文件都会走到这里。
-            status_label_->setText(tr("打开媒体文件并启用分析后将生成结构图谱"));
+            const QString hint = tr("打开媒体文件并启用分析后将生成结构图谱");
+            status_label_->setText(hint);
+            canvas_->SetEmptyHint(hint);
         } else {
-            status_label_->setText(tr("结构分析失败：%1")
-                                       .arg(result_.error_message.empty()
-                                                ? tr("无法分析该格式")
-                                                : QString::fromStdString(result_.error_message)));
+            const QString reason =
+                result_.error_message.empty() ? tr("无法分析该格式") : QString::fromStdString(result_.error_message);
+            const QString hint = tr("结构分析失败：%1").arg(reason);
+            status_label_->setText(hint);
+            // 画布中央与状态栏用同一句原因，避免画布还停在"打开媒体文件"的假空态。
+            canvas_->SetEmptyHint(hint);
         }
         UpdateDetail();
         UpdateCoverageUi();
         return;
     }
     if (nodes_.empty()) {
-        status_label_->setText(tr("结构树为空：本次解析没有产出可绘制的节点"));
+        const QString hint = tr("结构树为空：本次解析没有产出可绘制的节点");
+        status_label_->setText(hint);
+        canvas_->SetEmptyHint(hint);
         UpdateDetail();
         UpdateCoverageUi();
         return;
     }
+    canvas_->SetEmptyHint(QString());
     QString status = tr("%1 · %2 个顶层元素 · %3 条流 · 图上 %4 个节点")
                          .arg(QString::fromStdString(result_.format_name))
                          .arg(result_.element_tree.size())
@@ -1555,13 +1640,49 @@ void FileStructureMapPage::UpdateHitLabel() {
     const QString query = search_edit_ ? search_edit_->text().trimmed() : QString();
     if (query.isEmpty()) {
         hit_label_->setText(tr("输入关键字搜索节点"));
-        return;
-    }
-    if (hits_.isEmpty()) {
+    } else if (hits_.isEmpty()) {
         hit_label_->setText(tr("0 个命中"));
+    } else {
+        hit_label_->setText(tr("%1 个命中 · 第 %2 个").arg(hits_.size()).arg(hit_cursor_ < 0 ? 1 : hit_cursor_ + 1));
+    }
+    RebuildHitCombo();
+}
+
+void FileStructureMapPage::RebuildHitCombo() {
+    if (!hits_combo_)
+        return;
+    QSignalBlocker blocker(hits_combo_);
+    hits_combo_->clear();
+    const QString query = search_edit_ ? search_edit_->text().trimmed() : QString();
+    const bool has_hits = !query.isEmpty() && !hits_.isEmpty();
+    hits_combo_->setEnabled(has_hits);
+    if (!has_hits) {
+        hits_combo_->setCurrentIndex(-1);
+        hits_combo_->setToolTip(QString());
         return;
     }
-    hit_label_->setText(tr("%1 个命中 · 第 %2 个").arg(hits_.size()).arg(hit_cursor_ < 0 ? 1 : hit_cursor_ + 1));
+
+    constexpr int kMaxComboHits = 200;
+    const int shown = std::min<int>(hits_.size(), kMaxComboHits);
+    for (int i = 0; i < shown; ++i) {
+        const int node_index = hits_[i];
+        if (node_index < 0 || node_index >= static_cast<int>(nodes_.size()))
+            continue;
+        QStringList path;
+        for (int cursor = node_index, guard = 0; cursor >= 0 && cursor < static_cast<int>(nodes_.size()) && guard < 32;
+             ++guard) {
+            const smd::MapNode& hop = nodes_[static_cast<size_t>(cursor)];
+            path.prepend(hop.name);
+            cursor = hop.parent;
+        }
+        const smd::MapNode& node = nodes_[static_cast<size_t>(node_index)];
+        QString text = path.join(QStringLiteral("/"));
+        if (node.size > 0)
+            text += QStringLiteral(" · %1–%2 B").arg(node.offset).arg(node.offset + node.size);
+        hits_combo_->addItem(text, node_index);
+    }
+    hits_combo_->setCurrentIndex(hit_cursor_ >= 0 && hit_cursor_ < hits_combo_->count() ? hit_cursor_ : -1);
+    hits_combo_->setToolTip(tr("共 %1 个命中，列表最多显示前 %2 个").arg(hits_.size()).arg(kMaxComboHits));
 }
 
 void FileStructureMapPage::SetSearchQuery(const QString& query) {
@@ -1596,6 +1717,53 @@ void FileStructureMapPage::SelectNode(int index) {
     // 搜索命中 / 跨页定位可能落在当前纵向窗口之外，选中后顺带把该层滚进视野。
     RevealNodeRow(index);
     UpdateDetail();
+}
+
+void FileStructureMapPage::StepSelection(int dx, int dy) {
+    if (nodes_.empty())
+        return;
+    if (selected_ < 0 || selected_ >= static_cast<int>(nodes_.size())) {
+        // 没有选中时先落到第一个顶层节点，保证键盘能进入图谱内部。
+        for (int i = 0; i < static_cast<int>(nodes_.size()); ++i) {
+            if (nodes_[static_cast<size_t>(i)].parent < 0) {
+                SelectNode(i);
+                FocusNode(i);
+                return;
+            }
+        }
+        return;
+    }
+
+    const int current = selected_;
+    int target = -1;
+    if (dx < 0) {
+        target = nodes_[static_cast<size_t>(current)].parent;
+    } else if (dx > 0) {
+        for (int i = 0; i < static_cast<int>(nodes_.size()); ++i) {
+            if (nodes_[static_cast<size_t>(i)].parent == current) {
+                target = i;
+                break;
+            }
+        }
+    } else if (dy != 0) {
+        const int parent = nodes_[static_cast<size_t>(current)].parent;
+        QVector<int> siblings;
+        for (int i = 0; i < static_cast<int>(nodes_.size()); ++i) {
+            if (nodes_[static_cast<size_t>(i)].parent == parent)
+                siblings.append(i);
+        }
+        const int pos = siblings.indexOf(current);
+        const int next = pos + (dy < 0 ? -1 : 1);
+        if (pos >= 0 && next >= 0 && next < siblings.size())
+            target = siblings[next];
+    }
+
+    if (target < 0 || target == current)
+        return;
+    SelectNode(target);
+    // 父/子跳转可能跨出横向视窗；同层跳转只保证纵向可见，避免每按一次都改变缩放。
+    if (dx != 0)
+        FocusNode(target);
 }
 
 void FileStructureMapPage::SelectStreamBin(int row, int bin) {
@@ -1676,6 +1844,12 @@ void FileStructureMapPage::SetViewKind(smd::MapViewKind kind) {
     selected_fact_ = -1;
     selected_stream_row_ = -1;
     selected_stream_bin_ = -1;
+    // 包带 / 格式总览没有节点矩形：留着 selected_ 会让详情区展示一个画面上找不到锚点的节点。
+    if (kind == smd::MapViewKind::PacketBands || kind == smd::MapViewKind::FormatOverview) {
+        selected_ = -1;
+        if (canvas_)
+            canvas_->SetSelection(-1);
+    }
     // 「均衡 / 字节占比」「层级」「搜索」只对层级带视图有意义；其它两个视图置灰，
     // 免得用户调了半天发现图没变（这是自绘多视图最常见的假交互）。
     const bool icicle = kind == smd::MapViewKind::Icicle;
@@ -1722,7 +1896,7 @@ void FileStructureMapPage::RequestJumpToTree() {
 }
 
 void FileStructureMapPage::OnExportCsv() {
-    const QByteArray csv = smd::BuildStructureCsv(result_);
+    const QByteArray csv = ExportCsvBytes();
     if (csv.isEmpty()) {
         QMessageBox::information(this, tr("导出"),
                                  tr("尚无有效的结构节点，未导出文件。\n请先打开媒体文件，或等待容器结构分析完成。"));
@@ -1735,7 +1909,7 @@ void FileStructureMapPage::OnExportCsv() {
 }
 
 void FileStructureMapPage::OnExportJson() {
-    const QByteArray json = smd::BuildStructureJson(result_, coverage_);
+    const QByteArray json = ExportJsonBytes();
     if (json.isEmpty()) {
         QMessageBox::information(this, tr("导出"),
                                  tr("尚无有效的结构节点，未导出文件。\n空 JSON 分不清「没问题」和「没分析」。"));
@@ -1753,6 +1927,18 @@ void FileStructureMapPage::OnExportJson() {
     file.write(json);
     file.close();
     QMessageBox::information(this, tr("成功"), tr("已导出结构数据与完整性标记到:\n%1").arg(path));
+}
+
+QByteArray FileStructureMapPage::ExportCsvBytes() const {
+    if (!result_.valid)
+        return {};
+    return smd::BuildStructureCsv(result_);
+}
+
+QByteArray FileStructureMapPage::ExportJsonBytes() const {
+    if (!result_.valid)
+        return {};
+    return smd::BuildStructureJson(result_, coverage_);
 }
 
 QByteArray FileStructureMapPage::ExportSvgBytes() const {

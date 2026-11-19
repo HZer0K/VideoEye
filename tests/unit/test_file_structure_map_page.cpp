@@ -234,6 +234,7 @@ TEST(FileStructureMapPageTest, ClearFailureAndToggleNeverPretendSuccess) {
     EXPECT_FALSE(page.HasData());
     EXPECT_EQ(page.NodeCount(), 0);
     EXPECT_TRUE(page.StatusText().contains(QStringLiteral("boom"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.EmptyHintText().contains(QStringLiteral("失败"))) << page.EmptyHintText().toStdString();
 
     ContainerStructureResult invalid;
     invalid.valid = false;
@@ -241,11 +242,22 @@ TEST(FileStructureMapPageTest, ClearFailureAndToggleNeverPretendSuccess) {
     page.SetResult(invalid);
     EXPECT_FALSE(page.HasData());
     EXPECT_TRUE(page.StatusText().contains(QStringLiteral("bad box"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.EmptyHintText().contains(QStringLiteral("bad box"))) << page.EmptyHintText().toStdString();
+
+    // 解析成功但没有节点：这是"树为空"，不是"还没打开文件"。
+    ContainerStructureResult empty_but_valid;
+    empty_but_valid.valid = true;
+    empty_but_valid.format_name = "WAV";
+    page.SetResult(empty_but_valid);
+    EXPECT_FALSE(page.HasData());
+    EXPECT_TRUE(page.StatusText().contains(QStringLiteral("结构树为空"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.EmptyHintText().contains(QStringLiteral("结构树为空"))) << page.EmptyHintText().toStdString();
 
     page.Clear();
     EXPECT_FALSE(page.HasData());
     EXPECT_EQ(page.NodeCount(), 0);
     EXPECT_TRUE(page.StatusText().contains(QStringLiteral("打开媒体文件"))) << page.StatusText().toStdString();
+    EXPECT_TRUE(page.EmptyHintText().contains(QStringLiteral("打开媒体文件"))) << page.EmptyHintText().toStdString();
 }
 
 TEST(StructureMapModelTest, CsvCoversEveryNodeAndQuotesCommas) {
@@ -2152,4 +2164,142 @@ TEST(FileStructureMapPageTest, ByteViewportToolsDisableOutsideIcicle) {
     EXPECT_TRUE(zoom_in->isEnabled());
     EXPECT_TRUE(zoom_out->isEnabled());
     EXPECT_TRUE(focus->isEnabled());
+}
+
+TEST(FileStructureMapPageTest, NodeSelectionIsClearedWhenLeavingNodeViews) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+
+    page.SelectNode(1);
+    ASSERT_EQ(page.SelectedNode(), 1);
+    // 树图与层级带共用节点身份，切过去应保留选中。
+    page.SetViewKind(detail::MapViewKind::Treemap);
+    EXPECT_EQ(page.SelectedNode(), 1);
+
+    page.SetViewKind(detail::MapViewKind::Icicle);
+    page.SelectNode(1);
+    ASSERT_EQ(page.SelectedNode(), 1);
+    // 包带 / 格式总览没有节点矩形：详情区不能再展示一个画面上找不到锚点的选中。
+    page.SetViewKind(detail::MapViewKind::PacketBands);
+    EXPECT_EQ(page.SelectedNode(), -1);
+
+    page.SetViewKind(detail::MapViewKind::Icicle);
+    page.SelectNode(1);
+    ASSERT_EQ(page.SelectedNode(), 1);
+    page.SetViewKind(detail::MapViewKind::FormatOverview);
+    EXPECT_EQ(page.SelectedNode(), -1);
+}
+
+TEST(FileStructureMapPageTest, SearchHitsExposeSelectablePathList) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+
+    auto* combo = page.findChild<QComboBox*>(QStringLiteral("StructureMapHitList"));
+    ASSERT_NE(combo, nullptr);
+    EXPECT_FALSE(combo->isEnabled());
+
+    // 类型名 "Box" 会命中多个节点：列表要能一次列出全部命中，而不是只给"下一个"。
+    page.SetSearchQuery(QStringLiteral("Box"));
+    EXPECT_GT(page.HitCount(), 1);
+    EXPECT_TRUE(combo->isEnabled());
+    EXPECT_EQ(combo->count(), qMin(page.HitCount(), 200));
+
+    // 激活列表项等同于点“下一个命中”：选中并定位到该节点。
+    page.SetSearchQuery(QStringLiteral("mdat"));
+    ASSERT_EQ(page.HitCount(), 1);
+    ASSERT_EQ(combo->count(), 1);
+    EXPECT_TRUE(combo->itemText(0).contains(QStringLiteral("mdat"))) << combo->itemText(0).toStdString();
+    EXPECT_TRUE(QMetaObject::invokeMethod(combo, "activated", Qt::DirectConnection, Q_ARG(int, 0)));
+    EXPECT_GE(page.SelectedNode(), 0);
+    EXPECT_TRUE(page.DetailText().contains(QStringLiteral("mdat"))) << page.DetailText().toStdString();
+
+    page.SetSearchQuery(QStringLiteral("不存在的节点名"));
+    EXPECT_EQ(page.HitCount(), 0);
+    EXPECT_FALSE(combo->isEnabled());
+    EXPECT_EQ(combo->count(), 0);
+}
+
+TEST(FileStructureMapPageTest, CtrlArrowKeysWalkNodeHierarchy) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+    page.SetResult(MakeMapResult());
+
+    auto* canvas = page.findChild<QWidget*>(QStringLiteral("StructureMapCanvas"));
+    ASSERT_NE(canvas, nullptr);
+    const auto press = [canvas](int key) {
+        QKeyEvent event(QEvent::KeyPress, key, Qt::ControlModifier);
+        QApplication::sendEvent(canvas, &event);
+    };
+
+    // 节点顺序：0 ftyp, 1 moov, 2 trak, 3 stbl, 4 mvhd, 5 mdat, 6 moof。
+    page.SelectNode(4); // mvhd：moov 的第二个子节点
+    press(Qt::Key_Up);
+    EXPECT_EQ(page.SelectedNode(), 2) << "Ctrl+↑ 应切到同层上一个（trak）";
+    press(Qt::Key_Down);
+    EXPECT_EQ(page.SelectedNode(), 4);
+    press(Qt::Key_Left);
+    EXPECT_EQ(page.SelectedNode(), 1) << "Ctrl+← 应切到父节点（moov）";
+    press(Qt::Key_Right);
+    EXPECT_EQ(page.SelectedNode(), 2) << "Ctrl+→ 应切到第一个子节点（trak）";
+
+    // 树图与层级带共用节点身份，键盘遍历同样可用。
+    page.SetViewKind(detail::MapViewKind::Treemap);
+    page.SelectNode(5);
+    press(Qt::Key_Down);
+    EXPECT_EQ(page.SelectedNode(), 6);
+    press(Qt::Key_Down);
+    EXPECT_EQ(page.SelectedNode(), 6) << "顶层末尾不应回绕";
+
+    // 画布的无障碍描述应跟随视图与选中节点。
+    EXPECT_TRUE(canvas->accessibleDescription().contains(QStringLiteral("树图")))
+        << canvas->accessibleDescription().toStdString();
+    EXPECT_TRUE(canvas->accessibleDescription().contains(QStringLiteral("moof")))
+        << canvas->accessibleDescription().toStdString();
+
+    // 点击画布应把键盘焦点交给画布，否则快捷键要先手动 Tab 才能用。
+    QMouseEvent click(QEvent::MouseButtonPress, QPointF(10, 10), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(canvas, &click);
+    EXPECT_EQ(page.focusWidget(), canvas) << "点击画布后焦点应落在画布上";
+}
+
+TEST(FileStructureMapPageTest, ExportBytesShareMenuPathAndNeverFabricate) {
+    EnsureApp();
+    FileStructureMapPage page(true);
+
+    // 未分析 / 失败：三种导出都不产"看起来成功"的空文件。
+    EXPECT_TRUE(page.ExportCsvBytes().isEmpty());
+    EXPECT_TRUE(page.ExportJsonBytes().isEmpty());
+    EXPECT_TRUE(page.ExportSvgBytes().isEmpty());
+
+    page.SetResult(MakeMapResult());
+    const QByteArray csv = page.ExportCsvBytes();
+    ASSERT_FALSE(csv.isEmpty());
+    EXPECT_TRUE(csv.startsWith("name,type,offset,size,depth,value\n"));
+    EXPECT_EQ(csv.count('\n'), 8) << "表头 + 7 个节点，少一层递归就会少行";
+    const int mdat = csv.indexOf("\"mdat\",\"Box\",4128,800000,0,");
+    EXPECT_GT(mdat, 0);
+    EXPECT_LT(csv.indexOf("\"moof\","), csv.size());
+
+    const QByteArray json = page.ExportJsonBytes();
+    QJsonParseError error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &error);
+    ASSERT_EQ(error.error, QJsonParseError::NoError) << error.errorString().toStdString();
+    ASSERT_TRUE(doc.isObject());
+    const QJsonObject root = doc.object();
+    EXPECT_EQ(root.value(QStringLiteral("schema")).toString(), QStringLiteral("videoeye.structure-map/1"));
+    EXPECT_EQ(root.value(QStringLiteral("element_count")).toInt(), 7);
+    EXPECT_EQ(root.value(QStringLiteral("elements")).toArray().size(), 7);
+    EXPECT_EQ(root.value(QStringLiteral("streams")).toArray().size(), 2);
+    EXPECT_EQ(root.value(QStringLiteral("source")).toObject().value(QStringLiteral("format")).toString(),
+              QStringLiteral("MP4"));
+    EXPECT_FALSE(root.value(QStringLiteral("coverage")).toObject().value(QStringLiteral("truncated")).toBool());
+    EXPECT_TRUE(root.contains(QStringLiteral("sample_table"))) << "样本表截断口径必须随导出可见";
+
+    // 失败后再次导出必须回到空，而不是把上一份结果继续卖一次。
+    page.SetError(QStringLiteral("boom"));
+    EXPECT_TRUE(page.ExportCsvBytes().isEmpty());
+    EXPECT_TRUE(page.ExportJsonBytes().isEmpty());
+    EXPECT_TRUE(page.ExportSvgBytes().isEmpty());
 }
