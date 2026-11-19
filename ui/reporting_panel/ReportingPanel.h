@@ -20,6 +20,7 @@
 //     （见 ui/reporting_panel/analysis_task.h 的 RecycleTask 与 ReportingTaskCoordinator。）
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,6 +89,10 @@ private slots:
     void OnStartBatch();
     void OnCancelBatch();
     void OnExportBatchSummary();
+    void OnCompareWithFile();
+    // 以当前单文件结果为左侧、right_path 为右侧启动对比（右侧在后台重新分析）。
+    // 页头"双文件对比…"和批量行的"与当前文件对比"共用这一条路径。
+    void StartComparisonWith(const std::string& right_path);
 
 private:
     // 后台任务的明确所有权载体（线程 / 取消令牌 / 生命周期守卫）定义在
@@ -103,6 +108,10 @@ private:
     // 模板切换后的处置：结果仍可复用时按其原始 AnalysisResult 重算规则并保持导出可用，
     // 否则标为过期。复用条件见 result_stamp.h 的 CanReuseAnalysis。
     void RefreshResultForProfile();
+
+    // 批量结果与当前模板不一致时，在批量汇总行追加提示（每次批量只提示一次）。
+    // 单文件结果有 ResultStamp 兜底，批量结果没有身份戳，这里用开跑时的模板 id/name 补齐。
+    void NotifyBatchProfileMismatch();
 
     // 把 last_result_ 标记为不可用（切换文件、模板不可复用、分析失败时调用）：
     // 清 verdict 与问题计数、禁用导出按钮。真正的 last_result_ 数据仍留在内存里，
@@ -122,8 +131,16 @@ private:
     void PostToUi(const std::shared_ptr<AnalysisTask>& task, const std::function<void()>& updater) const;
 
     void StartSingleAnalysis(const std::string& path);
-    void StartBatchScan(const std::string& directory);
+    // rerun_paths 非空时只分析这些文件（"仅重跑失败项"），不再重新发现目录。
+    void StartBatchScan(const std::string& directory, const std::vector<std::string>& rerun_paths = {});
+    void OnRerunFailedBatch();
+    // 取消当前正在跑的任务：单文件、批量、对比共用页头这一个按钮，
+    // 具体槽位由 active_slot_ 记录（三者互斥，busy_ 保证同时只有一条任务）。
+    void OnCancelActiveTask();
     void RunSingle(std::shared_ptr<AnalysisTask> task, const std::string& path);
+    // 双文件对比：左 = 当前新鲜结果（主线程冻结后传入），右 = 现场分析。
+    void RunComparison(std::shared_ptr<AnalysisTask> task, qc::QcRunResult left, const qc::QcProfile& profile,
+                       const std::string& right_path);
 
     // 批量请求的所有参数。必须在主线程里采集完再交给 worker ——
     // Qt 的控件只能在创建它的线程上访问，worker 里碰 QSpinBox / QCheckBox 是未定义行为。
@@ -135,6 +152,12 @@ private:
         qc::QcProfile profile;
         int jobs = 4;
         bool recursive = true;
+        // 单文件超时；0 表示不限（见 BatchScanView::Settings）
+        int timeout_seconds = 0;
+        int idle_timeout_seconds = 120;
+        bool visual_qc = false;
+        // 非空 = 只分析这些路径（重跑失败项）；空 = 按目录重新发现。
+        std::vector<std::string> rerun_paths;
     };
 
     void RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request);
@@ -150,6 +173,8 @@ private:
     // 页头统一的「导出」入口：单文件报告与批量汇总都收进这一个菜单，
     // 不再由两个视图组件各挂一个导出按钮。
     QPushButton* export_button_ = nullptr;
+    QPushButton* compare_button_ = nullptr;   // 与另一文件做逐字段对比
+    QPushButton* cancel_button_ = nullptr;    // 取消当前单文件 / 批量 / 对比任务
     QAction* single_export_action_ = nullptr; // 菜单第一项，可用性跟着结果新鲜度
 
     // ---- 状态 ----
@@ -167,6 +192,14 @@ private:
     ResultStamp result_stamp_;
     // 导出控制器（本页拥有）：挂起票据与两条导出路径都搬进去了，本页只留按钮转发。
     ReportExportController* export_controller_ = nullptr;
+    // 最近一次批量扫描开跑时使用的模板身份：批量结果不像单文件那样有 ResultStamp，
+    // 模板切换后靠这两个字段判断"结果是否仍按当前模板计算"。
+    std::string batch_profile_id_;
+    std::string batch_profile_name_;
+    bool batch_stale_notified_ = false;
+    // 当前占用 busy_ 的槽位。单文件 / 批量 / 对比三者互斥（busy_ 拦住并发启动），
+    // 取消按钮据此把 RequestCancel 发给正确的槽位；空闲时为空。
+    std::optional<ReportingTaskCoordinator::Slot> active_slot_;
     bool busy_ = false;
 };
 

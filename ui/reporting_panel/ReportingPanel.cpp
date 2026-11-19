@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 
 #include "core/domain/task/ThreadBody.h"
+#include "core/qc/QcComparator.h"
 #include "core/qc/QcProfileMapper.h"
 #include "core/qc/QcRuleEngine.h"
 #include "core/reporting/QcReportExporter.h"
@@ -19,6 +20,7 @@
 
 #include "ui/analysis_panel/AnalysisPageSupport.h"
 #include "ui/reporting_panel/BatchScanView.h"
+#include "ui/reporting_panel/QcCompareDialog.h"
 #include "ui/reporting_panel/QcProfileView.h"
 #include "ui/reporting_panel/SingleReportView.h"
 #include "ui/reporting_panel/batch_result_model.h"
@@ -30,6 +32,9 @@ namespace ui {
 ReportingPanel::ReportingPanel(QWidget* parent) : QWidget(parent) {
     profile_ = qc::BuiltinQcProfiles().front(); // 通用
     BuildUi();
+    // 批量页参数（目录/并发/超时/输出目录）跨会话保留。放在 BuildUi 之后、
+    // 控件已就绪时恢复；单测直接 new BatchScanView 不会触发这里，默认值仍然干净。
+    batch_view_->LoadPersistedSettings();
     // 控制器要读批量目录等控件状态，必须在 BuildUi 之后建。
     SetupExportController();
     SetupTaskCoordinator();
@@ -82,6 +87,8 @@ ReportingPanel::~ReportingPanel() {
     // （P0：原先对仍 joinable 的 std::thread 直接 detach，且第二次启动会对其赋值导致 terminate。）
     //
     // 预算这件事是评审 P1-3 的要求：关界面不能再无限等下去。
+    if (batch_view_)
+        batch_view_->SavePersistedSettings();
     if (task_runner_)
         task_runner_->RetireAll();
 }
@@ -106,6 +113,17 @@ void ReportingPanel::BuildUi() {
         title->setObjectName(QStringLiteral("PageTitle"));
         rl->addWidget(title);
         rl->addStretch();
+        cancel_button_ = new QPushButton(tr("取消任务"), row);
+        cancel_button_->setToolTip(tr("停止当前正在运行的单文件分析、批量扫描或双文件对比"));
+        cancel_button_->setEnabled(false);
+        connect(cancel_button_, &QPushButton::clicked, this, &ReportingPanel::OnCancelActiveTask);
+        rl->addWidget(cancel_button_);
+        compare_button_ = new QPushButton(tr("双文件对比…"), row);
+        compare_button_->setToolTip(
+            tr("用当前分析结果与另一个文件逐字段对比（容器 / 视频 / 码率与 GOP / 音频 / 色彩）"));
+        compare_button_->setEnabled(false);
+        connect(compare_button_, &QPushButton::clicked, this, &ReportingPanel::OnCompareWithFile);
+        rl->addWidget(compare_button_);
         export_button_ =
             MakeExportMenuButton(row, {{tr("单文件分析报告（按上方所选格式）…"), [this]() { OnExportSingleReport(); },
                                         tr("把当前文件的 QC 报告按所选 JSON / CSV / HTML / TXT / PDF 格式导出")},
@@ -141,6 +159,9 @@ void ReportingPanel::BuildUi() {
     connect(single_view_, &SingleReportView::AnalyzeRequested, this, &ReportingPanel::OnAnalyzeCurrentFile);
     connect(batch_view_, &BatchScanView::StartRequested, this, &ReportingPanel::OnStartBatch);
     connect(batch_view_, &BatchScanView::CancelRequested, this, &ReportingPanel::OnCancelBatch);
+    connect(batch_view_, &BatchScanView::RerunFailedRequested, this, &ReportingPanel::OnRerunFailedBatch);
+    connect(batch_view_, &BatchScanView::CompareWithCurrentRequested, this,
+            [this](const QString& path) { StartComparisonWith(path.toStdString()); });
 
     // 初始没有结果：单文件报告那一项必须是禁用的（菜单项默认 enabled）。
     UpdateExportEnabled();
@@ -171,8 +192,10 @@ void ReportingPanel::OnProfileSelected(const QString& profile_id) {
         const bool changed = (profile_.id != builtin->id);
         profile_ = *builtin;
         profile_view_->SetDescription(QString::fromStdString(profile_.description));
-        if (changed)
+        if (changed) {
             RefreshResultForProfile();
+            NotifyBatchProfileMismatch();
+        }
     }
 }
 
@@ -203,6 +226,7 @@ void ReportingPanel::OnLoadProfileFile() {
     // 自定义模板同样只决定"重算规则"：满足复用条件（同文件版本 + 选项覆盖 + 完整成功）
     // 时按它重算，否则标为过期。
     RefreshResultForProfile();
+    NotifyBatchProfileMismatch();
     emit StatusMessage(tr("已加载模板 %1").arg(path));
 }
 
@@ -256,6 +280,43 @@ void ReportingPanel::OnCancelBatch() {
     batch_view_->SetSummaryText(tr("正在停止…（已经完成的文件保留结果）"));
 }
 
+void ReportingPanel::OnRerunFailedBatch() {
+    if (busy_)
+        return;
+    // 口径与 BatchScanView::HasFailedResults 保持一致：失败 / 超时 / 导出失败 / 被取消。
+    std::vector<std::string> paths;
+    for (const auto& item : batch_view_->Results()) {
+        switch (item.status) {
+        case qc::BatchItemStatus::Failed:
+        case qc::BatchItemStatus::TimedOut:
+        case qc::BatchItemStatus::ExportFailed:
+        case qc::BatchItemStatus::Cancelled:
+            paths.push_back(item.path);
+            break;
+        default:
+            break;
+        }
+    }
+    if (paths.empty()) {
+        AppendSummary(tr("没有可重跑的失败项"));
+        return;
+    }
+    emit StatusMessage(tr("只重跑 %1 个失败项").arg(paths.size()));
+    StartBatchScan(batch_view_->DirectoryText().toStdString(), paths);
+}
+
+void ReportingPanel::OnCancelActiveTask() {
+    if (!task_runner_ || !active_slot_)
+        return;
+    // 三类任务共用页头按钮：按当前占用的槽位发给对应的取消令牌。
+    // 终态仍由任务体自己归还（见 ReportingTaskCoordinator::RequestCancel 注释），
+    // 这里只负责请求，不抢着 Finish/回收。
+    task_runner_->RequestCancel(*active_slot_);
+    if (cancel_button_)
+        cancel_button_->setEnabled(false);
+    emit StatusMessage(tr("已请求取消当前任务，等待收尾…"));
+}
+
 void ReportingPanel::OnExportBatchSummary() {
     if (export_controller_)
         export_controller_->ExportBatchSummary();
@@ -273,6 +334,7 @@ void ReportingPanel::PostToUi(const std::shared_ptr<AnalysisTask>& task, const s
 }
 
 void ReportingPanel::StartSingleAnalysis(const std::string& path) {
+    active_slot_ = ReportingTaskCoordinator::Slot::Single;
     SetBusy(true);
     single_view_->ShowAnalyzing();
 
@@ -359,7 +421,81 @@ void ReportingPanel::RunSingle(std::shared_ptr<AnalysisTask> task, const std::st
     });
 }
 
-void ReportingPanel::StartBatchScan(const std::string& directory) {
+void ReportingPanel::OnCompareWithFile() {
+    const QString initial_dir = QString::fromStdString(current_path_);
+    const QString right = QFileDialog::getOpenFileName(this, tr("选择要对比的文件"), initial_dir, tr("媒体文件 (*.*)"));
+    if (right.isEmpty())
+        return;
+    StartComparisonWith(right.toStdString());
+}
+
+void ReportingPanel::StartComparisonWith(const std::string& right_path) {
+    if (busy_) {
+        QMessageBox::information(this, tr("任务进行中"), tr("有任务正在运行，请先等待或停止。"));
+        return;
+    }
+    if (!HasFreshResult()) {
+        QMessageBox::information(this, tr("暂无可用结果"), tr("请先分析主界面当前打开的文件，再与所选文件对比。"));
+        return;
+    }
+
+    active_slot_ = ReportingTaskCoordinator::Slot::Compare;
+    SetBusy(true);
+    // 左侧结果与模板在主线程冻结；worker 不读取面板状态。
+    const qc::QcRunResult left = last_result_;
+    const qc::QcProfile profile = profile_;
+    const std::shared_ptr<AnalysisTask> task =
+        task_runner_->Start(ReportingTaskCoordinator::Slot::Compare,
+                            [this, left, profile, right_path](const std::shared_ptr<AnalysisTask>& t) {
+                                RunComparison(t, left, profile, right_path);
+                            });
+    if (!task) {
+        SetBusy(false);
+        QMessageBox::warning(this, tr("无法对比"), tr("任务并发已满，请稍后再试。"));
+    }
+}
+
+void ReportingPanel::RunComparison(std::shared_ptr<AnalysisTask> task, qc::QcRunResult left,
+                                   const qc::QcProfile& profile, const std::string& right_path) {
+    const videoeye::AnalysisOptions analyzed_options = qc::OptionsForDepth(profile.depth);
+    qc::QcRunner runner;
+    qc::QcRunCallbacks callbacks;
+    callbacks.progress = [this, task](double percent, const std::string& stage) {
+        PostUiUpdate(task->report, [this, percent, stage]() {
+            batch_view_->SetProgress(static_cast<int>(percent), 100);
+            emit StatusMessage(tr("对比分析 %1% %2").arg(static_cast<int>(percent)).arg(QString::fromStdString(stage)));
+        });
+    };
+    callbacks.should_cancel = [task]() { return task->cancel.IsCanceled(); };
+
+    const qc::QcRunResult right =
+        runner.AnalyzeFile(right_path, profile, analyzed_options, callbacks, SingleAnalysisBudgets());
+    const task::TaskState terminal = task->cancel.IsCanceled()
+                                         ? task::TaskState::Canceled
+                                         : (right.ok ? task::TaskState::Succeeded : task::TaskState::Failed);
+
+    PostUiUpdate(task->report, [this, task, left, right, terminal]() {
+        SetBusy(false);
+        task_runner_->Finish(task, terminal);
+        if (!right.ok) {
+            const QString reason = QString::fromStdString(right.error);
+            emit StatusMessage(tr("对比失败：%1").arg(reason));
+            if (terminal != task::TaskState::Canceled)
+                QMessageBox::warning(this, tr("对比失败"), tr("无法分析对比文件：%1").arg(reason));
+            return;
+        }
+        // 双方使用同一模板与同一套规则，差异才有意义。左右原始结果交给对话框：
+        // 用户调容忍度时它用 CompareRuns 重算，不重新分析文件。
+        auto* dialog = new QcCompareDialog(left, right, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+        emit StatusMessage(
+            tr("对比完成：差异 %1 项 / 可比 %2 项").arg(dialog->DifferentCount()).arg(dialog->AvailableRowCount()));
+    });
+}
+
+void ReportingPanel::StartBatchScan(const std::string& directory, const std::vector<std::string>& rerun_paths) {
+    active_slot_ = ReportingTaskCoordinator::Slot::Batch;
     SetBusy(true);
     batch_view_->BeginScan();
 
@@ -373,6 +509,15 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
     request.profile = profile_;
     request.jobs = settings.jobs;
     request.recursive = settings.recursive;
+    request.timeout_seconds = settings.timeout_seconds;
+    request.idle_timeout_seconds = settings.idle_timeout_seconds;
+    request.visual_qc = settings.visual_qc;
+    request.rerun_paths = rerun_paths;
+
+    // 记下这批结果按哪个模板算：之后切换模板时据此提示"结果已过期"。
+    batch_profile_id_ = request.profile.id;
+    batch_profile_name_ = request.profile.name;
+    batch_stale_notified_ = false;
 
     const std::shared_ptr<AnalysisTask> task =
         task_runner_->Start(ReportingTaskCoordinator::Slot::Batch,
@@ -385,7 +530,18 @@ void ReportingPanel::StartBatchScan(const std::string& directory) {
 }
 
 void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchRequest& request) {
-    auto items = qc::BatchQcRunner::Discover(request.directory, request.recursive, request.extensions);
+    // 重跑失败项：直接使用上一批留下的路径，不再遍历目录（否则会把已成功的也重跑一遍）。
+    std::vector<qc::BatchQcItem> items;
+    if (!request.rerun_paths.empty()) {
+        items.reserve(request.rerun_paths.size());
+        for (const auto& path : request.rerun_paths) {
+            qc::BatchQcItem item;
+            item.path = path;
+            items.push_back(item);
+        }
+    } else {
+        items = qc::BatchQcRunner::Discover(request.directory, request.recursive, request.extensions);
+    }
     if (items.empty()) {
         PostUiUpdate(task->report, [this]() {
             batch_view_->SetSummaryText(tr("目录下没有匹配的文件"));
@@ -399,6 +555,9 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     options.extensions = request.extensions;
     options.max_parallel = request.jobs;
     options.keep_reports = false;
+    // 0 = 不限；由批量页的「单文件超时」决定，默认不限，避免长视频在全量画质 QC 下被误判超时。
+    options.per_item_timeout_ms = request.timeout_seconds > 0 ? request.timeout_seconds * 1000 : 0;
+    options.io_idle_timeout_ms = request.idle_timeout_seconds > 0 ? request.idle_timeout_seconds * 1000 : 0;
     const std::string directory = request.directory;
     const std::string out_dir = request.out_dir;
     const std::vector<qc::QcReportFormat> formats = request.formats;
@@ -417,7 +576,17 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
         PostUiUpdate(task->report, [this, copy]() { batch_view_->AppendResult(copy); });
     };
 
-    const auto analyze = qc::QcRunner::MakeAnalyzeFunction(profile, qc::OptionsForDepth(profile.depth));
+    // 画质 QC 由批量页显式控制：勾选即开启、未勾选关闭。
+    // ❗ 不能只做"未勾选 -> false"：快速模板本身 analyze_visual_qc=false，
+    // 那样勾选框在快速模板下等于没生效。快速模板勾选时用 Standard 采样档
+    // （2 fps / 256 宽），避免批量场景退化成逐帧全解码；标准/深度模板已经预置了
+    // 自己的采样档（OfflineFull），不要在这里降级。
+    const videoeye::AnalysisOptions profile_options = qc::OptionsForDepth(profile.depth);
+    videoeye::AnalysisOptions batch_options = profile_options;
+    batch_options.analyze_visual_qc = request.visual_qc;
+    if (request.visual_qc && !profile_options.analyze_visual_qc)
+        batch_options.visual_qc_options.preset = model::VisualSamplingPreset::Standard;
+    const auto analyze = qc::QcRunner::MakeAnalyzeFunction(profile, batch_options);
     // 每个文件分析完立刻按选中格式落盘（keep_reports=false，报告本体没留内存）。
     // 关键修复（P0）：导出与 UI 共用同一组"保留相对子目录"的预定路径（ApplyExportPaths），
     // 避免不同子目录同名文件互相覆盖、且表格路径 = 真实落盘路径；导出失败时也能区分
@@ -440,6 +609,9 @@ void ReportingPanel::RunBatch(std::shared_ptr<AnalysisTask> task, const BatchReq
     PostUiUpdate(task->report, [this, task, run, total, terminal]() {
         batch_view_->SetProgress(batch_view_->RowCount(), total);
         batch_view_->SetSummaryText(BatchSummaryText(run.summary, total));
+        // 扫描期间可能换过模板：结果仍按开跑时冻结的 request.profile 计算，
+        // 收尾时补一条过期提示（若确实不一致）。
+        NotifyBatchProfileMismatch();
         SetBusy(false);
         // 同 RunSingle：整批正常结束后归还终态并清掉该槽位句柄。
         task_runner_->Finish(task, terminal);
@@ -481,9 +653,16 @@ void ReportingPanel::RefreshResultForProfile() {
 
 void ReportingPanel::SetBusy(bool busy) {
     busy_ = busy;
+    // 任务结束（包括启动失败）就清掉槽位；否则取消按钮会在空闲时仍然可用。
+    if (!busy)
+        active_slot_.reset();
     profile_view_->SetBusy(busy);
     single_view_->SetBusy(busy);
     batch_view_->SetBusy(busy);
+    if (cancel_button_) {
+        cancel_button_->setText(tr("取消任务"));
+        cancel_button_->setEnabled(busy && active_slot_.has_value());
+    }
     // 导出使能 = 空闲 && 结果新鲜。不能只看 busy_ —— 否则切换文件/模板后仍可点导出。
     UpdateExportEnabled();
 }
@@ -497,8 +676,11 @@ void ReportingPanel::InvalidateResult() {
 
 void ReportingPanel::UpdateExportEnabled() {
     // 只有「单文件分析报告」这一项依赖结果新鲜度；「批量扫描汇总」在控制器里判空。
+    const bool fresh_and_idle = !busy_ && HasFreshResult();
     if (single_export_action_)
-        single_export_action_->setEnabled(!busy_ && HasFreshResult());
+        single_export_action_->setEnabled(fresh_and_idle);
+    if (compare_button_)
+        compare_button_->setEnabled(fresh_and_idle);
 }
 
 bool ReportingPanel::HasFreshResult() const {
@@ -519,6 +701,19 @@ bool ReportingPanel::IsTaskRunning() const {
 
 std::vector<qc::QcReportFormat> ReportingPanel::SelectedFormats() const {
     return single_view_ ? single_view_->SelectedFormats() : std::vector<qc::QcReportFormat>{qc::QcReportFormat::Json};
+}
+
+void ReportingPanel::NotifyBatchProfileMismatch() {
+    if (batch_stale_notified_ || batch_profile_id_.empty() || !batch_view_)
+        return;
+    if (batch_profile_id_ == profile_.id || batch_view_->RowCount() <= 0)
+        return;
+    batch_stale_notified_ = true;
+    const QString note = tr("注意：上方批量结果按模板「%1」计算，当前模板已切换为「%2」；如需新模板结论，请重新扫描。")
+                             .arg(QString::fromStdString(batch_profile_name_), QString::fromStdString(profile_.name));
+    batch_view_->AppendSummaryNote(note);
+    AppendSummary(note);
+    emit StatusMessage(note);
 }
 
 void ReportingPanel::AppendSummary(const QString& text) {

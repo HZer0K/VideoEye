@@ -35,9 +35,9 @@ namespace ui {
 
 class ReportingTaskCoordinator {
 public:
-    // 报告页两个槽位：单文件分析 / 目录批量扫描。二者互斥（busy_ 已在外面拦住），
-    // 但句柄与线程各归各的 —— 换任务时只回收自己那个槽位。
-    enum class Slot { Single, Batch };
+    // 报告页三个槽位：单文件分析 / 目录批量扫描 / 双文件对比。
+    // 三者互斥（busy_ 已在外面拦住），但句柄与线程各归各的 —— 换任务时只回收自己那个槽位。
+    enum class Slot { Single, Batch, Compare };
 
     struct Deps {
         // UI 更新的投递目标（面板自己，不拥有）。所有回调都经它排队回主线程。
@@ -85,9 +85,10 @@ private:
     Deps deps_;
     // 任务身份（TaskId）、取消令牌、终态都在这里，与诊断页 / QcRunner 同一个
     // TaskManager 协议，只是 slot 不同。
-    task::TaskManager tasks_{2};
+    task::TaskManager tasks_{3};
     std::shared_ptr<AnalysisTask> single_;
     std::shared_ptr<AnalysisTask> batch_;
+    std::shared_ptr<AnalysisTask> compare_;
 };
 
 } // namespace ui

@@ -53,11 +53,27 @@ ReportingTaskCoordinator::~ReportingTaskCoordinator() {
 }
 
 const char* ReportingTaskCoordinator::SlotName(Slot slot) const {
-    return slot == Slot::Single ? "单文件" : "批量";
+    switch (slot) {
+    case Slot::Single:
+        return "单文件";
+    case Slot::Batch:
+        return "批量";
+    case Slot::Compare:
+        return "对比";
+    }
+    return "未知";
 }
 
 std::shared_ptr<AnalysisTask>& ReportingTaskCoordinator::SlotTask(Slot slot) {
-    return slot == Slot::Single ? single_ : batch_;
+    switch (slot) {
+    case Slot::Single:
+        return single_;
+    case Slot::Batch:
+        return batch_;
+    case Slot::Compare:
+        return compare_;
+    }
+    return single_;
 }
 
 bool ReportingTaskCoordinator::IsRunning() const {
@@ -147,6 +163,7 @@ void ReportingTaskCoordinator::Retire(std::shared_ptr<AnalysisTask>& task) {
 void ReportingTaskCoordinator::RetireAll() {
     Retire(single_);
     Retire(batch_);
+    Retire(compare_);
 }
 
 void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task, task::TaskState terminal) {
@@ -168,6 +185,8 @@ void ReportingTaskCoordinator::Finish(const std::shared_ptr<AnalysisTask>& task,
         RecycleTask(single_);
     } else if (batch_ == task) {
         RecycleTask(batch_);
+    } else if (compare_ == task) {
+        RecycleTask(compare_);
     }
 }
 

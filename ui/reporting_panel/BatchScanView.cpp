@@ -10,6 +10,7 @@
 #include <QHeaderView>
 #include <QLocale>
 #include <QMessageBox>
+#include <QSettings>
 #include <QStringList>
 #include <QStyledItemDelegate>
 #include <QUrl>
@@ -133,6 +134,30 @@ void BatchScanView::SetupUi() {
     jobs_spin_->setToolTip(tr("并发上限，机械盘建议 2~4，SSD 可以更高"));
     ext_row->addWidget(jobs_spin_);
 
+    ext_row->addWidget(new QLabel(tr("单文件超时:"), batch_box));
+    timeout_spin_ = new QSpinBox(batch_box);
+    timeout_spin_->setRange(0, 86400);
+    timeout_spin_->setValue(0);
+    timeout_spin_->setSpecialValueText(tr("不限"));
+    timeout_spin_->setSuffix(tr(" 秒"));
+    timeout_spin_->setToolTip(tr("单个文件的分析超时；0 表示不限。"
+                                 "标准/深度模板会做全解码画质 QC，长视频建议不限或设得足够大"));
+    ext_row->addWidget(timeout_spin_);
+
+    ext_row->addWidget(new QLabel(tr("无进度超时:"), batch_box));
+    idle_timeout_spin_ = new QSpinBox(batch_box);
+    idle_timeout_spin_->setRange(0, 86400);
+    idle_timeout_spin_->setValue(120);
+    idle_timeout_spin_->setSpecialValueText(tr("不限"));
+    idle_timeout_spin_->setSuffix(tr(" 秒"));
+    idle_timeout_spin_->setToolTip(tr("连续该时长没有读到任何数据就跳过当前文件，防止卡死；0 表示不限"));
+    ext_row->addWidget(idle_timeout_spin_);
+
+    visual_qc_check_ = new QCheckBox(tr("画质 QC"), batch_box);
+    visual_qc_check_->setChecked(false);
+    visual_qc_check_->setToolTip(tr("逐帧解码检测黑边/冻结/块效应等，结果最全但最慢；批量默认关闭"));
+    ext_row->addWidget(visual_qc_check_);
+
     recursive_check_ = new QCheckBox(tr("递归子目录"), batch_box);
     recursive_check_->setChecked(true);
     ext_row->addWidget(recursive_check_);
@@ -146,6 +171,16 @@ void BatchScanView::SetupUi() {
     QPushButton* pick_out = new QPushButton(tr("浏览…"), batch_box);
     connect(pick_out, &QPushButton::clicked, this, &BatchScanView::OnPickOutputDirectory);
     out_row->addWidget(pick_out);
+
+    open_out_button_ = new QPushButton(tr("打开"), batch_box);
+    open_out_button_->setToolTip(tr("在资源管理器中打开报告输出目录"));
+    open_out_button_->setEnabled(false);
+    connect(open_out_button_, &QPushButton::clicked, this, &BatchScanView::OnOpenOutputDirectory);
+    out_row->addWidget(open_out_button_);
+    connect(batch_out_edit_, &QLineEdit::textChanged, this, [this](const QString& text) {
+        if (open_out_button_)
+            open_out_button_->setEnabled(!text.trimmed().isEmpty());
+    });
     batch_layout->addLayout(out_row);
 
     QHBoxLayout* action_row = new QHBoxLayout();
@@ -157,6 +192,12 @@ void BatchScanView::SetupUi() {
     cancel_button_->setEnabled(false);
     connect(cancel_button_, &QPushButton::clicked, this, &BatchScanView::CancelRequested);
     action_row->addWidget(cancel_button_);
+
+    rerun_failed_button_ = new QPushButton(tr("重跑失败项"), batch_box);
+    rerun_failed_button_->setEnabled(false);
+    rerun_failed_button_->setToolTip(tr("只重跑上一批里失败、超时、导出失败或被取消的条目"));
+    connect(rerun_failed_button_, &QPushButton::clicked, this, &BatchScanView::RerunFailedRequested);
+    action_row->addWidget(rerun_failed_button_);
 
     batch_progress_ = new QProgressBar(batch_box);
     batch_progress_->setRange(0, 100);
@@ -226,6 +267,11 @@ void BatchScanView::SetupUi() {
     // 要看完整的问题清单，就打开这一行落盘的报告文件。
     QHBoxLayout* detail_actions = new QHBoxLayout();
     detail_actions->addStretch();
+    compare_current_button_ = new QPushButton(tr("与当前文件对比"), batch_box);
+    compare_current_button_->setEnabled(false);
+    compare_current_button_->setToolTip(tr("以主界面当前打开的文件为左侧，与该行文件逐字段对比"));
+    connect(compare_current_button_, &QPushButton::clicked, this, &BatchScanView::OnCompareSelectedWithCurrent);
+    detail_actions->addWidget(compare_current_button_);
     open_report_button_ = new QPushButton(tr("打开报告文件"), batch_box);
     open_report_button_->setEnabled(false);
     open_report_button_->setToolTip(tr("打开该条目落盘的报告文件 —— 完整问题清单在里面"));
@@ -252,6 +298,9 @@ BatchScanView::Settings BatchScanView::CurrentSettings() const {
     settings.extensions = ParseExtensionList(batch_ext_edit_ ? batch_ext_edit_->text().trimmed() : QString());
     settings.jobs = jobs_spin_ ? jobs_spin_->value() : 4;
     settings.recursive = recursive_check_ ? recursive_check_->isChecked() : true;
+    settings.timeout_seconds = timeout_spin_ ? timeout_spin_->value() : 0;
+    settings.idle_timeout_seconds = idle_timeout_spin_ ? idle_timeout_spin_->value() : 120;
+    settings.visual_qc = visual_qc_check_ ? visual_qc_check_->isChecked() : false;
     return settings;
 }
 
@@ -293,6 +342,20 @@ void BatchScanView::SetSummaryText(const QString& text) {
         batch_summary_label_->setText(text);
 }
 
+void BatchScanView::AppendSummaryNote(const QString& text) {
+    if (!batch_summary_label_ || text.isEmpty())
+        return;
+    const QString current = batch_summary_label_->text();
+    // 同一条提示只加一次：模板在多个入口（下拉/加载文件）切换时可能重复触发。
+    if (current.contains(text))
+        return;
+    batch_summary_label_->setText(current.isEmpty() ? text : current + "\n" + text);
+}
+
+QString BatchScanView::SummaryText() const {
+    return batch_summary_label_ ? batch_summary_label_->text() : QString();
+}
+
 void BatchScanView::ResetDetail() {
     if (batch_detail_)
         batch_detail_->setText(tr("选中表格中的一行查看详情"));
@@ -303,10 +366,69 @@ void BatchScanView::SetBusy(bool busy) {
         start_button_->setEnabled(!busy);
     if (cancel_button_)
         cancel_button_->setEnabled(busy);
+    if (rerun_failed_button_)
+        rerun_failed_button_->setEnabled(!busy && HasFailedResults());
     // 排序随扫描状态切换：扫描中关掉（每插一行整表重排一次，几百个文件能卡死界面），
     // 结束后打开（打开时会按当前排序指示立即排一次，用户也可再点表头改排法）。
     if (batch_table_)
         batch_table_->setSortingEnabled(!busy);
+}
+
+bool BatchScanView::HasFailedResults() const {
+    for (const auto& item : batch_results_) {
+        switch (item.status) {
+        case qc::BatchItemStatus::Failed:
+        case qc::BatchItemStatus::TimedOut:
+        case qc::BatchItemStatus::ExportFailed:
+        case qc::BatchItemStatus::Cancelled:
+            return true;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
+void BatchScanView::LoadPersistedSettings() {
+    QSettings settings;
+    // 全部按"没有就保留当前默认值"读取，避免升级后旧配置把新字段置空。
+    const QString directory = settings.value(QStringLiteral("qc/batch/directory")).toString();
+    if (!directory.isEmpty())
+        batch_dir_edit_->setText(directory);
+    const QString extensions = settings.value(QStringLiteral("qc/batch/extensions")).toString();
+    if (!extensions.isEmpty())
+        batch_ext_edit_->setText(extensions);
+    const QString out_dir = settings.value(QStringLiteral("qc/batch/out_dir")).toString();
+    if (!out_dir.isEmpty())
+        batch_out_edit_->setText(out_dir);
+
+    if (jobs_spin_)
+        jobs_spin_->setValue(settings.value(QStringLiteral("qc/batch/jobs"), jobs_spin_->value()).toInt());
+    if (timeout_spin_)
+        timeout_spin_->setValue(
+            settings.value(QStringLiteral("qc/batch/timeout_seconds"), timeout_spin_->value()).toInt());
+    if (idle_timeout_spin_)
+        idle_timeout_spin_->setValue(
+            settings.value(QStringLiteral("qc/batch/idle_timeout_seconds"), idle_timeout_spin_->value()).toInt());
+    if (visual_qc_check_)
+        visual_qc_check_->setChecked(
+            settings.value(QStringLiteral("qc/batch/visual_qc"), visual_qc_check_->isChecked()).toBool());
+    if (recursive_check_)
+        recursive_check_->setChecked(
+            settings.value(QStringLiteral("qc/batch/recursive"), recursive_check_->isChecked()).toBool());
+}
+
+void BatchScanView::SavePersistedSettings() const {
+    QSettings settings;
+    settings.setValue(QStringLiteral("qc/batch/directory"), batch_dir_edit_ ? batch_dir_edit_->text() : QString());
+    settings.setValue(QStringLiteral("qc/batch/extensions"), batch_ext_edit_ ? batch_ext_edit_->text() : QString());
+    settings.setValue(QStringLiteral("qc/batch/out_dir"), batch_out_edit_ ? batch_out_edit_->text() : QString());
+    settings.setValue(QStringLiteral("qc/batch/jobs"), jobs_spin_ ? jobs_spin_->value() : 4);
+    settings.setValue(QStringLiteral("qc/batch/timeout_seconds"), timeout_spin_ ? timeout_spin_->value() : 0);
+    settings.setValue(QStringLiteral("qc/batch/idle_timeout_seconds"),
+                      idle_timeout_spin_ ? idle_timeout_spin_->value() : 120);
+    settings.setValue(QStringLiteral("qc/batch/visual_qc"), visual_qc_check_ && visual_qc_check_->isChecked());
+    settings.setValue(QStringLiteral("qc/batch/recursive"), !recursive_check_ || recursive_check_->isChecked());
 }
 
 void BatchScanView::OnPickDirectory() {
@@ -319,6 +441,18 @@ void BatchScanView::OnPickOutputDirectory() {
     const QString path = QFileDialog::getExistingDirectory(this, tr("选择报告输出目录"));
     if (!path.isEmpty())
         batch_out_edit_->setText(path);
+}
+
+void BatchScanView::OnOpenOutputDirectory() {
+    const QString path = batch_out_edit_ ? batch_out_edit_->text().trimmed() : QString();
+    if (path.isEmpty())
+        return;
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isDir()) {
+        QMessageBox::information(this, tr("目录不存在"), tr("报告输出目录还不存在：%1").arg(path));
+        return;
+    }
+    QDesktopServices::openUrl(QUrl::fromLocalFile(info.absoluteFilePath()));
 }
 
 bool BatchScanView::RowVisible(const qc::BatchQcItemResult& item) const {
@@ -366,6 +500,10 @@ void BatchScanView::OnSelectionChanged() {
         open_report_button_->setEnabled(false);
         open_report_button_->setProperty("reportPath", QString());
     }
+    if (compare_current_button_) {
+        compare_current_button_->setEnabled(false);
+        compare_current_button_->setProperty("comparePath", QString());
+    }
     const QList<QTableWidgetItem*> selected = batch_table_->selectedItems();
     if (selected.isEmpty()) {
         ResetDetail();
@@ -398,6 +536,19 @@ void BatchScanView::ShowDetail(int result_index) {
         open_report_button_->setProperty("reportPath", output);
         open_report_button_->setEnabled(!output.isEmpty());
     }
+    // 对比只对分析成功的条目开放：失败项没有可比较的结果，重新分析也大概率同样失败。
+    if (compare_current_button_) {
+        const QString path = QString::fromStdString(item.path);
+        compare_current_button_->setProperty("comparePath", path);
+        compare_current_button_->setEnabled(item.HasReport() && !path.isEmpty());
+    }
+}
+
+void BatchScanView::OnCompareSelectedWithCurrent() {
+    const QString path =
+        compare_current_button_ ? compare_current_button_->property("comparePath").toString() : QString();
+    if (!path.isEmpty())
+        emit CompareWithCurrentRequested(path);
 }
 
 void BatchScanView::OnOpenSelectedReport() {
