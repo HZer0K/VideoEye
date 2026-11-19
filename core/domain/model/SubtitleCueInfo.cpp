@@ -138,6 +138,14 @@ const char* ToString(SubtitleIssueType type) {
         return "相邻字幕重复";
     case SubtitleIssueType::LineTooLong:
         return "单行过长";
+    case SubtitleIssueType::CueGap:
+        return "相邻字幕间隔过短";
+    case SubtitleIssueType::GraphicEmpty:
+        return "图形字幕没有内容";
+    case SubtitleIssueType::GraphicOutOfBounds:
+        return "图形字幕超出画面";
+    case SubtitleIssueType::GraphicZeroDuration:
+        return "图形字幕零时长上屏";
     default:
         return "未知问题";
     }
@@ -235,6 +243,14 @@ const char* SubtitleIssueCode(SubtitleIssueType type) {
         return "duplicate_cue";
     case SubtitleIssueType::LineTooLong:
         return "line_too_long";
+    case SubtitleIssueType::CueGap:
+        return "cue_gap";
+    case SubtitleIssueType::GraphicEmpty:
+        return "graphic_empty";
+    case SubtitleIssueType::GraphicOutOfBounds:
+        return "graphic_out_of_bounds";
+    case SubtitleIssueType::GraphicZeroDuration:
+        return "graphic_zero_duration";
     default:
         return "unknown";
     }

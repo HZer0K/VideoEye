@@ -901,3 +901,277 @@ TEST(SubtitleAnalyzerTest, TextQualityFindsDuplicateAndOverlongLines) {
     EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::DuplicateCue), 1);
     EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::LineTooLong), 1);
 }
+
+// ============================================================
+// 语言自适应阅读速度 / 相邻间隔 / 图形字幕段头 / AV1 与 DVD CC
+// ============================================================
+
+namespace {
+
+std::vector<uint8_t> PgsSegment(uint8_t type, const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out = {type, static_cast<uint8_t>((payload.size() >> 8) & 0xFF),
+                                static_cast<uint8_t>(payload.size() & 0xFF)};
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+void AppendBe16(std::vector<uint8_t>& out, int value) {
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+    out.push_back(static_cast<uint8_t>(value & 0xFF));
+}
+
+std::vector<uint8_t> PgsPcsPayload(int width, int height, int composition_number, int object_count,
+                                   const std::vector<int>& object_x) {
+    std::vector<uint8_t> payload;
+    AppendBe16(payload, width);
+    AppendBe16(payload, height);
+    payload.push_back(0x00);
+    AppendBe16(payload, composition_number);
+    payload.push_back(0x00); // composition_state = normal
+    payload.push_back(0x00); // palette_update_flag
+    payload.push_back(0x00); // palette_id
+    payload.push_back(static_cast<uint8_t>(object_count));
+    for (int i = 0; i < object_count; ++i) {
+        payload.push_back(0x00);
+        payload.push_back(static_cast<uint8_t>(i)); // object_id
+        payload.push_back(0x00);                    // window_id
+        payload.push_back(0x00);                    // flags（无 crop）
+        AppendBe16(payload, object_x[i]);
+        AppendBe16(payload, 10);
+    }
+    return payload;
+}
+
+std::vector<uint8_t> PgsWdsPayload(const std::vector<int>& xs, const std::vector<int>& widths, int height) {
+    std::vector<uint8_t> payload = {static_cast<uint8_t>(xs.size())};
+    for (size_t i = 0; i < xs.size(); ++i) {
+        payload.push_back(static_cast<uint8_t>(i));
+        AppendBe16(payload, xs[i]);
+        AppendBe16(payload, 0);
+        AppendBe16(payload, widths[i]);
+        AppendBe16(payload, height);
+    }
+    return payload;
+}
+
+std::vector<uint8_t> DvbSegment(uint8_t type, const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out = {0x0F, type, 0x00, 0x01};
+    AppendBe16(out, static_cast<int>(payload.size()));
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+// DVD 私有 CC：'CC' 0x01 0xF8 + 场序 + 6 字节 caption block
+std::vector<uint8_t> DvdUserDataPacket(const std::vector<uint8_t>& triplet) {
+    std::vector<uint8_t> packet = {0x00, 0x00, 0x01, 0xB2, 'C', 'C', 0x01, 0xF8, 0x80};
+    packet.push_back(0xFF);
+    packet.push_back(triplet.size() > 1 ? triplet[1] : 0);
+    packet.push_back(triplet.size() > 2 ? triplet[2] : 0);
+    packet.push_back(0xFF);
+    packet.push_back(0x00);
+    packet.push_back(0x00);
+    return packet;
+}
+
+// AV1：metadata OBU（type 5），payload = metadata_type 4（T.35）+ A53 cc_data
+std::vector<uint8_t> Av1MetadataPacket(const std::vector<uint8_t>& triplets) {
+    const size_t cc_count = triplets.size() / 3;
+    std::vector<uint8_t> payload = {
+        0x04, 0xB5, 0x00, 0x31, 'G', 'A', '9', '4', 0x03, static_cast<uint8_t>(0x40 | cc_count), 0xFF};
+    payload.insert(payload.end(), triplets.begin(), triplets.end());
+    payload.push_back(0xFF);
+    std::vector<uint8_t> packet = {0x2A, static_cast<uint8_t>(payload.size())}; // OBU 头 + leb128 长度
+    packet.insert(packet.end(), payload.begin(), payload.end());
+    return packet;
+}
+
+} // namespace
+
+TEST(SubtitleAnalyzerTest, ReadingSpeedUsesCjkThreshold) {
+    std::string cjk;
+    for (int i = 0; i < 20; ++i)
+        cjk += "字";
+
+    std::vector<videoeye::model::SubtitleCue> cues;
+    cues.push_back(MakeCue(0, 1.0, 2.0, cjk));
+    cues.push_back(MakeCue(1, 20.0, 21.0, cjk));
+
+    std::vector<videoeye::model::SubtitleIssue> issues;
+    videoeye::SubtitleOptions options;
+    // 20 字符/秒：超过中文阈值 16，但低于通用阈值 21
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, options, 60.0);
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::TooFast), 2);
+
+    issues.clear();
+    options.language_aware_reading_speed = false;
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, options, 60.0);
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::TooFast), 0);
+}
+
+TEST(SubtitleAnalyzerTest, CueGapReportsOnlyShortPositiveGaps) {
+    std::vector<videoeye::model::SubtitleCue> cues;
+    cues.push_back(MakeCue(0, 1.0, 2.0, "第一句"));
+    cues.push_back(MakeCue(1, 2.05, 3.0, "第二句")); // 间隔 0.05s -> 闪烁
+    cues.push_back(MakeCue(2, 3.0, 4.0, "第三句"));  // 首尾相接（roll-up 形态）-> 不算
+    cues.push_back(MakeCue(3, 6.0, 7.0, "第四句"));  // 间隔 2s -> 正常
+
+    std::vector<videoeye::model::SubtitleIssue> issues;
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, videoeye::SubtitleOptions{}, 60.0);
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::CueGap), 1);
+
+    issues.clear();
+    videoeye::SubtitleOptions options;
+    options.check_cue_gap = false;
+    videoeye::SubtitleAnalyzer::ValidateCues(cues, issues, options, 60.0);
+    EXPECT_EQ(CountType(issues, videoeye::model::SubtitleIssueType::CueGap), 0);
+}
+
+TEST(SubtitleAnalyzerTest, PgsSegmentHeadersProduceGraphicStats) {
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->width = 1280;
+    video->codecpar->height = 720;
+    AVStream* pgs = AddStream(fmt, AVMEDIA_TYPE_SUBTITLE, AV_CODEC_ID_HDMV_PGS_SUBTITLE);
+    ASSERT_NE(pgs, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    // 第一次上屏：2 个对象 + 2 个窗口，其中一个窗口右边超出 1280
+    std::vector<uint8_t> first = PgsSegment(0x16, PgsPcsPayload(1280, 720, 1, 2, {10, 1300}));
+    const std::vector<uint8_t> wds = PgsSegment(0x17, PgsWdsPayload({0, 1200}, {640, 640}, 360));
+    first.insert(first.end(), wds.begin(), wds.end());
+    FeedPacket(analyzer, pgs, first, 0);
+
+    // 40ms 后清屏：上一条有内容但实际不可见
+    FeedPacket(analyzer, pgs, PgsSegment(0x16, PgsPcsPayload(1280, 720, 2, 0, {})), 40);
+    analyzer.Finish(10.0);
+
+    const auto result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    const videoeye::model::SubtitleStreamInfo& stream = result.streams[0];
+    EXPECT_TRUE(stream.graphic.present);
+    EXPECT_EQ(stream.graphic.presentation_count, 2);
+    EXPECT_EQ(stream.graphic.empty_presentation_count, 1);
+    EXPECT_EQ(stream.graphic.object_count_max, 2);
+    EXPECT_EQ(stream.graphic.window_count_max, 2);
+    EXPECT_EQ(stream.graphic.screen_width, 1280);
+    EXPECT_EQ(stream.graphic.screen_height, 720);
+    EXPECT_EQ(stream.graphic.out_of_bounds_count, 1);
+    EXPECT_EQ(stream.graphic.zero_duration_count, 1);
+
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::GraphicOutOfBounds), 1);
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::GraphicZeroDuration), 1);
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::GraphicEmpty), 0);
+
+    avformat_free_context(fmt);
+}
+
+TEST(SubtitleAnalyzerTest, DvbPageCompositionProducesGraphicStats) {
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_H264);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->width = 1280;
+    video->codecpar->height = 720;
+    AVStream* dvb = AddStream(fmt, AVMEDIA_TYPE_SUBTITLE, AV_CODEC_ID_DVB_SUBTITLE);
+    ASSERT_NE(dvb, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    // 区域 0 放在 (1200, 0)，尺寸 200x100：右边界 1400 > 1280
+    std::vector<uint8_t> page = {0x00, 0x10}; // page_time_out、version=1 + page_state=0
+    page.push_back(0x00);                     // region_id
+    page.push_back(0x00);                     // reserved
+    AppendBe16(page, 1200);
+    AppendBe16(page, 0);
+
+    std::vector<uint8_t> region = {0x00, 0x10}; // region_id、version=1 + fill=0
+    AppendBe16(region, 200);
+    AppendBe16(region, 100);
+    region.push_back(0x00); // level/depth
+    region.push_back(0x00); // CLUT
+    region.push_back(0x00); // 8-bit pixel code
+    region.push_back(0x00); // 4/2-bit pixel code
+
+    std::vector<uint8_t> packet = DvbSegment(0x10, page);
+    const std::vector<uint8_t> region_segment = DvbSegment(0x11, region);
+    packet.insert(packet.end(), region_segment.begin(), region_segment.end());
+    FeedPacket(analyzer, dvb, packet, 1000);
+    analyzer.Finish(10.0);
+
+    const auto result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].graphic.present);
+    EXPECT_EQ(result.streams[0].graphic.presentation_count, 1);
+    EXPECT_EQ(result.streams[0].graphic.empty_presentation_count, 0);
+    EXPECT_EQ(result.streams[0].graphic.out_of_bounds_count, 1);
+    EXPECT_EQ(CountType(result.issues, videoeye::model::SubtitleIssueType::GraphicOutOfBounds), 1);
+
+    avformat_free_context(fmt);
+}
+
+TEST(SubtitleAnalyzerTest, EmbeddedDvdClosedCaptionProducesCue) {
+    const std::vector<uint8_t> rcl = {0xFC, 0x14, 0x20};
+    const std::vector<uint8_t> hi = {0xFC, 'H', 'I'};
+    const std::vector<uint8_t> eoc = {0xFC, 0x14, 0x2F};
+    const std::vector<uint8_t> edm = {0xFC, 0x14, 0x2C};
+
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_MPEG2VIDEO);
+    ASSERT_NE(video, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    FeedPacket(analyzer, video, DvdUserDataPacket(rcl), 0);
+    FeedPacket(analyzer, video, DvdUserDataPacket(hi), 500);
+    FeedPacket(analyzer, video, DvdUserDataPacket(eoc), 1000);
+    FeedPacket(analyzer, video, DvdUserDataPacket(edm), 3000);
+    analyzer.Finish(10.0);
+
+    const auto result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].embedded);
+    ASSERT_EQ(result.cues.size(), 1u);
+    EXPECT_EQ(result.cues[0].text, "HI");
+    EXPECT_NEAR(result.cues[0].start_seconds, 1.0, 1e-6);
+    EXPECT_NEAR(result.cues[0].end_seconds, 3.0, 1e-6);
+
+    avformat_free_context(fmt);
+}
+
+TEST(SubtitleAnalyzerTest, EmbeddedAv1MetadataProducesCaptionCue) {
+    const std::vector<uint8_t> preload = {0xFC, 0x14, 0x20, 0xFC, 'O', 'K', 0xFC, 0x14, 0x2F};
+    const std::vector<uint8_t> erase = {0xFC, 0x14, 0x2C};
+
+    AVFormatContext* fmt = avformat_alloc_context();
+    ASSERT_NE(fmt, nullptr);
+    AVStream* video = AddStream(fmt, AVMEDIA_TYPE_VIDEO, AV_CODEC_ID_AV1);
+    ASSERT_NE(video, nullptr);
+
+    videoeye::SubtitleAnalyzer analyzer;
+    analyzer.Reset(videoeye::SubtitleOptions{});
+    analyzer.RegisterStreams(fmt);
+
+    FeedPacket(analyzer, video, Av1MetadataPacket(preload), 2000);
+    FeedPacket(analyzer, video, Av1MetadataPacket(erase), 5000);
+    analyzer.Finish(10.0);
+
+    const auto result = analyzer.result();
+    ASSERT_EQ(result.streams.size(), 1u);
+    EXPECT_TRUE(result.streams[0].embedded);
+    ASSERT_EQ(result.cues.size(), 1u);
+    EXPECT_EQ(result.cues[0].text, "OK");
+    EXPECT_NEAR(result.cues[0].start_seconds, 2.0, 1e-6);
+    EXPECT_NEAR(result.cues[0].end_seconds, 5.0, 1e-6);
+
+    avformat_free_context(fmt);
+}

@@ -513,6 +513,8 @@ void CollectSeiFromPacket(const uint8_t* data, size_t size, int codec_id, int na
     ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, syntax, nal_prefix_bytes, &truncated, handle_nal);
 }
 
+bool TripletsFromDvd(const uint8_t* data, size_t size, std::vector<uint8_t>& out);
+
 // MPEG-2：user_data（0x000001B2）里可能是 A/53 'GA94'，也可能是 SCTE-20；
 // 顺带跟踪 picture coding extension（0x000001B5）的 top_field_first。
 void CollectMpeg2UserData(const uint8_t* data, size_t size, bool& top_field_first, std::vector<uint8_t>& out) {
@@ -536,6 +538,8 @@ void CollectMpeg2UserData(const uint8_t* data, size_t size, bool& top_field_firs
 
         if (code == 0xB2 && payload_size >= 5 && std::memcmp(payload, "GA94", 4) == 0 && payload[4] == 0x03) {
             TripletsFromCcData(payload + 4, payload_size - 4, out);
+        } else if (code == 0xB2 && TripletsFromDvd(payload, payload_size, out)) {
+            // DVD 私有 CC：已在 TripletsFromDvd 内追加
         } else if (code == 0xB2) {
             TripletsFromScte20(payload, payload_size, top_field_first, out);
         } else if (code == 0xB5 && payload_size >= 6) {
@@ -632,6 +636,313 @@ int NalLengthPrefixBytes(const AVCodecParameters* par) {
     if (par->codec_id == AV_CODEC_ID_HEVC && extra[0] == 1)
         return (extra[21] & 0x03) + 1;
     return 0;
+}
+
+int ReadBe16(const uint8_t* p) {
+    return (static_cast<int>(p[0]) << 8) | p[1];
+}
+
+// DVD 的私有 CC 格式（MPEG-2 user_data 里 "CC" 0x01 0xF8）：
+// p[4] 最高位表示"奇数场（CC1/CC2）先出"，之后每 6 字节一个 caption block，
+// 每块给两个场各一对字节。转成 A53 三元组的口径与 FFmpeg mpeg12dec.c 一致。
+bool TripletsFromDvd(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
+    if (data == nullptr || size < 11)
+        return false;
+    if (data[0] != 'C' || data[1] != 'C' || data[2] != 0x01 || data[3] != 0xF8)
+        return false;
+    size_t blocks = 0;
+    for (size_t i = 5; i + 6 <= size && (data[i] & 0xFE) == 0xFE; i += 6)
+        ++blocks;
+    if (blocks == 0)
+        return false;
+
+    const bool field1_first = (data[4] & 0x80) != 0;
+    const uint8_t* p = data + 5;
+    for (size_t i = 0; i < blocks; ++i, p += 6) {
+        out.push_back((p[0] == 0xFF && field1_first) ? 0xFC : 0xFD);
+        out.push_back(p[1]);
+        out.push_back(p[2]);
+        out.push_back((p[3] == 0xFF && !field1_first) ? 0xFC : 0xFD);
+        out.push_back(p[4]);
+        out.push_back(p[5]);
+    }
+    return true;
+}
+
+bool ReadAv1Leb128(const uint8_t* data, size_t end, size_t& pos, size_t& value) {
+    value = 0;
+    int shift = 0;
+    while (pos < end && shift <= 56) {
+        const uint8_t byte = data[pos++];
+        value |= static_cast<size_t>(byte & 0x7F) << shift;
+        if ((byte & 0x80) == 0)
+            return true;
+        shift += 7;
+    }
+    return false;
+}
+
+// AV1 的 T.35 metadata OBU：obu_type = 5（OBU_METADATA），metadata_type = 4（ITU-T T.35）。
+// 其载荷与 H.264/HEVC SEI 里的 T.35 同一口径（0xB5 + ATSC provider + 'GA94' + 0x03）。
+void CollectAv1MetadataTriplets(const uint8_t* data, size_t size, std::vector<uint8_t>& out) {
+    if (data == nullptr)
+        return;
+    size_t pos = 0;
+    while (pos < size) {
+        const uint8_t header = data[pos];
+        if ((header & 0x80) != 0) // forbidden bit：不是合法 OBU 流，放弃
+            return;
+        const int obu_type = (header >> 3) & 0x0F;
+        const bool has_extension = (header & 0x04) != 0;
+        const bool has_size = (header & 0x02) != 0;
+        ++pos;
+        if (has_extension) {
+            if (pos >= size)
+                return;
+            ++pos;
+        }
+        size_t payload_size = 0;
+        if (has_size) {
+            if (!ReadAv1Leb128(data, size, pos, payload_size))
+                return;
+        } else {
+            payload_size = size - pos;
+        }
+        if (payload_size > size - pos)
+            return;
+        const size_t payload_end = pos + payload_size;
+        if (obu_type == 5) {
+            size_t cursor = pos;
+            size_t metadata_type = 0;
+            if (ReadAv1Leb128(data, payload_end, cursor, metadata_type) && metadata_type == 4) {
+                CollectSeiTriplets(data + cursor, payload_end - cursor, out);
+            }
+        }
+        pos = payload_end;
+    }
+}
+
+// 中日韩文字（含扩展区、假名、谚文）：阅读速度要按"字"而不是按"字母"算。
+bool IsCjkCodePoint(uint32_t code_point) {
+    return (code_point >= 0x2E80 && code_point <= 0x9FFF) || // 部首 + CJK 统一表意文字
+           (code_point >= 0xA960 && code_point <= 0xA97F) || // 谚文字母扩展
+           (code_point >= 0xAC00 && code_point <= 0xD7AF) || // 谚文音节
+           (code_point >= 0xF900 && code_point <= 0xFAFF) || // CJK 兼容表意文字
+           (code_point >= 0xFF66 && code_point <= 0xFF9F) || // 半角片假名
+           (code_point >= 0x20000 && code_point <= 0x3FFFF); // CJK 扩展 B 及以后
+}
+
+bool IsCjkLanguage(const std::string& language) {
+    std::string lower;
+    lower.reserve(language.size());
+    for (char c : language)
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return lower == "zh" || lower == "chi" || lower == "zho" || lower == "cmn" || lower == "ja" || lower == "jpn" ||
+           lower == "ko" || lower == "kor" || lower.rfind("zh-", 0) == 0 || lower.rfind("zh_", 0) == 0 ||
+           lower.rfind("ja-", 0) == 0 || lower.rfind("ko-", 0) == 0;
+}
+
+// 很多外挂字幕没有 language tag，退到文本本身判：可见字符里中日韩占 30% 就按 CJK 阈值。
+bool TextLooksLikeCjk(const std::string& text) {
+    size_t visible = 0;
+    size_t cjk = 0;
+    size_t pos = 0;
+    uint32_t code_point = 0;
+    while (NextUtf8CodePoint(text, pos, code_point)) {
+        if (code_point == ' ' || code_point == '\t' || code_point == '\n' || code_point == '\r')
+            continue;
+        ++visible;
+        if (IsCjkCodePoint(code_point))
+            ++cjk;
+    }
+    return visible >= 2 && cjk * 10 >= visible * 3;
+}
+
+// ---- 图形字幕段头解析（PGS / DVB）----
+// 一次上屏（display set / page）的段头摘要。只读头，不碰像素。
+struct GraphicPresentation {
+    uint32_t id = 0; // PGS composition_number / DVB page version
+    int object_count = 0;
+    int region_count = 0;
+    int screen_width = 0;
+    int screen_height = 0;
+    int out_of_bounds = 0;
+    // PGS：对象在 PCS 里只有起点，尺寸在 ODS 里；窗口在 WDS 里。优先用 WDS 判越界，
+    // 没有 WDS 时退到"对象起点是否已经落在画面外"。
+    int max_object_x = 0;
+    int max_object_y = 0;
+    bool bounds_checked = false;
+    // DVB：region 位置在 page composition 里，尺寸在 region composition 里，
+    // 两者可能分包到达 —— 先把位置攒下来，整包解析完再判越界。
+    std::vector<int> region_positions; // [region_id, x, y] 平铺
+
+    bool HasContent() const {
+        return object_count > 0 || region_count > 0;
+    }
+};
+
+// PGS：raw 段是 type(1) + size(2) + payload；.sup 文件每段前还有
+// "PG" + pts(4) + dts(4)，共 10 字节。两种封装都要认。
+void ParsePgsPayload(const uint8_t* data, size_t size, std::vector<GraphicPresentation>& out, int& windows_max) {
+    if (data == nullptr || size < 3)
+        return;
+    const bool sup = size >= 13 && data[0] == 'P' && data[1] == 'G';
+    size_t pos = 0;
+    GraphicPresentation current;
+    bool open = false;
+    auto flush = [&out, &current, &open]() {
+        if (!open)
+            return;
+        if (!current.bounds_checked && current.screen_width > 0 && current.object_count > 0 &&
+            (current.max_object_x >= current.screen_width || current.max_object_y >= current.screen_height)) {
+            ++current.out_of_bounds;
+        }
+        out.push_back(current);
+        current = GraphicPresentation{};
+        open = false;
+    };
+
+    while (pos + 3 <= size) {
+        if (sup) {
+            if (pos + 13 > size)
+                break;
+            pos += 10;
+        }
+        const int type = data[pos];
+        const int length = ReadBe16(data + pos + 1);
+        pos += 3;
+        if (length < 0 || pos + static_cast<size_t>(length) > size)
+            break;
+        const uint8_t* p = data + pos;
+
+        if (type == 0x16) { // Presentation Composition Segment
+            flush();
+            if (length >= 11) {
+                current.screen_width = ReadBe16(p);
+                current.screen_height = ReadBe16(p + 2);
+                current.id = static_cast<uint32_t>(ReadBe16(p + 5));
+                current.object_count = p[10];
+                size_t off = 11;
+                for (int i = 0; i < current.object_count && off + 8 <= static_cast<size_t>(length); ++i) {
+                    const uint8_t flags = p[off + 3];
+                    const int x = ReadBe16(p + off + 4);
+                    const int y = ReadBe16(p + off + 6);
+                    if (x > current.max_object_x)
+                        current.max_object_x = x;
+                    if (y > current.max_object_y)
+                        current.max_object_y = y;
+                    off += 8 + ((flags & 0x80) ? 8 : 0);
+                }
+                open = true;
+            }
+        } else if (type == 0x17) { // Window Definition Segment
+            if (length >= 1) {
+                const int count = p[0];
+                if (count > windows_max)
+                    windows_max = count;
+                if (open) {
+                    // WDS 给出了窗口的权威外框，后续不再用对象起点兜底
+                    current.bounds_checked = true;
+                    size_t off = 1;
+                    for (int i = 0; i < count && off + 9 <= static_cast<size_t>(length); ++i, off += 9) {
+                        const int x = ReadBe16(p + off + 1);
+                        const int y = ReadBe16(p + off + 3);
+                        const int w = ReadBe16(p + off + 5);
+                        const int h = ReadBe16(p + off + 7);
+                        if (current.screen_width > 0 &&
+                            (x + w > current.screen_width || y + h > current.screen_height)) {
+                            ++current.out_of_bounds;
+                        }
+                    }
+                }
+            }
+        }
+        pos += static_cast<size_t>(length);
+    }
+    flush();
+}
+
+// DVB：每个段是 sync(0x0F) + type(1) + page_id(2) + length(2) + payload。
+// page composition 给区域位置与数量，region composition 给区域尺寸；
+// 区域尺寸跨包到达，状态保存在 regions（[id, width, height] 平铺）。
+void ParseDvbPayload(const uint8_t* data, size_t size, int screen_width, int screen_height, std::vector<int>& regions,
+                     std::vector<GraphicPresentation>& out, int& objects_max) {
+    if (data == nullptr)
+        return;
+    size_t pos = 0;
+    while (pos + 6 <= size) {
+        if (data[pos] != 0x0F) {
+            ++pos;
+            continue;
+        }
+        const int type = data[pos + 1];
+        const int length = ReadBe16(data + pos + 4); // sync + type + page_id(2) 之后
+        pos += 6;
+        if (length < 0 || pos + static_cast<size_t>(length) > size)
+            break;
+        const uint8_t* p = data + pos;
+
+        if (type == 0x10) { // Page Composition Segment
+            GraphicPresentation presentation;
+            presentation.screen_width = screen_width;
+            presentation.screen_height = screen_height;
+            if (length >= 2) {
+                presentation.id = static_cast<uint32_t>((p[1] >> 4) & 0x0F);
+                size_t off = 2;
+                while (off + 6 <= static_cast<size_t>(length)) {
+                    const int region_id = p[off];
+                    const int x = ReadBe16(p + off + 2);
+                    const int y = ReadBe16(p + off + 4);
+                    ++presentation.region_count;
+                    presentation.region_positions.push_back(region_id);
+                    presentation.region_positions.push_back(x);
+                    presentation.region_positions.push_back(y);
+                    off += 6;
+                }
+            }
+            out.push_back(presentation);
+        } else if (type == 0x11) { // Region Composition Segment
+            if (length >= 10) {
+                const int region_id = p[0];
+                const int width = ReadBe16(p + 2);
+                const int height = ReadBe16(p + 4);
+                bool replaced = false;
+                for (size_t r = 0; r + 2 < regions.size(); r += 3) {
+                    if (regions[r] != region_id)
+                        continue;
+                    regions[r + 1] = width;
+                    regions[r + 2] = height;
+                    replaced = true;
+                    break;
+                }
+                if (!replaced) {
+                    regions.push_back(region_id);
+                    regions.push_back(width);
+                    regions.push_back(height);
+                }
+                const int objects = (length - 10) / 6;
+                if (objects > objects_max)
+                    objects_max = objects;
+            }
+        }
+        pos += static_cast<size_t>(length);
+    }
+
+    // 位置与尺寸可能分包到达：整包解析完再统一判越界
+    for (GraphicPresentation& presentation : out) {
+        for (size_t i = 0; i + 2 < presentation.region_positions.size(); i += 3) {
+            for (size_t r = 0; r + 2 < regions.size(); r += 3) {
+                if (regions[r] != presentation.region_positions[i])
+                    continue;
+                if (presentation.screen_width > 0 &&
+                    (presentation.region_positions[i + 1] + regions[r + 1] > presentation.screen_width ||
+                     presentation.region_positions[i + 2] + regions[r + 2] > presentation.screen_height)) {
+                    ++presentation.out_of_bounds;
+                }
+                break;
+            }
+        }
+    }
 }
 
 } // namespace
@@ -1011,6 +1322,7 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
     double prev_start = -1.0;
     double prev_end = -1.0;
     std::string prev_text;
+    bool prev_empty = true;
     int stream_index = -1;
 
     for (model::SubtitleCue& cue : cues) {
@@ -1070,14 +1382,32 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
                               cue.start_seconds, cue.end_seconds, buf);
                     flagged = true;
                 }
+            } else if (options.check_cue_gap && cue.start_seconds > prev_end + 1e-6 && !prev_empty && !cue.empty) {
+                // 首尾相接（间隔 0，roll-up 的标准形态）不算：只有"确实空了但空得很短"
+                // 才是闪烁。上一条如果是空 cue，间隔没有观感意义。
+                const double gap = cue.start_seconds - prev_end;
+                if (gap > 0.0 && gap < options.min_cue_gap_seconds) {
+                    std::snprintf(buf, sizeof(buf), "第 %d 条与上一条间隔 %.3fs，短于建议下限 %.3fs，连续播放会闪烁",
+                                  cue.index + 1, gap, options.min_cue_gap_seconds);
+                    add_issue(model::SubtitleIssueType::CueGap, model::IssueSeverity::Info, stream_index, cue.index,
+                              cue.start_seconds, cue.end_seconds, buf);
+                    flagged = true;
+                }
             }
         }
 
         if (options.check_reading_speed && duration > 0.2 && !cue.empty) {
+            // 同样的"字符/秒"，一个汉字的信息量远大于一个拉丁字母。语言 tag 或
+            // 文本脚本判定为中日韩时用单独的阈值，否则用通用阈值。
+            const bool cjk_text =
+                options.language_aware_reading_speed && (IsCjkLanguage(cue.language) || TextLooksLikeCjk(cue.text));
+            const double cps_limit = (cjk_text && options.max_chars_per_second_cjk > 0.0)
+                                         ? options.max_chars_per_second_cjk
+                                         : options.max_chars_per_second;
             const double cps = static_cast<double>(cue.char_count) / duration;
-            if (cps > options.max_chars_per_second) {
-                std::snprintf(buf, sizeof(buf), "第 %d 条阅读速度 %.1f 字符/秒，超过上限 %.1f", cue.index + 1, cps,
-                              options.max_chars_per_second);
+            if (cps > cps_limit) {
+                std::snprintf(buf, sizeof(buf), "第 %d 条阅读速度 %.1f 字符/秒，超过%s上限 %.1f", cue.index + 1, cps,
+                              cjk_text ? "中文" : "", cps_limit);
                 add_issue(model::SubtitleIssueType::TooFast, model::IssueSeverity::Info, stream_index, cue.index,
                           cue.start_seconds, cue.end_seconds, buf);
                 flagged = true;
@@ -1128,6 +1458,7 @@ void SubtitleAnalyzer::ValidateCues(std::vector<model::SubtitleCue>& cues, std::
             cue.has_issue = true;
         prev_start = cue.start_seconds;
         prev_text = cue.text;
+        prev_empty = cue.empty;
         // prev_end 必须单调不减：字幕时间轴只会往前走。畸形样本（end 早于 start）会把
         // 它拉回起点，之后的重叠率、停留时长、丢帧判定全都跟着倒退 —— 一条坏数据会
         // 放大成一片误报，所以这里只取"不比历史更靠前"的那个值。
@@ -1146,6 +1477,9 @@ void SubtitleAnalyzer::Reset(const SubtitleOptions& options) {
     video_slots_.clear();
     timeline_probes_.clear();
     non_utf8_streams_.clear();
+    graphic_slots_.clear();
+    video_width_ = 0;
+    video_height_ = 0;
 }
 
 SubtitleAnalyzer::~SubtitleAnalyzer() {
@@ -1185,6 +1519,11 @@ void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
                 slot.codec_id = static_cast<int>(st->codecpar->codec_id);
                 slot.nal_prefix_bytes = NalLengthPrefixBytes(st->codecpar);
                 video_slots_.push_back(slot);
+                // DVB 图形字幕段头里没有画幅，越界检查只能拿视频尺寸当参照
+                if (st->codecpar->width > video_width_)
+                    video_width_ = st->codecpar->width;
+                if (st->codecpar->height > video_height_)
+                    video_height_ = st->codecpar->height;
             }
             continue;
         }
@@ -1247,7 +1586,7 @@ void SubtitleAnalyzer::RegisterStreams(const AVFormatContext* fmt) {
         const bool has_decoder = avcodec_find_decoder(static_cast<AVCodecID>(codec_id)) != nullptr;
 
         if (info.kind == model::SubtitleKind::Bitmap) {
-            info.note = "图形字幕：只输出流 metadata 与包时间线（不做 OCR / 像素级合成分析，见 D3 边界）";
+            info.note = "图形字幕：解析段头统计窗口/对象/画幅（不做 OCR / 像素级合成分析，见 D3 边界）";
             ++result_.bitmap_stream_count;
         } else if (info.kind == model::SubtitleKind::ClosedCaption) {
             info.note = (info.format == model::SubtitleFormat::Cea708)
@@ -1322,6 +1661,8 @@ void SubtitleAnalyzer::HandleVideoPacket(const AVPacket* pkt, const AVStream* st
             CollectMpeg2UserData(pkt->data, pkt->size, slot->top_field_first, triplets);
         } else if (slot->codec_id == AV_CODEC_ID_H264 || slot->codec_id == AV_CODEC_ID_HEVC) {
             CollectSeiFromPacket(pkt->data, pkt->size, slot->codec_id, slot->nal_prefix_bytes, triplets);
+        } else if (slot->codec_id == AV_CODEC_ID_AV1) {
+            CollectAv1MetadataTriplets(pkt->data, static_cast<size_t>(pkt->size), triplets);
         }
     }
     if (triplets.empty())
@@ -1353,7 +1694,7 @@ model::SubtitleStreamInfo* SubtitleAnalyzer::EnsureEmbeddedCaptionStream(const A
     const char* video_codec = avcodec_get_name(stream->codecpar->codec_id);
     info.codec_name = video_codec ? video_codec : "";
     info.embedded = true;
-    info.note = "视频内嵌隐藏字幕（MPEG-2 user_data / H.264·HEVC SEI 的 A53 数据），不是独立字幕轨";
+    info.note = "视频内嵌隐藏字幕（MPEG-2 user_data / H.264·HEVC SEI / AV1 T.35 的 A53 数据），不是独立字幕轨";
     ++result_.text_stream_count;
     result_.streams.push_back(std::move(info));
     return &result_.streams.back();
@@ -1369,6 +1710,73 @@ void SubtitleAnalyzer::PushEmbeddedTriplets(int stream_index, const AVStream* st
     info->parsed = true;
     CaptionSlot* slot = FindOrCreateCaptionSlot(stream_index);
     slot->decoder.PushTriplets(data, size, ts >= 0.0 ? ts : 0.0);
+}
+
+SubtitleAnalyzer::GraphicSlot* SubtitleAnalyzer::FindOrCreateGraphicSlot(int stream_index) {
+    for (GraphicSlot& slot : graphic_slots_) {
+        if (slot.stream_index == stream_index)
+            return &slot;
+    }
+    GraphicSlot slot;
+    slot.stream_index = stream_index;
+    graphic_slots_.push_back(std::move(slot));
+    return &graphic_slots_.back();
+}
+
+void SubtitleAnalyzer::ParseGraphicPacket(model::SubtitleStreamInfo& info, const uint8_t* data, size_t size,
+                                          double ts) {
+    if (data == nullptr || size < 3)
+        return;
+    if (info.format != model::SubtitleFormat::HdmvPgs && info.format != model::SubtitleFormat::DvbSubtitle)
+        return;
+
+    GraphicSlot* slot = FindOrCreateGraphicSlot(info.stream_index);
+    std::vector<GraphicPresentation> presentations;
+    int windows_max = 0;
+    int objects_max = 0;
+    if (info.format == model::SubtitleFormat::HdmvPgs) {
+        ParsePgsPayload(data, size, presentations, windows_max);
+    } else {
+        ParseDvbPayload(data, size, video_width_, video_height_, slot->regions, presentations, objects_max);
+    }
+    if (presentations.empty() && windows_max == 0 && objects_max == 0)
+        return;
+
+    model::GraphicSubtitleStats& stats = info.graphic;
+    stats.present = true;
+    if (windows_max > stats.window_count_max)
+        stats.window_count_max = windows_max;
+    if (objects_max > stats.object_count_max)
+        stats.object_count_max = objects_max;
+
+    for (const GraphicPresentation& presentation : presentations) {
+        // 同一显示集可能被拆进多个包重复投递：时间与编号都相同就不重复记账
+        if (slot->has_last && presentation.id == slot->last_id && ts >= 0.0 && std::fabs(ts - slot->last_ts) < 1e-6) {
+            continue;
+        }
+        if (slot->has_last && slot->last_had_content && ts >= 0.0 && slot->last_ts >= 0.0) {
+            const double gap = ts - slot->last_ts;
+            // 一帧（约 40ms）内就被替换/清掉：观众实际看不到这条字幕
+            if (gap >= -1e-6 && gap < 0.05)
+                ++stats.zero_duration_count;
+        }
+
+        ++stats.presentation_count;
+        if (!presentation.HasContent())
+            ++stats.empty_presentation_count;
+        if (presentation.object_count > stats.object_count_max)
+            stats.object_count_max = presentation.object_count;
+        if (presentation.screen_width > stats.screen_width)
+            stats.screen_width = presentation.screen_width;
+        if (presentation.screen_height > stats.screen_height)
+            stats.screen_height = presentation.screen_height;
+        stats.out_of_bounds_count += presentation.out_of_bounds;
+
+        slot->has_last = ts >= 0.0;
+        slot->last_ts = ts;
+        slot->last_id = presentation.id;
+        slot->last_had_content = presentation.HasContent();
+    }
 }
 
 void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
@@ -1424,6 +1832,11 @@ void SubtitleAnalyzer::OnPacket(const AVPacket* pkt, const AVStream* stream) {
             slot->decoder.PushPairSample(pkt->data, size, ts >= 0.0 ? ts : 0.0);
         }
         info->parsed = true;
+        return;
+    }
+    // 图形字幕：只解段头（PGS / DVB），不碰像素；产物是流级统计与三条规则。
+    if (info->kind == model::SubtitleKind::Bitmap) {
+        ParseGraphicPacket(*info, pkt->data, static_cast<size_t>(pkt->size), ts);
         return;
     }
     if (info->kind != model::SubtitleKind::Text)
@@ -1956,6 +2369,59 @@ void SubtitleAnalyzer::Finish(double media_duration_seconds) {
             issue.detail = "字幕流 " + std::to_string(stream.stream_index) + "（" + stream.codec_name +
                            "）没有解析出任何字幕，无法做文本级检查";
             result_.issues.push_back(std::move(issue));
+        }
+    }
+
+    // 图形字幕：段头统计 + 三条客观规则。只读段头（PCS / WDS / page / region composition），
+    // 不解像素、不做 OCR —— 这是 D3 边界内唯一能判准的那部分。
+    if (options_.parse_text_cues) {
+        for (model::SubtitleStreamInfo& stream : result_.streams) {
+            if (!stream.graphic.present)
+                continue;
+            const model::GraphicSubtitleStats& graphic = stream.graphic;
+            char buf[256];
+            if (graphic.screen_width > 0 && graphic.screen_height > 0) {
+                std::snprintf(buf, sizeof(buf),
+                              "图形字幕段头统计：上屏 %d 次（空显示 %d），窗口最多 %d，对象最多 %d，画面 %d×%d，"
+                              "越界 %d，零时长 %d；不做 OCR",
+                              graphic.presentation_count, graphic.empty_presentation_count, graphic.window_count_max,
+                              graphic.object_count_max, graphic.screen_width, graphic.screen_height,
+                              graphic.out_of_bounds_count, graphic.zero_duration_count);
+            } else {
+                std::snprintf(buf, sizeof(buf),
+                              "图形字幕段头统计：上屏 %d 次（空显示 %d），窗口最多 %d，对象最多 %d，越界 %d，"
+                              "零时长 %d；不做 OCR",
+                              graphic.presentation_count, graphic.empty_presentation_count, graphic.window_count_max,
+                              graphic.object_count_max, graphic.out_of_bounds_count, graphic.zero_duration_count);
+            }
+            stream.note = buf;
+
+            const std::string prefix =
+                "字幕流 " + std::to_string(stream.stream_index) + "（" + stream.codec_name + "）";
+            auto add_graphic_issue = [&](model::SubtitleIssueType type, const std::string& detail) {
+                model::SubtitleIssue issue;
+                issue.type = type;
+                issue.severity = model::IssueSeverity::Warning;
+                issue.stream_index = stream.stream_index;
+                issue.cue_index = -1;
+                issue.detail = detail;
+                result_.issues.push_back(std::move(issue));
+            };
+            if (graphic.presentation_count > 0 && graphic.empty_presentation_count >= graphic.presentation_count) {
+                add_graphic_issue(model::SubtitleIssueType::GraphicEmpty,
+                                  prefix + " 有 " + std::to_string(graphic.presentation_count) +
+                                      " 次上屏但全部是清屏，从未显示过内容");
+            }
+            if (graphic.out_of_bounds_count > 0) {
+                add_graphic_issue(model::SubtitleIssueType::GraphicOutOfBounds,
+                                  prefix + " 有 " + std::to_string(graphic.out_of_bounds_count) +
+                                      " 个窗口/区域超出画面");
+            }
+            if (graphic.zero_duration_count > 0) {
+                add_graphic_issue(model::SubtitleIssueType::GraphicZeroDuration,
+                                  prefix + " 有 " + std::to_string(graphic.zero_duration_count) +
+                                      " 次上屏在 1 帧内被替换/清掉，观众实际看不到");
+            }
         }
     }
 

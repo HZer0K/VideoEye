@@ -188,10 +188,20 @@ struct SubtitleOptions {
     double max_cue_duration_seconds = 8.0;
 
     // 阅读速度上限（字符/秒）。中文建议 12-16，英文 16-21。
+    // 同样叫"字符/秒"，一个汉字的信息量远大于一个拉丁字母：用英文阈值卡中文
+    // 会系统性漏报。语言 tag 或文本脚本判定为中日韩时改用下面的 CJK 阈值。
     double max_chars_per_second = 21.0;
+    double max_chars_per_second_cjk = 16.0;
+    // 关闭后一律用 max_chars_per_second（保持旧行为）
+    bool language_aware_reading_speed = true;
 
     // 重叠容差：相邻 cue 首尾相接（差几毫秒）不算重叠
     double overlap_tolerance_seconds = 0.005;
+
+    // 相邻字幕间隔：一条刚消失、下一条几乎立刻出现，观感是"闪"。首尾相接
+    // （间隔 0，roll-up 的正常形态）不算，只有正间隔但小于下限才报。
+    bool check_cue_gap = true;
+    double min_cue_gap_seconds = 0.2;
 
     bool parse_text_cues = true;
     bool check_overlap = true;

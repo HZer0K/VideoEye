@@ -84,6 +84,10 @@ std::vector<model::DiagnosticIssue> CheckSubtitleRules(const model::QcRule& rule
         {"subtitle.text.garbled", model::SubtitleIssueType::GarbledText},
         {"subtitle.text.duplicate", model::SubtitleIssueType::DuplicateCue},
         {"subtitle.text.line_too_long", model::SubtitleIssueType::LineTooLong},
+        {"subtitle.cue_gap", model::SubtitleIssueType::CueGap},
+        {"subtitle.graphic.empty", model::SubtitleIssueType::GraphicEmpty},
+        {"subtitle.graphic.window_out_of_bounds", model::SubtitleIssueType::GraphicOutOfBounds},
+        {"subtitle.graphic.zero_duration", model::SubtitleIssueType::GraphicZeroDuration},
     };
     bool matched = false;
     model::SubtitleIssueType target = model::SubtitleIssueType::EmptyText;

@@ -770,7 +770,7 @@ std::vector<QcRule> DefaultQcRules() {
         "修正结束时间；SRT 里常见于小时位写错（00 写成 10）。");
 
     add("subtitle.cue_too_fast", "字幕阅读速度过快", IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero,
-        21.0, "字符/秒", "按字符数/停留时间算出的阅读速度超过上限。",
+        21.0, "字符/秒", "按字符数/停留时间算出的阅读速度超过上限；中日韩文字按单独的中文阈值判定（默认 16）。",
         "拆分长句或延长停留；中文建议 12-16 字符/秒，英文 16-21。");
 
     add("subtitle.cue_out_of_range", "字幕超出媒体时长", IssueCategory::Metadata, IssueSeverity::Warning,
@@ -819,6 +819,23 @@ std::vector<QcRule> DefaultQcRules() {
     add("subtitle.text.line_too_long", "字幕单行过长", IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero,
         0.0, "条", "单行字符数超过建议上限，播放器会自动折行或缩小字号，影响阅读体验。",
         "按语义拆成两行，中文每行建议不超过 20 字，英文不超过 42 字符。");
+
+    add("subtitle.cue_gap", "相邻字幕间隔过短", IssueCategory::Metadata, IssueSeverity::Info, QcRuleOp::NonZero, 0.2,
+        "s", "上一条刚消失、下一条几乎立刻出现（正间隔但小于下限），连续播放时观感是闪烁。",
+        "留出至少 2 帧（约 0.08 秒）的空白；如果本来就是连续两句，可合并成一条或延长间隔。");
+
+    add("subtitle.graphic.empty", "图形字幕没有内容", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "条",
+        "PGS/DVB 图形字幕有上屏记录，但全部是清屏（0 窗口/区域），整条轨从未真正显示过内容。",
+        "确认母版字幕是否为空轨；从母版重新导出该轨，或删除无用的空轨。");
+
+    add("subtitle.graphic.window_out_of_bounds", "图形字幕超出画面", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "处", "图形字幕的窗口/区域坐标加尺寸超出画面，播放时字幕会被裁掉一部分。",
+        "在字幕制作工具里把窗口拖回安全区，或按母版画幅重新排版。");
+
+    add("subtitle.graphic.zero_duration", "图形字幕零时长上屏", IssueCategory::Metadata, IssueSeverity::Warning,
+        QcRuleOp::NonZero, 0.0, "处", "有内容的图形字幕上屏后一帧内就被替换或清掉，观众实际看不到，表现为「闪一下」。",
+        "检查该时间点的 PCS/ODS 是否重复或顺序错乱；从母版重新导出该段字幕。");
 
     // ---- 隐藏字幕服务层（CEA-608 通道 / CEA-708 服务，见 CeaCaptionDecoder.h）----
     add("subtitle.cc.no_text", "隐藏字幕流没有解出文本", IssueCategory::Metadata, IssueSeverity::Warning,

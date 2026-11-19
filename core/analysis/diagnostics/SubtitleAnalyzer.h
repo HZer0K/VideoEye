@@ -8,7 +8,8 @@
 //   * CEA-608/708：走 CeaCaptionDecoder 的**服务层状态机**（D2）——608 分 CC1-CC4
 //     四个通道、pop-on/paint-on/roll-up 三种模式，708 按 DTVCC 包解到每个服务，
 //     产出带真实起止时间的 cue，按通道/服务分别归属；
-//   * 图形字幕（DVB / DVD / PGS）：只输出流 metadata 与包时间线（不做 OCR，见 D3 边界）。
+//   * 图形字幕（DVB / PGS）：解析段头，统计窗口 / 对象 / 画幅 / 上屏次数与零时长
+//     （不做 OCR / 像素分析，见 D3 边界）。
 //
 // 依赖边界:
 //   - 头文件只前向声明 FFmpeg 类型，纯文本解析全是静态函数（单测直接调用）；
@@ -142,6 +143,11 @@ private:
     model::SubtitleStreamInfo* EnsureEmbeddedCaptionStream(const AVStream* stream);
     void PushEmbeddedTriplets(int stream_index, const AVStream* stream, const uint8_t* data, size_t size, double ts);
 
+    // ---- 图形字幕（PGS / DVB）段头解析 ----
+    // 只读段头（PCS / WDS / page composition / region composition），
+    // 统计窗口、对象、画幅与上屏次数；不解像素、不做 OCR（D3 边界）。
+    void ParseGraphicPacket(model::SubtitleStreamInfo& info, const uint8_t* data, size_t size, double ts);
+
     // 纯字幕文件的整文件重解析（只对本地文件 + 无音视频流 + 单条文本字幕流生效）
     bool TryParseWholeFile(const AVFormatContext* fmt);
     // packet_ts >= 0 时顺带记录 cue 时间与包 PTS 的偏差，供时间轴偏移校验使用
@@ -172,6 +178,23 @@ private:
     std::vector<TimelineProbe> timeline_probes_;
     // 已确认不是合法 UTF-8 的流：乱码检查交给流级 non_utf8 规则，不再逐条报
     std::vector<int> non_utf8_streams_;
+
+    // 图形字幕的跨包状态：DVB 的 region 尺寸与 page composition 分包到达，
+    // 零时长判定也要拿上一条上屏时间做比较。
+    // regions 按 [region_id, width, height] 三元组平铺，避免在头文件里多嵌套一个类型。
+    struct GraphicSlot {
+        int stream_index = -1;
+        bool has_last = false;
+        double last_ts = 0.0;
+        uint32_t last_id = 0;
+        bool last_had_content = false;
+        std::vector<int> regions;
+    };
+    GraphicSlot* FindOrCreateGraphicSlot(int stream_index);
+    std::vector<GraphicSlot> graphic_slots_;
+    // 图形字幕的包围盒检查需要视频画幅（DVB 段头里没有声明）
+    int video_width_ = 0;
+    int video_height_ = 0;
 
     std::string source_path_;
     // 已整文件解析完毕的流：逐包阶段跳过，避免同一批 cue 入两遍

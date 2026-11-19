@@ -58,23 +58,27 @@ enum class SubtitleKind {
 
 // 单条 cue 的问题类型。顺序即 UI 表格里的默认顺序。
 enum class SubtitleIssueType {
-    EmptyText = 0,     // 空字幕（无可见文本）
-    Overlap,           // 与上一条 cue 时间重叠
-    TooShort,          // 停留时间过短（来不及读）
-    TooLong,           // 停留时间过长（通常意味着忘记结束）
-    NonMonotonic,      // 时间倒序（开始时间早于上一条）
-    InvalidDuration,   // end <= start
-    TooFast,           // 阅读速度过快（字符/秒）
-    OutOfRange,        // 超出媒体时长
-    MissingLanguage,   // 流级：缺少 language tag
-    MissingHandler,    // 流级：缺少 handler name（MP4 hdlr）
-    NoCues,            // 流级：文本字幕一条 cue 都没解析出来（解析失败）
-    UnsupportedFormat, // 流级：格式无法解析（既无原生解析器也无 FFmpeg 解码器）
-    NonUtf8Encoding,   // 流级：文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码）
-    TimelineOffset,    // 流级：cue 时间轴与容器时间戳整体偏移（elst / X-TIMESTAMP-MAP）
-    GarbledText,       // 文本乱码：U+FFFD 替换符、私用区码点、控制字符
-    DuplicateCue,      // 相邻两条 cue 文本完全相同（重复上屏）
-    LineTooLong,       // 单行字符数超过建议上限（排版/阅读性）
+    EmptyText = 0,       // 空字幕（无可见文本）
+    Overlap,             // 与上一条 cue 时间重叠
+    TooShort,            // 停留时间过短（来不及读）
+    TooLong,             // 停留时间过长（通常意味着忘记结束）
+    NonMonotonic,        // 时间倒序（开始时间早于上一条）
+    InvalidDuration,     // end <= start
+    TooFast,             // 阅读速度过快（字符/秒）
+    OutOfRange,          // 超出媒体时长
+    MissingLanguage,     // 流级：缺少 language tag
+    MissingHandler,      // 流级：缺少 handler name（MP4 hdlr）
+    NoCues,              // 流级：文本字幕一条 cue 都没解析出来（解析失败）
+    UnsupportedFormat,   // 流级：格式无法解析（既无原生解析器也无 FFmpeg 解码器）
+    NonUtf8Encoding,     // 流级：文本不是合法 UTF-8（多为 GBK/CP1251 等旧编码）
+    TimelineOffset,      // 流级：cue 时间轴与容器时间戳整体偏移（elst / X-TIMESTAMP-MAP）
+    GarbledText,         // 文本乱码：U+FFFD 替换符、私用区码点、控制字符
+    DuplicateCue,        // 相邻两条 cue 文本完全相同（重复上屏）
+    LineTooLong,         // 单行字符数超过建议上限（排版/阅读性）
+    CueGap,              // 相邻两条 cue 间隔过短（正间隔但小于下限，观感是闪烁）
+    GraphicEmpty,        // 流级：图形字幕只有清屏，从未显示过任何内容
+    GraphicOutOfBounds,  // 流级：图形字幕的窗口/区域超出画面
+    GraphicZeroDuration, // 流级：有内容的图形字幕上屏后一帧内就被替换/清掉
 };
 
 // 一条字幕 problem（QC 报告里以 category=Metadata 呈现）
@@ -123,6 +127,20 @@ struct SubtitleCue {
     double CharsPerSecond() const;
 };
 
+// 图形字幕（PGS / DVB）的段头统计。只读段头，不解像素、不做 OCR：
+// 能判准的是"上屏了几次、每次有没有内容、窗口/区域是否越界、有没有零时长闪屏"。
+struct GraphicSubtitleStats {
+    bool present = false;             // 是否真的解析到过段头
+    int presentation_count = 0;       // 上屏次数（PGS PCS / DVB page composition）
+    int empty_presentation_count = 0; // 其中显示 0 个窗口/区域（清屏）
+    int object_count_max = 0;         // 单次上屏最多几个对象
+    int window_count_max = 0;         // 最多定义过几个窗口
+    int screen_width = 0;             // PGS PCS 声明的画幅；DVB 取视频流尺寸
+    int screen_height = 0;
+    int out_of_bounds_count = 0; // 窗口/区域超出画面的次数
+    int zero_duration_count = 0; // 有内容的上屏在 1 帧内被替换/清屏
+};
+
 // 一条字幕流的静态摘要 + 解析状态
 struct SubtitleStreamInfo {
     int stream_index = -1;
@@ -162,6 +180,9 @@ struct SubtitleStreamInfo {
     // 靠 cue 文本本身看不出来。
     Cea608Stats cc608;
     Cea708Stats cc708;
+
+    // 图形字幕（PGS / DVB）的段头统计。只有 Bitmap 流会填。
+    GraphicSubtitleStats graphic;
 
     bool IsText() const {
         return kind == SubtitleKind::Text;
