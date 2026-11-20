@@ -5,6 +5,11 @@
 
 #include "infrastructure/serialization/Json.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <string>
+#include <vector>
+
 namespace videoeye {
 namespace reporting {
 
@@ -19,6 +24,28 @@ JsonValue JNumber(double value) {
 
 JsonValue JText(const std::string& text) {
     return JsonValue(text);
+}
+
+// 码率/GOP 异常类型的稳定 code。中文文案另落 type_text —— 下游按 code 分支，
+// 不要去解析中文（与 issue 的 severity/category + *_text 同一套规矩）。
+const char* BitrateAnomalyCode(model::BitrateAnomalyType type) {
+    switch (type) {
+    case model::BitrateAnomalyType::LongGop:
+        return "long_gop";
+    case model::BitrateAnomalyType::IrregularKeyInterval:
+        return "irregular_key_interval";
+    case model::BitrateAnomalyType::PeakOvershoot:
+        return "peak_overshoot";
+    case model::BitrateAnomalyType::OversizedFrame:
+        return "oversized_frame";
+    case model::BitrateAnomalyType::OversizedIFrame:
+        return "oversized_i_frame";
+    case model::BitrateAnomalyType::SceneChangeWithoutKeyframe:
+        return "scene_change_without_keyframe";
+    case model::BitrateAnomalyType::SparseKeyframes:
+        return "sparse_keyframes";
+    }
+    return "unknown";
 }
 
 JsonValue BuildIssueObject(const model::DiagnosticIssue& issue) {
@@ -594,6 +621,69 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     bitrate.Set("median_kbps", JNumber(result.bitrate_gop.median_bitrate_kbps));
     bitrate.Set("peak_to_mean_ratio", JNumber(result.bitrate_gop.peak_to_mean_ratio));
     bitrate.Set("window_seconds", JNumber(result.bitrate_gop.window_seconds));
+    // 深度分析的事实量：缺了它们，读者只看到"平均/峰值"，无法判断这次统计
+    // 覆盖了多长时间、多少字节，也看不出曲线是不是抽稀后的近似。
+    bitrate.Set("duration_seconds", JNumber(result.bitrate_gop.duration_seconds));
+    bitrate.Set("total_frames", JNumber(static_cast<double>(result.bitrate_gop.total_frames)));
+    bitrate.Set("total_bytes", JNumber(static_cast<double>(result.bitrate_gop.total_bytes)));
+    bitrate.Set("target_peak_kbps", JNumber(result.bitrate_gop.target_peak_kbps));
+    bitrate.Set("downsampled", JsonValue(result.bitrate_gop.downsampled));
+
+    // 字节的两套账：包级事实（曲线与平均码率以此为准）vs 帧级归属（GOP 大小、
+    // 大帧判定以此为准）。两者不相等说明有字节没能关联到帧（解码延迟 / 丢帧 /
+    // parser 收尾残留）—— 只有 total_bytes 的话，读者会误以为"帧字节之和 == 总字节"。
+    bitrate.Set("frame_bytes", JNumber(static_cast<double>(result.bitrate_gop.frame_bytes)));
+    bitrate.Set("unassociated_bytes", JNumber(static_cast<double>(result.bitrate_gop.unassociated_bytes)));
+    bitrate.Set("frame_bytes_estimated", JsonValue(result.bitrate_gop.frame_bytes_estimated));
+
+    // 滑动窗口曲线采样点：等步长抽稀到上限，保住形状又不会让 1 小时素材写出
+    // 几十万个点。point_count 是**实际总点数**，points 只是其中被保留的部分，
+    // 差异由 points_sampled 说明 —— 否则读的人会把抽稀曲线当逐点数据。
+    constexpr std::size_t kMaxJsonBitratePoints = 2000;
+    JsonValue points = JsonValue::MakeArray();
+    const std::vector<model::BitratePoint>& all_points = result.bitrate_gop.bitrate_points;
+    const std::size_t stride = all_points.size() > kMaxJsonBitratePoints
+                                   ? (all_points.size() + kMaxJsonBitratePoints - 1) / kMaxJsonBitratePoints
+                                   : 1;
+    for (std::size_t i = 0; i < all_points.size(); i += stride) {
+        const model::BitratePoint& point = all_points[i];
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("t", JNumber(point.timestamp_seconds));
+        node.Set("kbps", JNumber(point.bitrate_kbps));
+        node.Set("overshoot", JsonValue(point.overshoot));
+        points.PushBack(node);
+    }
+    bitrate.Set("point_count", JNumber(static_cast<double>(all_points.size())));
+    if (stride > 1)
+        bitrate.Set("points_sampled", JsonValue(true));
+    bitrate.Set("points", points);
+
+    // 异常明细：这是"机器读 JSON 能直接拿到的问题清单"。此前码率/GOP 异常只以
+    // 聚合条的形式出现在 issues 里，拿不到"哪一段、超了多少、怎么改"。
+    // 数量受分析器 max_anomalies_per_type 约束，全量落盘不会爆。
+    JsonValue anomalies = JsonValue::MakeArray();
+    for (const model::BitrateAnomaly& anomaly : result.bitrate_gop.anomalies) {
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("type", JText(BitrateAnomalyCode(anomaly.type)));
+        node.Set("type_text", JText(model::ToString(anomaly.type)));
+        node.Set("start_seconds", JNumber(anomaly.start_seconds));
+        node.Set("end_seconds", JNumber(anomaly.end_seconds));
+        node.Set("value", JNumber(anomaly.value));
+        node.Set("threshold", JNumber(anomaly.threshold));
+        node.Set("unit", JText(anomaly.unit));
+        if (anomaly.gop_index >= 0)
+            node.Set("gop_index", JNumber(static_cast<double>(anomaly.gop_index)));
+        node.Set("detail", JText(anomaly.detail));
+        node.Set("suggestion", JText(anomaly.suggestion));
+        anomalies.PushBack(node);
+    }
+    bitrate.Set("anomaly_count", JNumber(static_cast<double>(result.bitrate_gop.anomalies.size())));
+    bitrate.Set("anomalies", anomalies);
+
+    JsonValue suggestions = JsonValue::MakeArray();
+    for (const std::string& suggestion : result.bitrate_gop.suggestions)
+        suggestions.PushBack(JText(suggestion));
+    bitrate.Set("suggestions", suggestions);
     metrics.Set("bitrate", bitrate);
 
     JsonValue gop = JsonValue::MakeObject();
@@ -615,6 +705,42 @@ JsonValue BuildMetricsObject(const model::AnalysisResult& result) {
     gop.Set("i_frame_count", JNumber(static_cast<double>(result.bitrate_gop.i_frame_count)));
     gop.Set("p_frame_count", JNumber(static_cast<double>(result.bitrate_gop.p_frame_count)));
     gop.Set("b_frame_count", JNumber(static_cast<double>(result.bitrate_gop.b_frame_count)));
+    gop.Set("frames_mean", JNumber(result.bitrate_gop.gop_frames_mean));
+    gop.Set("key_interval_stddev_seconds", JNumber(result.bitrate_gop.key_interval_stddev));
+    gop.Set("closed_gop_count", JNumber(static_cast<double>(result.bitrate_gop.closed_gop_count)));
+    gop.Set("open_gop_count", JNumber(static_cast<double>(result.bitrate_gop.open_gop_count)));
+    gop.Set("i_frame_bytes", JNumber(static_cast<double>(result.bitrate_gop.i_frame_bytes_)));
+    gop.Set("i_frame_ratio", JNumber(result.bitrate_gop.IFrameRatio()));
+
+    // GOP 明细（有界）。全量明细在 UI 的「导出 GOP 列表 CSV」里；JSON 保留前 N 条
+    // 是让机器读取方不必再开一次扫描就能看到分段形状，但不该让长素材把报告写到
+    // 几十 MB。items_total 是实际条数，items_truncated 说明 items 只是前缀。
+    constexpr std::size_t kMaxJsonGopItems = 5000;
+    const std::size_t item_count = std::min(result.bitrate_gop.gops.size(), kMaxJsonGopItems);
+    JsonValue items = JsonValue::MakeArray();
+    for (std::size_t i = 0; i < item_count; ++i) {
+        const model::GopInfo& info = result.bitrate_gop.gops[i];
+        JsonValue node = JsonValue::MakeObject();
+        node.Set("index", JNumber(static_cast<double>(info.index)));
+        node.Set("start_seconds", JNumber(info.start_seconds));
+        node.Set("end_seconds", JNumber(info.end_seconds));
+        node.Set("duration_seconds", JNumber(info.DurationSeconds()));
+        node.Set("frame_count", JNumber(static_cast<double>(info.frame_count)));
+        node.Set("byte_count", JNumber(static_cast<double>(info.byte_count)));
+        node.Set("avg_bitrate_kbps", JNumber(info.AverageBitrateKbps()));
+        node.Set("i_count", JNumber(static_cast<double>(info.i_count)));
+        node.Set("p_count", JNumber(static_cast<double>(info.p_count)));
+        node.Set("b_count", JNumber(static_cast<double>(info.b_count)));
+        node.Set("unknown_count", JNumber(static_cast<double>(info.unknown_count)));
+        node.Set("max_frame_bytes", JNumber(static_cast<double>(info.max_frame_bytes)));
+        node.Set("closed_gop", JsonValue(info.closed_gop));
+        node.Set("complete", JsonValue(info.complete));
+        items.PushBack(node);
+    }
+    gop.Set("items_total", JNumber(static_cast<double>(result.bitrate_gop.gops.size())));
+    if (result.bitrate_gop.gops.size() > item_count)
+        gop.Set("items_truncated", JsonValue(true));
+    gop.Set("items", items);
     metrics.Set("gop", gop);
 
     if (result.audio_qc.analyzed) {

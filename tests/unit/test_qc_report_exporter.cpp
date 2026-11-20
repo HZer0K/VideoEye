@@ -925,6 +925,83 @@ QcExportBundle MakeEnrichedBundle() {
     frame_order.avg_gop_frames = 100.0;
     analysis.frame_order_timelines.push_back(frame_order);
 
+    // 码率与 GOP：够纯文本 / HTML / JSON 三端各自渲染出「码率与 GOP」一节。
+    // 数字刻意各不相同，方便测试判定"某一端把字段放错列"也能被发现。
+    videoeye::model::BitrateGopAnalysis& bg = analysis.bitrate_gop;
+    bg.duration_seconds = 12.0;
+    bg.total_bytes = 9000000;
+    bg.total_frames = 300;
+    bg.avg_bitrate_kbps = 6000.0;
+    bg.peak_bitrate_kbps = 9100.0;
+    bg.min_bitrate_kbps = 2400.0;
+    bg.median_bitrate_kbps = 5900.0;
+    bg.p95_bitrate_kbps = 7500.0;
+    bg.target_peak_kbps = 8000.0;
+    bg.peak_to_mean_ratio = 1.52;
+    bg.window_seconds = 1.0;
+    bg.frame_types_known = true;
+    bg.i_frame_count = 10;
+    bg.p_frame_count = 200;
+    bg.b_frame_count = 90;
+    bg.gop_count = 10;
+    bg.gop_duration_mean = 1.2;
+    bg.gop_duration_stddev = 0.3;
+    bg.gop_duration_max = 2.1;
+    bg.gop_frames_min = 25;
+    bg.gop_frames_max = 45;
+    bg.key_interval_mean = 1.2;
+    bg.key_interval_irregularity = 0.25;
+    bg.long_gop_count = 1;
+    bg.suggestions.push_back("把关键帧间隔压到 2 秒以内以改善 seek");
+
+    // 深度明细：这两套账 / 曲线 / 异常 / GOP 明细是 JSON 独有的落盘内容。
+    // frame_bytes + unassociated_bytes == total_bytes 是结果类型的硬约束，
+    // 夹具必须保持守恒，否则下游会读到一个自相矛盾的报告。
+    bg.frame_bytes = 8800000;
+    bg.unassociated_bytes = 200000;
+    bg.frame_bytes_estimated = true;
+    bg.gop_frames_mean = 30.0;
+    bg.key_interval_stddev = 0.28;
+    bg.closed_gop_count = 7;
+    bg.open_gop_count = 3;
+    bg.i_frame_bytes_ = 2000000;
+    bg.downsampled = true;
+    // 实际观察到 10 个 GOP，明细只保留前 2 条（模拟 max_gops 截断）
+    bg.gops_truncated = true;
+    for (int i = 0; i < 2; ++i) {
+        model::BitratePoint point;
+        point.timestamp_seconds = 0.5 + i * 1.0;
+        point.window_seconds = 1.0;
+        point.bytes = 750000;
+        point.bitrate_kbps = 6000.0 + i * 1000.0;
+        point.overshoot = (i == 1);
+        bg.bitrate_points.push_back(point);
+
+        model::GopInfo gop;
+        gop.index = i;
+        gop.start_seconds = i * 1.2;
+        gop.end_seconds = (i + 1) * 1.2;
+        gop.frame_count = 30 + i;
+        gop.byte_count = 900000 + i * 1000;
+        gop.i_count = 1;
+        gop.p_count = 20;
+        gop.b_count = 9 + i;
+        gop.closed_gop = (i == 0);
+        gop.complete = true;
+        bg.gops.push_back(gop);
+    }
+    model::BitrateAnomaly anomaly;
+    anomaly.type = model::BitrateAnomalyType::PeakOvershoot;
+    anomaly.start_seconds = 1.5;
+    anomaly.end_seconds = 2.5;
+    anomaly.value = 9100.0;
+    anomaly.threshold = 8000.0;
+    anomaly.unit = "kbps";
+    anomaly.gop_index = 1;
+    anomaly.detail = "窗口码率 9100 kbps 超过目标峰值 8000 kbps";
+    anomaly.suggestion = "降低该段码率或抬高目标峰值";
+    bg.anomalies.push_back(anomaly);
+
     // 画质 QC：黑场 + 冻结两条缺陷，覆盖「画质 QC」这一节
     analysis.visual_qc.analyzed = true;
     analysis.visual_qc.analyzed_frames = 120;
@@ -1512,6 +1589,7 @@ const SectionPair kSectionPairs[] = {
     {"证据与覆盖", "证据与覆盖"},
     {"参数变化时间线", "参数变化时间线"},
     {"帧级显示顺序", "帧级显示顺序"},
+    {"码率与 GOP", "码率与 GOP"},
     {"画质 QC", "画质 QC"},
     {"流列表", "流列表"},
     {"音频 QC（逐轨）", "音频 QC（逐轨）"},
@@ -1592,6 +1670,182 @@ TEST(QcReportExporterTest, TextAndHtmlEmitTheSameSetOfSections) {
     EXPECT_EQ(matched, static_cast<int>(pairs.size()))
         << "两端同时命中的章节只有 " << matched << " / " << pairs.size()
         << " 节 —— fixture 少喂了数据，或某一端不再渲染某一节。一致性检查正在退化成空操作";
+}
+
+// 码率与 GOP 摘要必须三端都落，而且口径一致：TXT（= PDF 正文）、HTML 与 JSON。
+// 历史上深度 bitrate_gop 只进 JSON，TXT/HTML 只有容器的 overall_bitrate —— 归档
+// 用 TXT/HTML 时滑动窗口码率与 GOP 统计整段丢失。这里钉死三端都带关键值。
+// 判据别只查章节名（"只有命中才出一行"自证不了内容），要逐值比对。
+TEST(QcReportExporterTest, BitrateGopSummaryIsInTextHtmlAndJson) {
+    const QcExportBundle bundle = MakeEnrichedBundle();
+    const std::string text = QcReportExporter::BuildText(bundle);
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+
+    // TXT（PDF 复用它）：窗口、码率三件套、峰均比、GOP 数与帧类型都要在。
+    for (const char* needle : {"--- 码率与 GOP ---", "统计窗口 1.0 s", "码率: 平均 6000.0 / 峰值 9100.0 / P95 7500.0",
+                               "中位数 5900.0 / 最小 2400.0 kbps", "峰均比 1.52", "目标峰值 8000.0 kbps",
+                               "GOP: 共 10 段", "平均 1.20 s / 最长 2.10 s", "I 10 / P 200 / B 90"}) {
+        EXPECT_NE(text.find(needle), std::string::npos) << "纯文本（及 PDF）里找不到: " << needle;
+    }
+
+    // HTML：同一批值要落地，且建议文案经过转义（此处无特殊字符，原样出现）。
+    for (const char* needle : {"<h2>码率与 GOP</h2>", "6000.0 /", "9100.0", "7500.0 kbps", "峰均比", "1.52", "GOP 数量",
+                               "I 10 / P 200 / B 90", "把关键帧间隔压到 2 秒以内"}) {
+        EXPECT_NE(html.find(needle), std::string::npos) << "HTML 里找不到: " << needle;
+    }
+
+    // JSON：metrics.bitrate / metrics.gop 与 TXT/HTML 同源同值。
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(bundle), root, &err)) << err;
+    const JsonValue* metrics = root.Find("metrics");
+    ASSERT_NE(metrics, nullptr) << "JSON 顶层缺少 metrics";
+    const JsonValue* bitrate = metrics->Find("bitrate");
+    const JsonValue* gop = metrics->Find("gop");
+    ASSERT_NE(bitrate, nullptr) << "metrics 缺少 bitrate";
+    ASSERT_NE(gop, nullptr) << "metrics 缺少 gop";
+    EXPECT_DOUBLE_EQ(bitrate->Find("avg_kbps")->NumberValueOr(), 6000.0);
+    EXPECT_DOUBLE_EQ(bitrate->Find("peak_kbps")->NumberValueOr(), 9100.0);
+    EXPECT_DOUBLE_EQ(bitrate->Find("peak_to_mean_ratio")->NumberValueOr(), 1.52);
+    EXPECT_EQ(static_cast<int>(gop->Find("count")->NumberValueOr()), 10);
+    EXPECT_EQ(static_cast<int>(gop->Find("i_frame_count")->NumberValueOr()), 10);
+}
+
+// JSON 是机器读取格式，光有 avg/peak 不够：下游要能直接拿到"哪一段出了什么问题、
+// 超了多少、怎么改"。这里钉死深度明细的落盘 —— 曲线点、异常明细、建议、两套字节账、
+// GOP 明细与截断标志。
+TEST(QcReportExporterTest, JsonCarriesBitrateGopDeepDetails) {
+    JsonValue root;
+    std::string err;
+    ASSERT_TRUE(JsonParse(QcReportExporter::BuildJson(MakeEnrichedBundle()), root, &err)) << err;
+    const JsonValue* metrics = root.Find("metrics");
+    ASSERT_NE(metrics, nullptr);
+    const JsonValue* bitrate = metrics->Find("bitrate");
+    const JsonValue* gop = metrics->Find("gop");
+    ASSERT_NE(bitrate, nullptr) << "metrics 缺少 bitrate";
+    ASSERT_NE(gop, nullptr) << "metrics 缺少 gop";
+
+    // 覆盖事实：不看这两个数，读者不知道平均码率是在多长的区间、多少字节上算出来的。
+    EXPECT_DOUBLE_EQ(bitrate->Find("duration_seconds")->NumberValueOr(), 12.0);
+    EXPECT_EQ(static_cast<long long>(bitrate->Find("total_bytes")->NumberValueOr()), 9000000LL);
+    EXPECT_TRUE(bitrate->Find("downsampled")->BoolValueOr(false));
+
+    // 两套字节账必须守恒，且"帧大小含估算"要露出来。
+    const double frame_bytes = bitrate->Find("frame_bytes")->NumberValueOr();
+    const double unassociated = bitrate->Find("unassociated_bytes")->NumberValueOr();
+    EXPECT_DOUBLE_EQ(frame_bytes + unassociated, bitrate->Find("total_bytes")->NumberValueOr())
+        << "frame_bytes + unassociated_bytes 必须等于 total_bytes，否则报告自相矛盾";
+    EXPECT_TRUE(bitrate->Find("frame_bytes_estimated")->BoolValueOr(false));
+
+    // 曲线点：没触发抽稀时不该有 points_sampled，point_count 与实际点数一致。
+    const JsonValue* points = bitrate->Find("points");
+    ASSERT_NE(points, nullptr) << "metrics.bitrate 缺少 points";
+    ASSERT_EQ(points->Size(), 2u);
+    EXPECT_EQ(static_cast<int>(bitrate->Find("point_count")->NumberValueOr()), 2);
+    EXPECT_EQ(bitrate->Find("points_sampled"), nullptr) << "2 个点没触发抽稀，不该落 points_sampled";
+    EXPECT_DOUBLE_EQ(points->Items()[1].Find("kbps")->NumberValueOr(), 7000.0);
+    EXPECT_TRUE(points->Items()[1].Find("overshoot")->BoolValueOr(false));
+
+    // 异常：code（机器读）+ type_text（人读）并列，区间/实测/阈值/关联 GOP/建议缺一不可。
+    const JsonValue* anomalies = bitrate->Find("anomalies");
+    ASSERT_NE(anomalies, nullptr) << "metrics.bitrate 缺少 anomalies";
+    ASSERT_EQ(anomalies->Size(), 1u);
+    EXPECT_EQ(static_cast<int>(bitrate->Find("anomaly_count")->NumberValueOr()), 1);
+    const JsonValue& anomaly = anomalies->Items()[0];
+    EXPECT_EQ(Str(&anomaly, "type"), "peak_overshoot");
+    EXPECT_FALSE(Str(&anomaly, "type_text").empty()) << "中文文案要与 code 并列落盘";
+    EXPECT_DOUBLE_EQ(anomaly.Find("start_seconds")->NumberValueOr(), 1.5);
+    EXPECT_DOUBLE_EQ(anomaly.Find("end_seconds")->NumberValueOr(), 2.5);
+    EXPECT_DOUBLE_EQ(anomaly.Find("value")->NumberValueOr(), 9100.0);
+    EXPECT_DOUBLE_EQ(anomaly.Find("threshold")->NumberValueOr(), 8000.0);
+    EXPECT_EQ(anomaly.Find("gop_index")->IntValueOr(-1), 1);
+    EXPECT_EQ(Str(&anomaly, "suggestion"), "降低该段码率或抬高目标峰值");
+
+    ASSERT_NE(bitrate->Find("suggestions"), nullptr) << "metrics.bitrate 缺少 suggestions";
+    ASSERT_EQ(bitrate->Find("suggestions")->Size(), 1u);
+    EXPECT_EQ(bitrate->Find("suggestions")->Items()[0].StringValueOr(""), "把关键帧间隔压到 2 秒以内以改善 seek");
+
+    // GOP：count 是实测总数、retained 是明细条数，两者不等必须靠 gops_truncated 说明。
+    EXPECT_EQ(static_cast<int>(gop->Find("retained")->NumberValueOr()), 2);
+    EXPECT_TRUE(gop->Find("gops_truncated")->BoolValueOr(false));
+    EXPECT_EQ(static_cast<int>(gop->Find("closed_gop_count")->NumberValueOr()), 7);
+    EXPECT_EQ(static_cast<int>(gop->Find("open_gop_count")->NumberValueOr()), 3);
+    EXPECT_DOUBLE_EQ(gop->Find("i_frame_bytes")->NumberValueOr(), 2000000.0);
+    EXPECT_NEAR(gop->Find("i_frame_ratio")->NumberValueOr(), 10.0 / 300.0, 1e-9);
+    EXPECT_DOUBLE_EQ(gop->Find("key_interval_stddev_seconds")->NumberValueOr(), 0.28);
+    EXPECT_DOUBLE_EQ(gop->Find("frames_mean")->NumberValueOr(), 30.0);
+
+    const JsonValue* items = gop->Find("items");
+    ASSERT_NE(items, nullptr) << "metrics.gop 缺少 items";
+    ASSERT_EQ(items->Size(), 2u);
+    EXPECT_EQ(static_cast<int>(gop->Find("items_total")->NumberValueOr()), 2);
+    EXPECT_EQ(gop->Find("items_truncated"), nullptr) << "2 条明细没到 5000 上限，不该落 items_truncated";
+    EXPECT_TRUE(items->Items()[0].Find("closed_gop")->BoolValueOr(false));
+    EXPECT_FALSE(items->Items()[1].Find("closed_gop")->BoolValueOr(true));
+    EXPECT_DOUBLE_EQ(items->Items()[0].Find("duration_seconds")->NumberValueOr(), 1.2);
+    EXPECT_GT(items->Items()[0].Find("avg_bitrate_kbps")->NumberValueOr(), 0.0);
+}
+
+// 明细必须有界：长素材的 GOP 明细与曲线点能把报告写到几十 MB。封顶本身合理，
+// 但"截断了"这件事必须落盘 —— 否则读的人会把前缀当成全量数据。
+TEST(QcReportExporterTest, JsonBoundsGopItemsAndBitratePoints) {
+    QcExportBundle bundle = MakeBundle(1);
+    model::BitrateGopAnalysis& bg = bundle.run.analysis.bitrate_gop;
+    bg.total_frames = 200000;
+    bg.total_bytes = 100000000;
+    bg.gop_count = 6001;
+    for (int i = 0; i < 6001; ++i) {
+        model::GopInfo gop;
+        gop.index = i;
+        gop.start_seconds = i * 2.0;
+        gop.end_seconds = (i + 1) * 2.0;
+        gop.frame_count = 50;
+        bg.gops.push_back(gop);
+    }
+    for (int i = 0; i < 3000; ++i) {
+        model::BitratePoint point;
+        point.timestamp_seconds = i * 0.25;
+        point.bitrate_kbps = 5000.0;
+        bg.bitrate_points.push_back(point);
+    }
+
+    JsonValue root;
+    std::string err;
+    const std::string json_text = QcReportExporter::BuildJson(bundle);
+    ASSERT_TRUE(JsonParse(json_text, root, &err)) << err;
+    const JsonValue* metrics = root.Find("metrics");
+    ASSERT_NE(metrics, nullptr);
+    const JsonValue* bitrate = metrics->Find("bitrate");
+    const JsonValue* gop = metrics->Find("gop");
+    ASSERT_NE(bitrate, nullptr);
+    ASSERT_NE(gop, nullptr);
+
+    // 曲线：3000 点抽稀到 ≤2000，总点数仍如实报出。
+    const JsonValue* points = bitrate->Find("points");
+    ASSERT_NE(points, nullptr);
+    EXPECT_LE(points->Size(), 2000u);
+    EXPECT_EQ(static_cast<int>(bitrate->Find("point_count")->NumberValueOr()), 3000);
+    EXPECT_TRUE(bitrate->Find("points_sampled")->BoolValueOr(false)) << "抽稀后必须置 points_sampled";
+
+    // GOP 明细：6001 条封顶 5000，总量与截断标志都要落。
+    const JsonValue* items = gop->Find("items");
+    ASSERT_NE(items, nullptr);
+    EXPECT_EQ(items->Size(), 5000u);
+    EXPECT_EQ(static_cast<int>(gop->Find("items_total")->NumberValueOr()), 6001);
+    EXPECT_TRUE(gop->Find("items_truncated")->BoolValueOr(false)) << "明细被截断必须置 items_truncated";
+
+    // 条数有界要真正落到体积上：5000 条明细 + 2000 个点约 1 MB，4 MB 是宽松上限 ——
+    // 这条守的是"别把上限拿掉"，不是某个具体字节数。
+    EXPECT_LT(json_text.size(), 4u * 1024u * 1024u) << "JSON 体积失控，长素材会把报告撑爆";
+}
+
+// 没跑码率/GOP 维度时三端都不该落这一节，避免全 0 被读成"码率为 0"。
+TEST(QcReportExporterTest, BitrateGopSectionOmittedWhenNoFramesObserved) {
+    QcExportBundle bundle = MakeBundle(1); // 不带 MakeEnrichedBundle 的 bitrate_gop 数据
+    const std::string text = QcReportExporter::BuildText(bundle);
+    const std::string html = QcReportExporter::BuildHtml(bundle);
+    EXPECT_EQ(text.find("--- 码率与 GOP ---"), std::string::npos);
+    EXPECT_EQ(html.find("<h2>码率与 GOP</h2>"), std::string::npos);
 }
 
 // 「字幕与辅助数据」不能只落个标题：流与解析状态、cue 级时间点、流级问题、

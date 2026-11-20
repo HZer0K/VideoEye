@@ -813,6 +813,14 @@ const model::AudioQcResult& AudioQcAnalyzer::Finish() {
 
     if (!any_signal) {
         AddNote("整轨无信号（数字静音），响度与真峰值以 -120 表示。");
+    } else if (result_.block_count == 0) {
+        // 有信号却不足一个 400 ms 块：ProcessBlock 从未触发（见 OnSamples），
+        // 响度/LRA/真峰/相关性曲线全空，指标停在 -120 哨兵值。规则层有
+        // has_loudness 守卫不会误报，但 UI/报告会把 -120 显示得像数字静音，
+        // 必须显式说明"太短不可算"，否则用户会误读为音轨无声。
+        AddNote("音频时长不足一个 " + Fixed(kBlockSeconds, 1) +
+                " 秒分析块，响度/LRA/真峰值无法计算，以 -120 表示（并非数字静音）；"
+                "采样峰值、RMS、削波仍基于全部样本。");
     }
     if (result_.loudness_points_decimated) {
         AddNote("响度曲线点数超过上限，已按 2:1 抽稀（统计值仍基于全部样本）。");

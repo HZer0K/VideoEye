@@ -412,6 +412,66 @@ void AppendFrameOrder(std::ostringstream& out, const model::AnalysisResult& anal
     }
 }
 
+// 码率与 GOP 深度分析：与 JSON 的 metrics.bitrate / metrics.gop 同一口径，也和纯文本
+// 的「码率与 GOP」节逐项对应（PDF 复用纯文本，所以这里改了三端要一起对齐）。
+// 只在真的采到帧/GOP 时落节，理由同纯文本：全 0 会被误读成"码率为 0"，"未执行"
+// 由「证据与覆盖」说明。逐条 GOP 明细与曲线留给 UI / CSV，这里只落摘要。
+void AppendBitrateGop(std::ostringstream& out, const model::AnalysisResult& analysis) {
+    const model::BitrateGopAnalysis& bg = analysis.bitrate_gop;
+    if (bg.total_frames <= 0 && bg.gop_count <= 0)
+        return;
+    out << "  <h2>码率与 GOP</h2>\n";
+    out << "  <table>\n    <tr><th>指标</th><th>值</th></tr>\n";
+    out << "    <tr><td>统计窗口</td><td>" << Fixed(bg.window_seconds, 1) << " s（时长 "
+        << Fixed(bg.duration_seconds, 3) << " s）</td></tr>\n";
+    out << "    <tr><td>视频帧 / 字节</td><td>" << Int64Text(bg.total_frames) << " 帧 / " << Int64Text(bg.total_bytes)
+        << " 字节</td></tr>\n";
+    out << "    <tr><td>码率 平均 / 峰值 / P95</td><td>" << Fixed(bg.avg_bitrate_kbps, 1) << " / "
+        << Fixed(bg.peak_bitrate_kbps, 1) << " / " << Fixed(bg.p95_bitrate_kbps, 1) << " kbps</td></tr>\n";
+    out << "    <tr><td>码率 中位数 / 最小 / 峰均比</td><td>" << Fixed(bg.median_bitrate_kbps, 1) << " / "
+        << Fixed(bg.min_bitrate_kbps, 1) << " kbps ｜ " << Fixed(bg.peak_to_mean_ratio, 2) << "</td></tr>\n";
+    if (bg.target_peak_kbps > 0.0)
+        out << "    <tr><td>目标峰值</td><td>" << Fixed(bg.target_peak_kbps, 1) << " kbps</td></tr>\n";
+    if (bg.downsampled)
+        out << "    <tr><td>采样精度</td><td>样本超过上限做过降采样，码率分位数为近似值</td></tr>\n";
+    // count 是实际观察总数，不能用受 max_gops 截断的明细条数代替。
+    out << "    <tr><td>GOP 数量</td><td>" << Int64Text(bg.gop_count) << " 段";
+    if (bg.gops_truncated)
+        out << "（明细仅保留 " << bg.gops.size() << " 段，以下统计覆盖全部）";
+    out << "</td></tr>\n";
+    out << "    <tr><td>GOP 时长 平均 / 最长 / 标准差</td><td>" << Fixed(bg.gop_duration_mean, 2) << " / "
+        << Fixed(bg.gop_duration_max, 2) << " / " << Fixed(bg.gop_duration_stddev, 2) << " s</td></tr>\n";
+    out << "    <tr><td>关键帧间隔 均值 / 不规则度</td><td>" << Fixed(bg.key_interval_mean, 2) << " s ｜ "
+        << Fixed(bg.key_interval_irregularity, 2) << "</td></tr>\n";
+    out << "    <tr><td>超长 GOP / GOP 帧数范围</td><td>" << bg.long_gop_count << " 段 ｜ " << bg.gop_frames_min << "~"
+        << bg.gop_frames_max << " 帧</td></tr>\n";
+    out << "    <tr><td>帧类型</td><td>";
+    if (bg.frame_types_known) {
+        out << "I " << Int64Text(bg.i_frame_count) << " / P " << Int64Text(bg.p_frame_count) << " / B "
+            << Int64Text(bg.b_frame_count);
+        if (bg.unknown_frame_count > 0)
+            out << " / 未知 " << Int64Text(bg.unknown_frame_count);
+    } else {
+        out << "仅 I 帧可信（" << Int64Text(bg.i_frame_count) << " 帧；P/B 未区分，勾选精确帧类型重扫可得完整 I/P/B）";
+    }
+    out << "</td></tr>\n";
+    out << "  </table>\n";
+    constexpr std::size_t kMaxSuggestions = 6;
+    if (!bg.suggestions.empty()) {
+        out << "  <p>优化建议：</p><ul>\n";
+        std::size_t shown = 0;
+        for (const std::string& s : bg.suggestions) {
+            if (shown++ >= kMaxSuggestions)
+                break;
+            out << "    <li>" << Html(s) << "</li>\n";
+        }
+        if (bg.suggestions.size() > kMaxSuggestions)
+            out << "    <li>另有 " << (bg.suggestions.size() - kMaxSuggestions)
+                << " 条，完整列表见「码率与 GOP」页。</li>\n";
+        out << "  </ul>\n";
+    }
+}
+
 // 画质 QC（无参考、需要完整解码主视频流）。
 //
 // 只有真的跑过这一维度才落节：默认关闭，没跑时落空表会让人读成"逐帧看完整片
@@ -747,6 +807,7 @@ std::string QcReportExporter::BuildHtml(const QcExportBundle& bundle) {
     AppendCoverageTable(out, run.analysis);
     AppendParameterTimelines(out, run.analysis);
     AppendFrameOrder(out, run.analysis);
+    AppendBitrateGop(out, run.analysis);
     AppendVisualQc(out, run.analysis);
     AppendStreamList(out, run.analysis);
     AppendPerTrackAudioQc(out, run.analysis);

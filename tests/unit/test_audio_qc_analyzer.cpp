@@ -348,6 +348,46 @@ TEST(AudioQcAnalyzerTest, NoSamplesWithDeclaredDurationIsFailed) {
     EXPECT_EQ(result.completeness, AudioQcResult::Completeness::Failed);
 }
 
+TEST(AudioQcAnalyzerTest, SubBlockAudioExplainsUnavailableLoudness) {
+    // 不足一个 400ms 块但有信号：块类指标停在 -120 哨兵值，
+    // 必须给出 note 说明"太短不可算"，否则 UI/报告会显示得像数字静音。
+    PlanarAudio audio(1, static_cast<int>(0.1 * kSampleRate)); // 100 ms
+    FillSine(audio, 1000.0, 0.1, kSampleRate);
+    const AudioQcResult result = Analyze(audio, kSampleRate);
+
+    EXPECT_GT(result.total_samples, 0);
+    EXPECT_EQ(result.block_count, 0);
+    EXPECT_DOUBLE_EQ(result.integrated_lufs, kSilenceLufs);
+    EXPECT_DOUBLE_EQ(result.true_peak_dbtp, kSilenceLevelDb);
+    // 电平类在 PushSample 里累计，短音频仍然有效
+    EXPECT_NEAR(result.sample_peak_dbfs, -20.0, 1.0);
+    EXPECT_GT(result.rms_dbfs, kSilenceLevelDb + 1.0);
+
+    bool explained = false;
+    for (const auto& note : result.notes) {
+        if (note.find("不足一个") != std::string::npos && note.find("分析块") != std::string::npos)
+            explained = true;
+    }
+    EXPECT_TRUE(explained) << "有信号但短于一块时必须说明响度不可算，不能只留 -120 让用户误读为静音";
+}
+
+TEST(AudioQcAnalyzerTest, SubBlockSilenceUsesDigitalSilenceNote) {
+    // 同为短音频但完全静音：走 !any_signal 分支，不该再叠加"太短"note
+    PlanarAudio audio(1, static_cast<int>(0.1 * kSampleRate));
+    const AudioQcResult result = Analyze(audio, kSampleRate);
+
+    bool digital_silence = false;
+    bool too_short = false;
+    for (const auto& note : result.notes) {
+        if (note.find("数字静音") != std::string::npos)
+            digital_silence = true;
+        if (note.find("分析块") != std::string::npos)
+            too_short = true;
+    }
+    EXPECT_TRUE(digital_silence);
+    EXPECT_FALSE(too_short) << "数字静音已有专门说明，不要重复叠加短音频 note";
+}
+
 TEST(AudioQcAnalyzerTest, LoudnessCurveIsPopulated) {
     PlanarAudio audio(2, kSampleRate * 4);
     FillSine(audio, 1000.0, 0.1, kSampleRate);

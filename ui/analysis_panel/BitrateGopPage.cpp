@@ -209,8 +209,8 @@ void BitrateGopPage::SetupUi() {
         QWidget* page = new QWidget(sub_tabs_);
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
-        QLabel* hint = new QLabel(tr("点击任意一行即跳转到该 GOP 起始位置。"), page);
-        pl->addWidget(hint);
+        gop_hint_ = new QLabel(tr("点击「开始分析」后在此列出 GOP 分段明细。"), page);
+        pl->addWidget(gop_hint_);
         gop_table_ = new QTableWidget(0, 11, page);
         gop_table_->setHorizontalHeaderLabels({tr("序号"), tr("起始"), tr("结束"), tr("时长(s)"), tr("帧数"),
                                                tr("大小(KB)"), tr("平均码率(kbps)"), tr("I / P / B"), tr("最大帧(KB)"),
@@ -228,6 +228,8 @@ void BitrateGopPage::SetupUi() {
         QWidget* page = new QWidget(sub_tabs_);
         QVBoxLayout* pl = new QVBoxLayout(page);
         pl->setContentsMargins(2, 2, 2, 2);
+        anomaly_hint_ = new QLabel(tr("点击「开始分析」后在此列出码率与 GOP 异常。"), page);
+        pl->addWidget(anomaly_hint_);
         anomaly_table_ = new QTableWidget(0, 5, page);
         anomaly_table_->setHorizontalHeaderLabels({tr("类型"), tr("位置"), tr("实测值"), tr("阈值"), tr("说明")});
         anomaly_table_->verticalHeader()->setVisible(false);
@@ -481,11 +483,16 @@ void BitrateGopPage::RebuildGopTable() {
     if (!gop_table_)
         return;
     gop_table_->setRowCount(0);
-    if (!has_result_)
+    if (!has_result_) {
+        if (gop_hint_)
+            gop_hint_->setText(tr("点击「开始分析」后在此列出 GOP 分段明细。"));
         return;
+    }
 
     const auto& gops = result_->bitrate_gop.gops;
-    const int rows = std::min(static_cast<int>(gops.size()), kMaxGopTableRows);
+    const int total = static_cast<int>(result_->bitrate_gop.gop_count);
+    const int listed = static_cast<int>(gops.size());
+    const int rows = std::min(listed, kMaxGopTableRows);
     gop_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
         const auto& g = gops[i];
@@ -508,17 +515,38 @@ void BitrateGopPage::RebuildGopTable() {
         }
     }
     gop_table_->resizeColumnsToContents();
+
+    // 两种截断要分开说：UI 表格上限（明细还在，CSV 能导出全部）与分析器的
+    // max_gops 上限（明细本身就没保留全，CSV 也只有这么多）。混成一句会让读者
+    // 以为"导出 CSV 就能拿到全部"。
+    if (gop_hint_) {
+        if (rows < listed) {
+            gop_hint_->setText(tr("共 %1 个 GOP，表格仅显示前 %2 条（导出 GOP 列表 CSV 可取全部 %3 条明细）。")
+                                   .arg(total)
+                                   .arg(rows)
+                                   .arg(listed));
+        } else if (listed < total) {
+            gop_hint_->setText(
+                tr("共 %1 个 GOP，明细仅保留前 %2 条（超出单次扫描的明细上限）。").arg(total).arg(listed));
+        } else {
+            gop_hint_->setText(tr("共 %1 个 GOP，点击任意一行即跳转到该 GOP 起始位置。").arg(total));
+        }
+    }
 }
 
 void BitrateGopPage::RebuildAnomalyTable() {
     if (!anomaly_table_)
         return;
     anomaly_table_->setRowCount(0);
-    if (!has_result_)
+    if (!has_result_) {
+        if (anomaly_hint_)
+            anomaly_hint_->setText(tr("点击「开始分析」后在此列出码率与 GOP 异常。"));
         return;
+    }
 
     const auto& anomalies = result_->bitrate_gop.anomalies;
-    const int rows = std::min(static_cast<int>(anomalies.size()), kMaxAnomalyTableRows);
+    const int total = static_cast<int>(anomalies.size());
+    const int rows = std::min(total, kMaxAnomalyTableRows);
     anomaly_table_->setRowCount(rows);
     for (int i = 0; i < rows; ++i) {
         const auto& a = anomalies[i];
@@ -531,6 +559,19 @@ void BitrateGopPage::RebuildAnomalyTable() {
         SetTableItemText(anomaly_table_, i, 4, QString::fromStdString(a.detail));
     }
     anomaly_table_->resizeColumnsToContents();
+
+    // 表格有行数上限，超出必须说明：否则用户看到 2000 行会以为"总共就这么多
+    // 异常"。总数与可见条数都报，并指一条能拿到完整列表的路（CSV 导出）。
+    if (anomaly_hint_) {
+        if (total == 0) {
+            anomaly_hint_->setText(tr("未发现码率与 GOP 异常。"));
+        } else if (rows < total) {
+            anomaly_hint_->setText(
+                tr("共 %1 条异常，表格仅显示前 %2 条（完整列表请用「导出异常 CSV」）。").arg(total).arg(rows));
+        } else {
+            anomaly_hint_->setText(tr("共 %1 条异常，点击任意一行即跳转到该异常区间。").arg(total));
+        }
+    }
 }
 
 void BitrateGopPage::UpdateSuggestions() {

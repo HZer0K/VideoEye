@@ -146,6 +146,11 @@ private:
     QTabWidget* sub_tabs_ = nullptr;
     QTableWidget* gop_table_ = nullptr;
     QTableWidget* anomaly_table_ = nullptr;
+    // 两张表都有行数上限（GOP 5000 / 异常 2000），超出会截断。截断本身合理，
+    // 但不说明就有问题：用户会以为"总共就这么多"。这两个 label 负责报总数、
+    // 实际显示条数，以及"完整明细去哪儿拿"。
+    QLabel* gop_hint_ = nullptr;
+    QLabel* anomaly_hint_ = nullptr;
     QListWidget* suggestion_list_ = nullptr;
 };
 

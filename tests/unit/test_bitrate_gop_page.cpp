@@ -367,6 +367,73 @@ TEST(BitrateGopPageTests, AnomalyTableCapsAt2000Rows) {
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(anomaly, nullptr);
     EXPECT_EQ(anomaly->rowCount(), 2000);
+
+    // 截断必须说出来：只显示 2000 行而不报总数，用户会以为"异常就这么多"。
+    QLabel* hint = FindLabelContaining(&page, QStringLiteral("共 2005 条异常"));
+    ASSERT_NE(hint, nullptr) << "异常表被截断时必须报出总数";
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("仅显示前 2000 条")));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("导出异常 CSV"))) << "要给出拿到完整列表的路";
+}
+
+// 未截断时只报总数与跳转提示，不能误报"仅显示前 N 条"。
+TEST(BitrateGopPageTests, AnomalyHintReportsTotalWhenNotTruncated) {
+    EnsureApp();
+    BitrateGopPage page;
+
+    // 未分析：hint 应是引导语，不能残留上一份结果的总数
+    QLabel* hint = FindLabelContaining(&page, QStringLiteral("点击「开始分析」后在此列出"));
+    ASSERT_NE(hint, nullptr) << "未分析时异常表区域缺少引导提示";
+
+    AnalysisResult result;
+    result.bitrate_gop = MakeBg();
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+
+    ASSERT_NE(hint, nullptr);
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("共 2 条异常")));
+    EXPECT_FALSE(hint->text().contains(QStringLiteral("仅显示前")));
+
+    // 清空结果后回到引导语，别把上一文件的条数留在页面上
+    page.ClearResult();
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("点击「开始分析」后在此列出")));
+}
+
+// GOP 表有两层截断，必须分开说：UI 表格 5000 行上限（CSV 仍能导出全部明细）、
+// 分析器 max_gops 上限（明细本身就没保留全）。混成一句会让读者以为"导出 CSV
+// 就能拿到全部"。
+TEST(BitrateGopPageTests, GopHintReportsBothTruncationLayers) {
+    EnsureApp();
+    BitrateGopPage page;
+    QLabel* hint = FindLabelContaining(&page, QStringLiteral("点击「开始分析」后在此列出 GOP 分段明细"));
+    ASSERT_NE(hint, nullptr) << "未分析时 GOP 表区域缺少引导提示";
+
+    // 正常：无截断，只报总数与跳转提示
+    AnalysisResult result;
+    result.bitrate_gop = MakeBg();
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("共 2 个 GOP")));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("跳转")));
+    EXPECT_FALSE(hint->text().contains(QStringLiteral("仅显示前")));
+
+    // 分析器层截断：明细只保留 2 条，实测总数 10
+    result.bitrate_gop.gop_count = 10;
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("共 10 个 GOP")));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("明细仅保留前 2 条")));
+
+    // UI 层截断：明细 6000 条，表格只显示 5000，CSV 仍可取全部
+    result.bitrate_gop.gops.clear();
+    for (int i = 0; i < 6000; ++i) {
+        GopInfo gop;
+        gop.index = i;
+        gop.start_seconds = i * 1.0;
+        gop.end_seconds = i * 1.0 + 1.0;
+        gop.frame_count = 25;
+        result.bitrate_gop.gops.push_back(gop);
+    }
+    result.bitrate_gop.gop_count = 6000;
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("表格仅显示前 5000 条")));
+    EXPECT_TRUE(hint->text().contains(QStringLiteral("导出 GOP 列表 CSV")));
 }
 
 // 窗口下拉切换重算汇总（display_window_ 必须同步到文案里）

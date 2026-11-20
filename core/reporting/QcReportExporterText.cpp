@@ -203,6 +203,58 @@ std::string QcReportExporter::BuildText(const QcExportBundle& bundle) {
         }
     }
 
+    // ---- 码率与 GOP 深度分析 ----
+    //
+    // 与 JSON 的 metrics.bitrate / metrics.gop 同一口径：滑动窗口码率分位数、峰均比、
+    // GOP 时长/帧数统计与帧类型构成。只在真的采到帧/GOP 时才落这一节 —— 分析没跑
+    // 或打开失败时 bitrate_gop 全 0，落一节全 0 会被误读成"码率为 0"；"未执行"
+    // 由上面的「证据与覆盖」bitrate_gop 行说明。逐条 GOP 明细与码率曲线留给 UI 与
+    // 「码率与 GOP」页的 CSV，文本报告只落摘要（几千行曲线没人读）。
+    const model::BitrateGopAnalysis& bg = run.analysis.bitrate_gop;
+    if (bg.total_frames > 0 || bg.gop_count > 0) {
+        out << "\n--- 码率与 GOP ---\n";
+        out << "  统计窗口 " << Fixed(bg.window_seconds, 1) << " s ｜ 时长 " << Fixed(bg.duration_seconds, 3)
+            << " s ｜ 视频帧 " << Int64Text(bg.total_frames) << " ｜ 视频字节 " << Int64Text(bg.total_bytes) << "\n";
+        out << "  码率: 平均 " << Fixed(bg.avg_bitrate_kbps, 1) << " / 峰值 " << Fixed(bg.peak_bitrate_kbps, 1)
+            << " / P95 " << Fixed(bg.p95_bitrate_kbps, 1) << " / 中位数 " << Fixed(bg.median_bitrate_kbps, 1)
+            << " / 最小 " << Fixed(bg.min_bitrate_kbps, 1) << " kbps ｜ 峰均比 " << Fixed(bg.peak_to_mean_ratio, 2)
+            << "\n";
+        if (bg.target_peak_kbps > 0.0)
+            out << "  目标峰值 " << Fixed(bg.target_peak_kbps, 1) << " kbps\n";
+        if (bg.downsampled)
+            out << "  ❗ 样本超过上限做过降采样，码率分位数为近似值\n";
+        // count 是实际观察总数，不能拿明细条数代替（明细受 max_gops 截断）。
+        out << "  GOP: 共 " << Int64Text(bg.gop_count) << " 段";
+        if (bg.gops_truncated)
+            out << "（明细仅保留 " << bg.gops.size() << " 段，以下统计覆盖全部）";
+        out << " ｜ 平均 " << Fixed(bg.gop_duration_mean, 2) << " s / 最长 " << Fixed(bg.gop_duration_max, 2)
+            << " s / 标准差 " << Fixed(bg.gop_duration_stddev, 2) << " s\n";
+        out << "  关键帧间隔: 均值 " << Fixed(bg.key_interval_mean, 2) << " s ｜ 不规则度 "
+            << Fixed(bg.key_interval_irregularity, 2) << " ｜ 超长 GOP " << bg.long_gop_count << " 段 ｜ GOP 帧数 "
+            << bg.gop_frames_min << "~" << bg.gop_frames_max << " 帧\n";
+        out << "  帧类型: ";
+        if (bg.frame_types_known) {
+            out << "I " << Int64Text(bg.i_frame_count) << " / P " << Int64Text(bg.p_frame_count) << " / B "
+                << Int64Text(bg.b_frame_count);
+            if (bg.unknown_frame_count > 0)
+                out << " / 未知 " << Int64Text(bg.unknown_frame_count);
+        } else {
+            // 只有 I 帧来自关键帧标记时，P/B 未区分，别写成 I/P/B 全是实测值。
+            out << "仅 I 帧可信（" << Int64Text(bg.i_frame_count)
+                << " 帧；P/B 未区分，勾选精确帧类型重扫可得完整 I/P/B）";
+        }
+        out << "\n";
+        constexpr std::size_t kMaxSuggestions = 6;
+        if (!bg.suggestions.empty()) {
+            out << "  优化建议:\n";
+            for (std::size_t i = 0; i < bg.suggestions.size() && i < kMaxSuggestions; ++i)
+                out << "    - " << bg.suggestions[i] << "\n";
+            if (bg.suggestions.size() > kMaxSuggestions)
+                out << "    ...（另有 " << (bg.suggestions.size() - kMaxSuggestions)
+                    << " 条，完整列表见「码率与 GOP」页）\n";
+        }
+    }
+
     // ---- 画质 QC（无参考、需要完整解码视频）----
     //
     // 只在真的跑过这一维度时落节：默认为关闭，没跑时落一节空表会让人以为
