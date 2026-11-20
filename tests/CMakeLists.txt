@@ -2547,7 +2547,8 @@ add_test(NAME ParserReviewRegressionTests COMMAND test_parser_review_regressions
 # （FFmpeg 的 include 与库从它的 PUBLIC 依赖传来）。
 # =================================================
 videoeye_add_test(test_analysis_pipeline_edges unit/test_analysis_pipeline_edges.cpp)
-target_link_libraries(test_analysis_pipeline_edges PRIVATE VideoEyeAnalysis)
+# 真实 HDR 样本 golden 还要对端到端 result 跑色彩/HDR QC 规则（验证 DV 不误报、裸 PQ 正确告警）。
+target_link_libraries(test_analysis_pipeline_edges PRIVATE VideoEyeAnalysis VideoEyeQcRules)
 add_test(NAME AnalysisPipelineEdgeTests COMMAND test_analysis_pipeline_edges)
 
 # =================================================

@@ -16,6 +16,7 @@
 #include "core/analysis/detail/AnalysisStreamSelection.h"
 #include "core/analysis/orchestration/detail/AnalysisPipeline.h"
 #include "core/analysis/orchestration/detail/AnalysisResultAssembler.h"
+#include "core/qc/QcRuleEngine.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -616,6 +617,80 @@ TEST(ColorHdrRealSampleTest, SdrFileNeedsNoHdrStaticMetadata) {
     ASSERT_NE(dim, nullptr);
     EXPECT_TRUE(dim->conclusive);
     EXPECT_TRUE(dim->failure_reason.empty());
+}
+
+TEST(ColorHdrRealSampleTest, DolbyVisionProfileFromConfigRecord) {
+    const std::string path = HdrSamplePath("dolbyvision-hdr.mov");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    // 真值：DV 配置记录 profile=8/level=2/compat=4/rpu+bl。transfer 虽标成 HLG，
+    // 但 DV 优先于 transfer 归类；profile_known 必须据此置位，否则会输出 "DV 未知（仅 RPU）"。
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::DolbyVision);
+    EXPECT_TRUE(result.color_hdr.hdr.dolby_vision.present);
+    EXPECT_TRUE(result.color_hdr.hdr.dolby_vision.profile_known);
+    EXPECT_EQ(result.color_hdr.hdr.dolby_vision.profile, 8);
+    EXPECT_EQ(result.color_hdr.hdr.dolby_vision.compatibility_id, 4);
+    EXPECT_EQ(result.color_hdr.hdr.dolby_vision.ProfileText(), "8.4");
+
+    // 有兼容层，且 profile 已知：dv_no_compatibility 不得命中。
+    qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    bool has_dv_no_compat = false;
+    for (const auto& issue : report.issues) {
+        if (issue.rule_id == "video.color.dv_no_compatibility")
+            has_dv_no_compat = true;
+    }
+    EXPECT_FALSE(has_dv_no_compat);
+}
+
+TEST(ColorHdrRealSampleTest, BarePqAv1WithoutStaticMetadata) {
+    const std::string path = HdrSamplePath("hdr10-av1.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    // 真值：AV1 10bit / BT.2020 / PQ，但没有 MDCV/CLL SEI，也没有 HDR10+ —— 归为"裸 PQ"。
+    EXPECT_EQ(result.color_hdr.color.transfer, model::TransferKind::Pq);
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Hdr10Basic);
+    EXPECT_FALSE(result.color_hdr.hdr.mastering_display.Complete());
+    EXPECT_FALSE(result.color_hdr.hdr.content_light.Complete());
+
+    // 裸 PQ 应当命中母版缺失 + CLL 缺失两条告警。
+    qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    bool has_mastering = false;
+    bool has_light = false;
+    for (const auto& issue : report.issues) {
+        if (issue.rule_id == "video.color.hdr_missing_mastering")
+            has_mastering = true;
+        if (issue.rule_id == "video.color.hdr_missing_light_level")
+            has_light = true;
+    }
+    EXPECT_TRUE(has_mastering);
+    EXPECT_TRUE(has_light);
+}
+
+TEST(ColorHdrRealSampleTest, Hdr10PlusFullStaticMetadata) {
+    const std::string path = HdrSamplePath("hdr10plus-color-test.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    // 真值：PQ / BT.2020，HDR10+ 动态元数据 + MDCV/CLL 齐备。
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Hdr10Plus);
+    EXPECT_TRUE(result.color_hdr.StaticMetadataComplete());
+
+    qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(result);
+    for (const auto& issue : report.issues) {
+        EXPECT_NE(issue.rule_id, "video.color.hdr_missing_mastering");
+        EXPECT_NE(issue.rule_id, "video.color.hdr_missing_light_level");
+    }
 }
 
 // ---- 分析器层：完整性优先级替换（真实样本里占位 side data 并不总出现，得造数据钉住）----
