@@ -74,6 +74,10 @@ struct ContentLightLevelMetadata {
 // Dolby Vision 配置记录（对应 AV_PKT_DATA_DOVI_CONF / AVDOVIDecoderConfigurationRecord）
 struct DolbyVisionMetadata {
     bool present = false;
+    // 只有 AV_PKT_DATA_DOVI_CONF 这类配置记录才带 profile/level/compatibility。
+    // 解码帧上只有 AV_FRAME_DATA_DOVI_METADATA（RPU）时 present=true 但 profile 未知：
+    // 不能显示成"Dolby Vision 0"，也不能触发"无兼容层"告警。
+    bool profile_known = false;
     int profile = 0;
     int level = 0;
     bool rpu_present = false; // dv_rpu_present_flag：是否带 RPU（动态元数据）

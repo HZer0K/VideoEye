@@ -36,7 +36,8 @@ using model::ColorKeyValueRow;
 //   3) AVPacket side data: 逐包补充上面两类（部分封装只在包上带）
 //   4) 解码首帧的 AVFrame side data: HDR10+ / DV RPU / HDR Vivid / 环境光等动态元数据兜底
 //
-// 反复调用 UpdateFromXxx() 是安全的：HDR 元数据只补充缺失项（按 present 标志保护），
+// 反复调用 UpdateFromXxx() 是安全的：HDR 元数据按完整性优先级合并
+// （完整数据 > 部分数据 > 占位值，同级别保留先到的），不会被先到的占位值挡住；
 // 色彩描述（primaries / transfer / matrix / range）以最后一次 UpdateFromStream 为准。
 // 因此 QtAnalysisController 可以在 find_stream_info 后、逐包扫描中、解码首帧后各调用一次。
 class ColorHdrAnalyzer {

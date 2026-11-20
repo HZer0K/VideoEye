@@ -362,6 +362,7 @@ TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
     const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
     model::HdrMetadataInfo hdr;
     hdr.dolby_vision.present = true;
+    hdr.dolby_vision.profile_known = true; // 有配置记录（区别于只有 RPU 的帧侧数据）
     hdr.dolby_vision.profile = 5;
     hdr.dolby_vision.level = 6;
     hdr.dolby_vision.rpu_present = true;
@@ -375,6 +376,59 @@ TEST(ColorHdrTest, DolbyVisionWithoutCompatibilityLayerIsReported) {
     EXPECT_TRUE(HasIssue(report, "video.color.dv_no_compatibility"));
     // 有 DV 配置记录时不再要求 MaxCLL/MaxFALL（DV 由 RPU 提供动态元数据）
     EXPECT_FALSE(HasIssue(report, "video.color.hdr_missing_mastering"));
+}
+
+// side data 存在但两个数值都是 0 是"占位"，不是"只有其中一项"：
+// 真实样本 hdr10-720p.mp4 的 CLL SEI 就是 0/0，文案必须让用户一眼分清。
+TEST(ColorHdrTest, PlaceholderStaticMetadataIsNamedAccurately) {
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    model::HdrMetadataInfo hdr;
+    hdr.mastering_display.present = true; // has_primaries / has_luminance 都为 false
+    hdr.content_light.present = true;     // max_cll / max_fall 都为 0
+
+    ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hdr10Basic);
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
+
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(report, "video.color.hdr_missing_mastering", &issue));
+    EXPECT_NE(issue.detail.find("占位"), std::string::npos) << issue.detail;
+    ASSERT_TRUE(HasIssue(report, "video.color.hdr_missing_light_level", &issue));
+    EXPECT_NE(issue.detail.find("均为 0"), std::string::npos) << issue.detail;
+}
+
+// 只有一项数值时是"不完整"，并且不能再按完整 HDR10 归类。
+TEST(ColorHdrTest, PartialContentLightIsNotClassifiedAsHdr10) {
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    model::HdrMetadataInfo hdr;
+    hdr.mastering_display = MakeMastering();
+    hdr.content_light.present = true;
+    hdr.content_light.max_cll = 1000;
+    // max_fall 缺失
+
+    ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::Hdr10Basic);
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
+
+    model::DiagnosticIssue issue;
+    ASSERT_TRUE(HasIssue(report, "video.color.hdr_missing_light_level", &issue));
+    EXPECT_NE(issue.detail.find("不完整（只有 MaxCLL 或 MaxFALL）"), std::string::npos) << issue.detail;
+}
+
+// 帧上只有 DV RPU 时 profile/compatibility 都是默认值，不能输出"Dolby Vision 0"
+// 也不能触发 dv_no_compatibility（那 0 不代表真的没有兼容层）。
+TEST(ColorHdrTest, DolbyVisionRpuOnlyHasUnknownProfileAndNoCompatibilityWarning) {
+    const model::ColorInfo color = MakeColor(kPriBt2020, kTrcPq, kSpcBt2020Ncl, kRangeLimited, 10, "yuv420p10le");
+    model::HdrMetadataInfo hdr;
+    hdr.dolby_vision.present = true;
+    hdr.dolby_vision.rpu_present = true;
+
+    ASSERT_EQ(model::ClassifyHdrFormat(color, hdr), model::HdrFormat::DolbyVision);
+    EXPECT_EQ(hdr.dolby_vision.ProfileText(), "未知（仅 RPU）");
+
+    videoeye::qc::QcRuleEngine engine;
+    const model::QcReport report = engine.Evaluate(MakeResult(MakeAnalysis(color, hdr)));
+    EXPECT_FALSE(HasIssue(report, "video.color.dv_no_compatibility"));
 }
 
 // 未分析过色彩/HDR 时不得误报

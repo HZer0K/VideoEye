@@ -40,6 +40,34 @@ const AVPacketSideData* FindSideData(const AVPacketSideData* sd, int nb, AVPacke
     return av_packet_side_data_get(sd, nb, type);
 }
 
+// HDR 元数据的"完整性优先级"。容器盒、包侧、解码帧三处会给同一份元数据，
+// 先到的未必最全：实测 MP4 里 clli/mdcv 盒子可能只有占位 0 值，而真值在
+// HEVC SEI（解码帧 side data）里。只按 present 守卫会让占位值永久挡住真值。
+// 0=没有 1=占位/只有一半 2=字段齐但数值可疑 3=完整且合理；只有更高优先级
+// 才覆盖旧值，同优先级保留先到的（避免不同帧的微小差异来回翻）。
+int MasteringRank(const model::MasteringDisplayMetadata& md) {
+    if (!md.present)
+        return 0;
+    if (!md.Complete())
+        return 1;
+    return md.Plausible() ? 3 : 2;
+}
+
+int ContentLightRank(const model::ContentLightLevelMetadata& cl) {
+    if (!cl.present)
+        return 0;
+    if (!cl.HasAny())
+        return 1;
+    return cl.Complete() ? 3 : 2;
+}
+
+// DV 配置记录才有 profile/compatibility；只有 RPU 的帧侧数据算占位。
+int DolbyVisionRank(const model::DolbyVisionMetadata& dv) {
+    if (!dv.present)
+        return 0;
+    return dv.profile_known && dv.profile > 0 ? 2 : 1;
+}
+
 } // namespace
 
 // ============================ ColorHdrAnalyzer ============================
@@ -173,29 +201,35 @@ bool ColorHdrAnalyzer::ScanSideData(const AVPacketSideData* side_data, int count
 void ColorHdrAnalyzer::ApplyMasteringDisplay(const unsigned char* data, int size, const std::string& source) {
     if (!data || size < static_cast<int>(sizeof(AVMasteringDisplayMetadata)))
         return;
-    if (result_.hdr.mastering_display.present)
-        return;
 
     const auto* md = reinterpret_cast<const AVMasteringDisplayMetadata*>(data);
-    model::MasteringDisplayMetadata& target = result_.hdr.mastering_display;
-    target.present = true;
-    target.has_primaries = md->has_primaries != 0;
-    target.has_luminance = md->has_luminance != 0;
-    if (target.has_primaries) {
-        target.red_x = RationalToDouble(md->display_primaries[0][0]);
-        target.red_y = RationalToDouble(md->display_primaries[0][1]);
-        target.green_x = RationalToDouble(md->display_primaries[1][0]);
-        target.green_y = RationalToDouble(md->display_primaries[1][1]);
-        target.blue_x = RationalToDouble(md->display_primaries[2][0]);
-        target.blue_y = RationalToDouble(md->display_primaries[2][1]);
-        target.white_x = RationalToDouble(md->white_point[0]);
-        target.white_y = RationalToDouble(md->white_point[1]);
+    model::MasteringDisplayMetadata next;
+    next.present = true;
+    next.has_primaries = md->has_primaries != 0;
+    next.has_luminance = md->has_luminance != 0;
+    if (next.has_primaries) {
+        next.red_x = RationalToDouble(md->display_primaries[0][0]);
+        next.red_y = RationalToDouble(md->display_primaries[0][1]);
+        next.green_x = RationalToDouble(md->display_primaries[1][0]);
+        next.green_y = RationalToDouble(md->display_primaries[1][1]);
+        next.blue_x = RationalToDouble(md->display_primaries[2][0]);
+        next.blue_y = RationalToDouble(md->display_primaries[2][1]);
+        next.white_x = RationalToDouble(md->white_point[0]);
+        next.white_y = RationalToDouble(md->white_point[1]);
     }
-    if (target.has_luminance) {
-        target.max_luminance = RationalToDouble(md->max_luminance);
-        target.min_luminance = RationalToDouble(md->min_luminance);
+    if (next.has_luminance) {
+        next.max_luminance = RationalToDouble(md->max_luminance);
+        next.min_luminance = RationalToDouble(md->min_luminance);
     }
-    if (!target.Plausible()) {
+
+    const int current = MasteringRank(result_.hdr.mastering_display);
+    const int incoming = MasteringRank(next);
+    if (incoming <= current)
+        return;
+    if (current > 0)
+        AddNote("母版显示信息以 " + source + " 的更完整数据替换此前占位/不完整数据");
+    result_.hdr.mastering_display = next;
+    if (!next.Plausible()) {
         AddNote(source + " 中的母版显示信息数值异常（全 0 或超出合理范围）");
     }
 }
@@ -203,34 +237,49 @@ void ColorHdrAnalyzer::ApplyMasteringDisplay(const unsigned char* data, int size
 void ColorHdrAnalyzer::ApplyContentLight(const unsigned char* data, int size, const std::string& source) {
     if (!data || size < static_cast<int>(sizeof(AVContentLightMetadata)))
         return;
-    if (result_.hdr.content_light.present)
-        return;
 
     const auto* cl = reinterpret_cast<const AVContentLightMetadata*>(data);
-    model::ContentLightLevelMetadata& target = result_.hdr.content_light;
-    target.present = true;
-    target.max_cll = cl->MaxCLL;
-    target.max_fall = cl->MaxFALL;
-    if (!target.HasAny())
+    model::ContentLightLevelMetadata next;
+    next.present = true;
+    next.max_cll = cl->MaxCLL;
+    next.max_fall = cl->MaxFALL;
+
+    const int current = ContentLightRank(result_.hdr.content_light);
+    const int incoming = ContentLightRank(next);
+    if (incoming <= current)
+        return;
+    if (current > 0)
+        AddNote("MaxCLL/MaxFALL 以 " + source + " 的更完整数据替换此前占位数据");
+    result_.hdr.content_light = next;
+    if (!next.HasAny())
         AddNote(source + " 中的 MaxCLL/MaxFALL 均为 0");
 }
 
 void ColorHdrAnalyzer::ApplyDolbyVision(const unsigned char* data, int size, const std::string& source) {
     if (!data || size < static_cast<int>(sizeof(AVDOVIDecoderConfigurationRecord)))
         return;
-    if (result_.hdr.dolby_vision.present)
-        return;
 
     const auto* dv = reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(data);
+    model::DolbyVisionMetadata next;
+    next.present = true;
+    next.profile_known = dv->dv_profile > 0;
+    next.profile = dv->dv_profile;
+    next.level = dv->dv_level;
+    next.rpu_present = dv->rpu_present_flag != 0;
+    next.el_present = dv->el_present_flag != 0;
+    next.bl_present = dv->bl_present_flag != 0;
+    next.compatibility_id = dv->dv_bl_signal_compatibility_id;
+
+    const int current = DolbyVisionRank(result_.hdr.dolby_vision);
+    const int incoming = DolbyVisionRank(next);
+    if (incoming <= current)
+        return;
     model::DolbyVisionMetadata& target = result_.hdr.dolby_vision;
-    target.present = true;
-    target.profile = dv->dv_profile;
-    target.level = dv->dv_level;
-    target.rpu_present = dv->rpu_present_flag != 0;
-    target.el_present = dv->el_present_flag != 0;
-    target.bl_present = dv->bl_present_flag != 0;
-    target.compatibility_id = dv->dv_bl_signal_compatibility_id;
-    (void)source;
+    const bool had_rpu = target.rpu_present;
+    if (current > 0)
+        AddNote("Dolby Vision 以 " + source + " 的配置记录替换此前仅有 RPU 的元数据");
+    target = next;
+    target.rpu_present = had_rpu || next.rpu_present; // RPU 仍在帧上，别被配置记录覆盖掉
 }
 
 void ColorHdrAnalyzer::ApplyPixelFormat(int pix_fmt, int bits_per_raw_sample) {
@@ -312,7 +361,8 @@ const ColorHdrAnalysis& ColorHdrAnalyzer::Finish() {
 
     switch (hdr.format) {
     case model::HdrFormat::DolbyVision:
-        hdr.format_name = "Dolby Vision " + hdr.dolby_vision.ProfileText();
+        hdr.format_name = hdr.dolby_vision.profile_known ? "Dolby Vision " + hdr.dolby_vision.ProfileText()
+                                                         : "Dolby Vision（仅 RPU，profile 未知）";
         hdr.hdr = true;
         break;
     case model::HdrFormat::Hdr10Plus:

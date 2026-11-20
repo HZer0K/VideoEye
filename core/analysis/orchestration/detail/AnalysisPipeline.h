@@ -550,6 +550,10 @@ private:
     void FeedAudioFrame(AudioQcTrack& track, AVFrame* frame);
     // 把一个包的音频样本喂给指定音轨（发送 + 收帧）
     void PumpAudioPacket(AudioQcTrack& track, const AVPacket* pkt);
+    // 色彩/HDR 帧级兜底：送包 -> 收帧；EAGAIN 时先排空解码器再重送本包
+    void PumpColorProbePacket(const AVPacket* pkt);
+    // EOF 时把色彩探测解码器里压着的帧（B 帧重排序）也收干净，避免漏掉帧侧 HDR 元数据
+    void FlushColorProbe();
     // 视觉画质 QC：送包 -> 收帧 -> 按 sample_fps 抽帧 -> BuildSample -> Feed
     void PumpVisualPacket(const AVPacket* pkt);
     void FeedVisualFrame(AVFrame* frame);

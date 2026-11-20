@@ -864,18 +864,8 @@ void AnalysisPipeline::OnPacket(AVFormatContext* fmt, AVPacket* pkt, model::Anal
         }
         if (color_hdr_.NeedsFrameProbe() && !color_probe_.failed &&
             color_probe_.frames_read < options_.color_hdr_options.max_probe_frames) {
-            if (color_probe_.EnsureOpen(st)) {
-                if (avcodec_send_packet(color_probe_.decoder, pkt) == 0) {
-                    while (avcodec_receive_frame(color_probe_.decoder, color_probe_.frame) >= 0) {
-                        color_hdr_.UpdateFromFrame(color_probe_.frame);
-                        av_frame_unref(color_probe_.frame);
-                        ++color_probe_.frames_read;
-                        if (color_probe_.frames_read >= options_.color_hdr_options.max_probe_frames) {
-                            break;
-                        }
-                    }
-                }
-            }
+            if (color_probe_.EnsureOpen(st))
+                PumpColorProbePacket(pkt);
         }
     }
 
@@ -893,6 +883,8 @@ void AnalysisPipeline::BeforeClose(AVFormatContext* fmt, model::AnalysisResult& 
     // 部分封装的 HDR 元数据要读到数据包后才补充进 codecpar，关闭输入前再刷一次
     if (options_.analyze_color_hdr && color_video_stream_index_ >= 0) {
         color_hdr_.UpdateFromStream(fmt->streams[color_video_stream_index_]);
+        // B 帧/延迟解码时，首个可用的 HDR SEI 可能压在解码器里直到 EOF 才吐出来。
+        FlushColorProbe();
     }
 
     // slice / SEI 巡检收尾：汇总 QP 分布与 SEI 元数据，回填主轨的码流结果。
@@ -1007,6 +999,59 @@ void AnalysisPipeline::FlushVisual() {
 }
 
 // ---- 内部 ----
+
+// 色彩/HDR 帧级兜底探测。EAGAIN 表示解码器的输出队列满了，不是"这个包不用解"：
+// 必须先把已经解出的帧收走，再把**同一个包**重送一次。旧代码在 EAGAIN 时直接
+// 跳过该包，重排序延迟较长时会一直拿不到第一帧，帧侧 HDR 元数据整段丢失。
+void AnalysisPipeline::PumpColorProbePacket(const AVPacket* pkt) {
+    ColorFrameProbe& probe = color_probe_;
+    if (!probe.Ready())
+        return;
+    const int max_frames = options_.color_hdr_options.max_probe_frames;
+    auto drain = [&]() {
+        while (probe.frames_read < max_frames) {
+            const int ret = avcodec_receive_frame(probe.decoder, probe.frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                return;
+            if (ret < 0) {
+                LOG_INFO("色彩/HDR 帧探测解码失败: " + std::to_string(ret));
+                return;
+            }
+            color_hdr_.UpdateFromFrame(probe.frame);
+            av_frame_unref(probe.frame);
+            ++probe.frames_read;
+        }
+    };
+
+    int ret = avcodec_send_packet(probe.decoder, pkt);
+    if (ret == AVERROR(EAGAIN)) {
+        drain();
+        ret = avcodec_send_packet(probe.decoder, pkt);
+    }
+    if (ret < 0 && ret != AVERROR_EOF) {
+        LOG_INFO("色彩/HDR 帧探测送包失败: " + std::to_string(ret));
+        return;
+    }
+    drain();
+}
+
+// EOF 收尾：不 flush 的话最后几帧还压在解码器里（B 帧重排序），
+// 帧侧 HDR 元数据可能一帧都没读到。BeforeClose 里调用，早于 ReleaseProbes。
+void AnalysisPipeline::FlushColorProbe() {
+    if (!color_probe_.Ready())
+        return;
+    if (avcodec_send_packet(color_probe_.decoder, nullptr) < 0)
+        return;
+    const int max_frames = options_.color_hdr_options.max_probe_frames;
+    while (color_probe_.frames_read < max_frames) {
+        const int ret = avcodec_receive_frame(color_probe_.decoder, color_probe_.frame);
+        if (ret < 0) // EAGAIN / EOF / 真实解码错误：收尾阶段都不再重试
+            break;
+        color_hdr_.UpdateFromFrame(color_probe_.frame);
+        av_frame_unref(color_probe_.frame);
+        ++color_probe_.frames_read;
+    }
+}
 
 // 把一个音频包送进指定音轨的解码器，并把解出的帧全部喂给该轨的分析器。
 void AnalysisPipeline::PumpAudioPacket(AudioQcTrack& track, const AVPacket* pkt) {

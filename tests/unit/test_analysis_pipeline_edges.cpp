@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 #include <utility>
@@ -469,4 +470,286 @@ TEST(AnalysisPipelineEdges, MissingContainerDurationFallsBackToMeasuredDuration)
     ASSERT_EQ(result.streams.size(), 1u);
     EXPECT_DOUBLE_EQ(result.streams[0].duration_seconds, measured);
     EXPECT_EQ(result.streams[0].bitrate_bps, 1000000);
+}
+
+// ============================================================================
+// 真实 HDR 样本端到端（env-gated）
+//
+// 用法：VIDEOEYE_HDR_SAMPLE_DIR=<目录> ctest -R AnalysisPipelineEdgeTests
+// 不设环境变量时 SKIP：这些大样本不随仓库分发。这里钉的不是"能打开文件"，
+// 而是 MP4 的 HDR 静态元数据**只在解码帧 side data 上**这条真实链路：
+//   * hdr10-720p / hdr10-video-with-sdr-container：CLL 与 mastering 都取自帧侧；
+//   * hlg-1080p：HLG 本就没有静态元数据，不能因此判成"HDR 元数据不完整"。
+// 旧版遗留 videoeye-cli.exe（9/27）测出的 CLL=0 是历史二进制，不能当真值。
+// ============================================================================
+namespace {
+
+AnalysisOptions HdrSampleOptions() {
+    AnalysisOptions options;
+    options.analyze_bitrate_gop = false;
+    options.analyze_audio_qc = false;
+    options.analyze_audio_bitstream = false;
+    options.analyze_color_hdr = true;
+    options.analyze_visual_qc = false;
+    options.analyze_bitstream = false;
+    options.analyze_parameter_timeline = false;
+    options.analyze_frame_order = false;
+    options.analyze_mp4_sample_table = false;
+    options.analyze_streaming_package = false;
+    options.analyze_subtitle = false;
+    options.analyze_timecode = false;
+    options.analyze_aux_data = false;
+    options.analyze_ts_transport = false;
+    options.analyze_legacy_container = false;
+    return options;
+}
+
+bool AnalyzeHdrSample(const std::string& path, model::AnalysisResult& result) {
+    AnalysisOptions options = HdrSampleOptions();
+    AnalysisPipeline pipeline(options);
+    AVFormatContext* format = nullptr;
+    if (avformat_open_input(&format, path.c_str(), nullptr, nullptr) < 0)
+        return false;
+    AVPacket* packet = av_packet_alloc();
+    if (packet == nullptr || avformat_find_stream_info(format, nullptr) < 0) {
+        if (packet != nullptr)
+            av_packet_free(&packet);
+        avformat_close_input(&format);
+        return false;
+    }
+
+    result.file_path = path;
+    result.duration_seconds = static_cast<double>(format->duration) / 1000000.0;
+    for (unsigned i = 0; i < format->nb_streams; ++i) {
+        AVStream* stream = format->streams[i];
+        model::StreamDigest digest;
+        digest.index = static_cast<int>(i);
+        digest.media_type = stream->codecpar->codec_type;
+        digest.codec_name = avcodec_get_name(stream->codecpar->codec_id);
+        digest.width = stream->codecpar->width;
+        digest.height = stream->codecpar->height;
+        result.streams.push_back(digest);
+    }
+    pipeline.SetSourcePath(path);
+    pipeline.Prepare(format, result, result.duration_seconds);
+
+    int64_t packet_index = 0;
+    while (av_read_frame(format, packet) >= 0) {
+        pipeline.OnPacket(format, packet, result, packet_index++);
+        av_packet_unref(packet);
+    }
+    pipeline.BeforeClose(format, result);
+    pipeline.ReleaseProbes();
+
+    AnalysisResultAssembler assembler(result, options);
+    assembler.FinalizeColorHdr(pipeline.color_hdr(), pipeline.color_video_stream_index());
+    assembler.FinalizeDimensionStatus(0, 0);
+    av_packet_free(&packet);
+    avformat_close_input(&format);
+    return result.color_hdr.analyzed;
+}
+
+const model::DimensionStatus* ColorHdrDimension(const model::AnalysisResult& result) {
+    return result.FindDimension(model::AnalysisDimension::ColorHdr);
+}
+
+std::string HdrSamplePath(const char* name) {
+    const char* dir = std::getenv("VIDEOEYE_HDR_SAMPLE_DIR");
+    return dir == nullptr ? std::string() : (std::string(dir) + "/" + name);
+}
+
+} // namespace
+
+TEST(ColorHdrRealSampleTest, Hdr10PlusReadsFrameSideDataAndFlagsPlaceholderCll) {
+    const std::string path = HdrSamplePath("hdr10-720p.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    // 真值：SEI 里 mastering 齐备，但 CLL SEI 两项都是 0（ffprobe 6.1 与 FFmpeg 8.1 一致）。
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Hdr10Plus);
+    EXPECT_TRUE(result.color_hdr.hdr.mastering_display.Complete());
+    EXPECT_TRUE(result.color_hdr.hdr.content_light.present);
+    EXPECT_FALSE(result.color_hdr.hdr.content_light.HasAny());
+}
+
+TEST(ColorHdrRealSampleTest, Hdr10InSdrContainerKeepsContentLight) {
+    const std::string path = HdrSamplePath("hdr10-video-with-sdr-container.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    // 真值：SEI 的 mastering 只有色度坐标（has_luminance=0），CLL 1000/200 完整。
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Hdr10Plus);
+    EXPECT_TRUE(result.color_hdr.hdr.mastering_display.present);
+    EXPECT_FALSE(result.color_hdr.hdr.mastering_display.Complete());
+    EXPECT_EQ(result.color_hdr.hdr.content_light.max_cll, 1000u);
+    EXPECT_EQ(result.color_hdr.hdr.content_light.max_fall, 200u);
+}
+
+TEST(ColorHdrRealSampleTest, HlgNeedsNoStaticMetadata) {
+    const std::string path = HdrSamplePath("hlg-1080p.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Hlg);
+    const model::DimensionStatus* dim = ColorHdrDimension(result);
+    ASSERT_NE(dim, nullptr);
+    EXPECT_TRUE(dim->conclusive);
+    EXPECT_TRUE(dim->failure_reason.empty());
+}
+
+TEST(ColorHdrRealSampleTest, SdrFileNeedsNoHdrStaticMetadata) {
+    const std::string path = HdrSamplePath("bt2020-sdr.mp4");
+    if (path.empty())
+        GTEST_SKIP() << "set VIDEOEYE_HDR_SAMPLE_DIR to run real HDR sample checks";
+    model::AnalysisResult result;
+    ASSERT_TRUE(AnalyzeHdrSample(path, result)) << path;
+
+    EXPECT_EQ(result.color_hdr.hdr.format, model::HdrFormat::Sdr);
+    EXPECT_FALSE(result.color_hdr.StaticMetadataComplete()); // SDR 本来就没有静态元数据
+    const model::DimensionStatus* dim = ColorHdrDimension(result);
+    ASSERT_NE(dim, nullptr);
+    EXPECT_TRUE(dim->conclusive);
+    EXPECT_TRUE(dim->failure_reason.empty());
+}
+
+// ---- 分析器层：完整性优先级替换（真实样本里占位 side data 并不总出现，得造数据钉住）----
+#include "core/analysis/quality/ColorHdrAnalyzer.h"
+extern "C" {
+#include <libavutil/buffer.h>
+#include <libavutil/dovi_meta.h>
+#include <libavutil/mastering_display_metadata.h>
+}
+
+namespace {
+
+void AddPacketCll(AVPacket* packet, unsigned cll, unsigned fall) {
+    AVContentLightMetadata data{};
+    data.MaxCLL = cll;
+    data.MaxFALL = fall;
+    AVPacketSideData* side = av_packet_side_data_new(&packet->side_data, &packet->side_data_elems,
+                                                     AV_PKT_DATA_CONTENT_LIGHT_LEVEL, sizeof(data), 0);
+    ASSERT_NE(side, nullptr);
+    std::memcpy(side->data, &data, sizeof(data));
+}
+
+void AddPacketMastering(AVPacket* packet, const AVMasteringDisplayMetadata& data) {
+    AVPacketSideData* side = av_packet_side_data_new(&packet->side_data, &packet->side_data_elems,
+                                                     AV_PKT_DATA_MASTERING_DISPLAY_METADATA, sizeof(data), 0);
+    ASSERT_NE(side, nullptr);
+    std::memcpy(side->data, &data, sizeof(data));
+}
+
+void AddPacketDolbyVision(AVPacket* packet, const AVDOVIDecoderConfigurationRecord& data) {
+    AVPacketSideData* side =
+        av_packet_side_data_new(&packet->side_data, &packet->side_data_elems, AV_PKT_DATA_DOVI_CONF, sizeof(data), 0);
+    ASSERT_NE(side, nullptr);
+    std::memcpy(side->data, &data, sizeof(data));
+}
+
+void AddFrameCll(AVFrame* frame, unsigned cll, unsigned fall) {
+    AVContentLightMetadata data{};
+    data.MaxCLL = cll;
+    data.MaxFALL = fall;
+    AVBufferRef* buf = av_buffer_alloc(sizeof(data));
+    ASSERT_NE(buf, nullptr);
+    std::memcpy(buf->data, &data, sizeof(data));
+    ASSERT_NE(
+        av_frame_side_data_add(&frame->side_data, &frame->nb_side_data, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL, &buf, 0),
+        nullptr);
+    av_buffer_unref(&buf); // 引用已转交 side data
+}
+
+void AddFrameMastering(AVFrame* frame, const AVMasteringDisplayMetadata& data) {
+    AVBufferRef* buf = av_buffer_alloc(sizeof(data));
+    ASSERT_NE(buf, nullptr);
+    std::memcpy(buf->data, &data, sizeof(data));
+    ASSERT_NE(av_frame_side_data_add(&frame->side_data, &frame->nb_side_data, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA,
+                                     &buf, 0),
+              nullptr);
+    av_buffer_unref(&buf);
+}
+
+} // namespace
+
+// 先到的包侧占位 CLL 0/0 + mastering 全空，不能永久挡住解码帧上的真值。
+TEST(ColorHdrAnalyzerTest, CompleteFrameSideDataReplacesPlaceholderPacketSideData) {
+    ColorHdrAnalyzer analyzer;
+    analyzer.Reset();
+
+    AVPacket* packet = av_packet_alloc();
+    ASSERT_NE(packet, nullptr);
+    AddPacketCll(packet, 0, 0);
+    AVMasteringDisplayMetadata placeholder{};
+    AddPacketMastering(packet, placeholder);
+    analyzer.UpdateFromPacket(packet, 0);
+    ASSERT_TRUE(analyzer.result().hdr.content_light.present);
+    EXPECT_FALSE(analyzer.result().hdr.content_light.HasAny());
+    ASSERT_TRUE(analyzer.result().hdr.mastering_display.present);
+    EXPECT_FALSE(analyzer.result().hdr.mastering_display.Complete());
+    av_packet_free(&packet);
+
+    AVFrame* frame = av_frame_alloc();
+    ASSERT_NE(frame, nullptr);
+    AddFrameCll(frame, 1000, 400);
+    AVMasteringDisplayMetadata full{};
+    full.has_primaries = full.has_luminance = 1;
+    full.display_primaries[0][0] = AVRational{68, 100};
+    full.display_primaries[0][1] = AVRational{32, 100};
+    full.display_primaries[1][0] = AVRational{265, 1000};
+    full.display_primaries[1][1] = AVRational{69, 100};
+    full.display_primaries[2][0] = AVRational{15, 100};
+    full.display_primaries[2][1] = AVRational{6, 100};
+    full.white_point[0] = AVRational{3127, 10000};
+    full.white_point[1] = AVRational{3290, 10000};
+    full.max_luminance = AVRational{1000, 1};
+    full.min_luminance = AVRational{1, 1000};
+    AddFrameMastering(frame, full);
+    analyzer.UpdateFromFrame(frame);
+    av_frame_free(&frame);
+
+    EXPECT_EQ(analyzer.result().hdr.content_light.max_cll, 1000u);
+    EXPECT_EQ(analyzer.result().hdr.content_light.max_fall, 400u);
+    EXPECT_TRUE(analyzer.result().hdr.mastering_display.Complete());
+    EXPECT_NEAR(analyzer.result().hdr.mastering_display.max_luminance, 1000.0, 1e-9);
+    bool tracked = false;
+    for (const std::string& note : analyzer.result().notes) {
+        if (note.find("替换此前占位/不完整数据") != std::string::npos)
+            tracked = true;
+    }
+    EXPECT_TRUE(tracked) << "替换过程必须留下来源轨迹";
+}
+
+// DV 配置记录也可能先读到 profile=0 的占位，后续完整配置要能覆盖；
+// RPU-only 帧数据仍要保留 rpu_present，不能被配置记录抹掉。
+TEST(ColorHdrAnalyzerTest, DolbyVisionConfigReplacesPlaceholderButKeepsRpu) {
+    ColorHdrAnalyzer analyzer;
+    analyzer.Reset();
+
+    AVDOVIDecoderConfigurationRecord dv{};
+    dv.dv_profile = 0;
+    AVPacket* packet = av_packet_alloc();
+    ASSERT_NE(packet, nullptr);
+    AddPacketDolbyVision(packet, dv);
+    analyzer.UpdateFromPacket(packet, 0);
+    EXPECT_TRUE(analyzer.result().hdr.dolby_vision.present);
+    EXPECT_FALSE(analyzer.result().hdr.dolby_vision.profile_known);
+    av_packet_free(&packet);
+
+    packet = av_packet_alloc();
+    ASSERT_NE(packet, nullptr);
+    dv.dv_profile = 8;
+    dv.dv_bl_signal_compatibility_id = 4;
+    AddPacketDolbyVision(packet, dv);
+    analyzer.UpdateFromPacket(packet, 0);
+    av_packet_free(&packet);
+
+    EXPECT_TRUE(analyzer.result().hdr.dolby_vision.profile_known);
+    EXPECT_EQ(analyzer.result().hdr.dolby_vision.profile, 8);
+    EXPECT_EQ(analyzer.result().hdr.dolby_vision.ProfileText(), "8.4");
 }

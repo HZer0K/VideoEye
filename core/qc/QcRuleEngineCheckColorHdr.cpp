@@ -25,20 +25,24 @@ std::vector<model::DiagnosticIssue> CheckColorHdrRules(const model::QcRule& rule
     if (rule.id == "video.color.hdr_missing_mastering") {
         // HLG 不依赖静态元数据（广播电视场景本就没有），只对 PQ 要求 SMPTE ST 2086
         if (color.IsPqTransfer() && !hdr.mastering_display.Complete() && !hdr.dolby_vision.present) {
-            std::string missing = "母版显示信息";
-            missing += hdr.mastering_display.present ? "不完整" : "缺失";
-            issues.push_back(
-                make_issue(1.0, "传递函数为 PQ，但 SMPTE ST 2086 " + missing + "，播放器只能按默认色彩体量做色调映射。",
-                           model::TimeRange::Global(), stream));
+            // "present"只说明读到过一段 side data，可能是全 0 占位或只有一半字段——
+            // 文案必须区分这三种状态，否则用户看到"不完整（只有其中一项）"却两项皆空。
+            const char* state = !hdr.mastering_display.present ? "缺失"
+                                : !hdr.mastering_display.has_primaries && !hdr.mastering_display.has_luminance
+                                    ? "占位（字段均为空）"
+                                    : "不完整（只有色度坐标或只有亮度）";
+            issues.push_back(make_issue(
+                1.0, "传递函数为 PQ，但 SMPTE ST 2086 " + std::string(state) + "，播放器只能按默认色彩体量做色调映射。",
+                model::TimeRange::Global(), stream));
         }
     } else if (rule.id == "video.color.hdr_missing_light_level") {
         if (color.IsPqTransfer() && !hdr.content_light.Complete() && !hdr.dolby_vision.present) {
-            issues.push_back(make_issue(
-                1.0,
-                "传递函数为 PQ，但 MaxCLL/MaxFALL " +
-                    (hdr.content_light.present ? std::string("不完整（只有其中一项）") : std::string("缺失")) +
-                    "，接收端无法预判内容亮度。",
-                model::TimeRange::Global(), stream));
+            const char* state = !hdr.content_light.present    ? "缺失"
+                                : !hdr.content_light.HasAny() ? "占位（MaxCLL/MaxFALL 均为 0）"
+                                                              : "不完整（只有 MaxCLL 或 MaxFALL）";
+            issues.push_back(
+                make_issue(1.0, "传递函数为 PQ，但 MaxCLL/MaxFALL " + std::string(state) + "，接收端无法预判内容亮度。",
+                           model::TimeRange::Global(), stream));
         }
     } else if (rule.id == "video.color.hdr_low_bitdepth") {
         const int depth = color.EffectiveBitDepth();
@@ -117,7 +121,8 @@ std::vector<model::DiagnosticIssue> CheckColorHdrRules(const model::QcRule& rule
                                         model::TimeRange::Global(), stream, static_cast<int>(missing_items.size())));
         }
     } else if (rule.id == "video.color.dv_no_compatibility") {
-        if (hdr.dolby_vision.present && hdr.dolby_vision.compatibility_id == 0) {
+        // 只有 RPU 时拿不到 compatibility_id，0 只是默认值；此时不能报"无兼容层"。
+        if (hdr.dolby_vision.present && hdr.dolby_vision.profile_known && hdr.dolby_vision.compatibility_id == 0) {
             issues.push_back(make_issue(1.0,
                                         "Dolby Vision profile " + std::to_string(hdr.dolby_vision.profile) +
                                             " 的 bl_signal_compatibility_id 为 0（" +

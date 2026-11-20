@@ -93,6 +93,8 @@ std::string DolbyVisionMetadata::CompatibilityText() const {
 }
 
 std::string DolbyVisionMetadata::ProfileText() const {
+    if (!profile_known)
+        return "未知（仅 RPU）";
     std::string text = std::to_string(profile);
     if (compatibility_id > 0)
         text += "." + std::to_string(compatibility_id);
@@ -125,7 +127,7 @@ HdrFormat ClassifyHdrFormat(const ColorInfo& color, const HdrMetadataInfo& hdr) 
             return HdrFormat::Hdr10Plus;
         // HDR10 要求静态元数据齐备（SMPTE ST 2086 + MaxCLL/MaxFALL）；
         // 缺一项就只能算“裸 PQ”，多数播放器会按默认 1000nit 映射，亮度与色阶可能偏差。
-        const bool static_meta = hdr.mastering_display.Complete() && hdr.content_light.present;
+        const bool static_meta = hdr.mastering_display.Complete() && hdr.content_light.Complete();
         return static_meta ? HdrFormat::Hdr10 : HdrFormat::Hdr10Basic;
     }
     // 没有 HDR 传递函数，但存在 HDR 线索（DV 已在上面处理；HDR10+ / Vivid 元数据

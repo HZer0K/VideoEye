@@ -291,8 +291,11 @@ DimensionStatus BuildColorHdrStatus(const DimensionContext& ctx) {
     status.stream_indices.push_back(color_hdr.stream_index);
     for (const std::string& note : color_hdr.notes)
         status.notes.push_back(note);
-    if (!color_hdr.StaticMetadataComplete()) {
-        status.failure_reason = "HDR 静态元数据不完整（可能只有色彩字段，没有 MasteringDisplay/MaxCLL）";
+    // ❗只有 PQ 才把静态元数据缺失记成"结论不完整"：HLG 与 SDR 本来就不带
+    // SMPTE ST 2086 / MaxCLL-MaxFALL，DV 由 RPU 提供动态元数据。以前给所有流
+    // 都写 failure_reason，正常 HLG/SDR 文件在报告里被误标成不可信结论。
+    if (color_hdr.color.IsPqTransfer() && !color_hdr.hdr.dolby_vision.present && !color_hdr.StaticMetadataComplete()) {
+        status.failure_reason = "PQ 静态元数据不完整（缺少 MasteringDisplay 或 MaxCLL/MaxFALL）";
     }
     return status;
 }

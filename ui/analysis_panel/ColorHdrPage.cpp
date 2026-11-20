@@ -79,8 +79,9 @@ void ColorHdrPage::SetupUi() {
 
         probe_frame_check_ = new QCheckBox(tr("解码首帧读取动态元数据"), row);
         probe_frame_check_->setChecked(options_.probe_decoded_frame);
-        probe_frame_check_->setToolTip(tr("容器/码流层没有 HDR 静态元数据时，解码首帧读取 AVFrame side data "
-                                          "（HDR10+ / DV RPU / HDR Vivid）。关闭后只依赖容器标注，速度最快。"));
+        probe_frame_check_->setToolTip(tr("MP4 的 HDR 静态元数据（SMPTE ST 2086 / MaxCLL）与 HDR10+、DV RPU、"
+                                          "HDR Vivid 动态元数据多数只在解码帧的 AVFrame side data 上。"
+                                          "关闭后只读容器/码流标注，会漏掉这些信息。"));
         connect(probe_frame_check_, &QCheckBox::toggled, this, &ColorHdrPage::OnOptionChanged);
         rl->addWidget(probe_frame_check_);
         rl->addStretch();
