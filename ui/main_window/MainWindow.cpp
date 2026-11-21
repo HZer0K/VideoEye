@@ -719,6 +719,13 @@ void MainWindow::SetupConnections() {
         if (statusBar())
             statusBar()->showMessage(text);
     });
+    // FFmpeg 页跑完想直接看结果：走和菜单同一个入口（OpenMedia），
+    // 不在这里另写一套换源逻辑 —— 换源复位、异步收尾都在 OpenSessionController 里。
+    connect(ffmpeg_panel_, &ui::FfmpegPanel::OpenMediaRequested, this, [this](const QString& path) {
+        if (!OpenMedia(path, true) && statusBar()) {
+            statusBar()->showMessage(tr("打不开这个文件: %1").arg(path), 8000);
+        }
+    });
     // 实时码流统计: 空串表示停止/换源, 隐藏常驻区
     connect(player_panel_, &PlayerPanel::StreamStatsDisplayReady, this, [this](const QString& text) {
         if (!stats_label_)

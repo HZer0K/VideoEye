@@ -29,6 +29,7 @@
 #include "core/ffmpeg/FfmpegCommandHistory.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
 #include "core/ffmpeg/FfmpegProgressTracker.h"
+#include "core/ffmpeg/FfmpegRunOutputs.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 
 namespace videoeye {
@@ -46,6 +47,10 @@ public:
 
 signals:
     void StatusMessage(const QString& text);
+
+    /// 用户点了「在 VideoEye 中打开」。路径由主窗口接走 —— 页面不持有
+    /// 「打开媒体」这件事的实现（换源、复位、异步收尾都在 OpenSessionController 里）。
+    void OpenMediaRequested(const QString& path);
 
 public slots:
     /// 主窗口打开/切换媒体时同步过来，供「插入当前媒体路径」使用
@@ -74,6 +79,8 @@ private slots:
     void OnInsertOutputPath();
     /// 弹出场景模板菜单（一键换成整条命令）
     void OnShowTemplates();
+    void OnOpenOutputDir();
+    void OnOpenOutputMedia();
     void OnClearCommand();
     void OnRun();
     void OnStop();
@@ -110,6 +117,8 @@ private:
     void InsertSnippet(const QString& snippet);
     /// 用场景模板整体替换命令框内容（模板是整条命令，逐片段插入没有意义）
     void ApplyTemplate(const QString& id);
+    /// 刷新「跑完之后去哪儿看」那一行（产出清单只在有产出时出现）
+    void RefreshResultActions();
     /// 记住最近跑过的命令（去重、截断后回写设置）
     void RememberCommand(const QString& command);
 
@@ -128,6 +137,17 @@ private:
     QPushButton* insert_input_button_ = nullptr;
     QPushButton* insert_output_button_ = nullptr;
     QPushButton* templates_button_ = nullptr; // 「模板…」：场景级的一整条命令
+
+    // ---- 跑完之后 ----
+    // 只放"去结果"的动作：产出清单由 CollectRunOutputs 实测得出，没产出就不出现，
+    // 免得用户点开一个空目录。
+    QWidget* result_actions_ = nullptr;
+    QLabel* result_label_ = nullptr;
+    QPushButton* open_dir_button_ = nullptr;
+    QPushButton* open_media_button_ = nullptr;
+    ffmpeg::FfmpegRunOutputs last_outputs_;
+    /// 上一次运行是否正常结束（决定"产出"还是"未正常结束的残留"）
+    bool last_run_finished_ = false;
     QPushButton* run_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;
 

@@ -21,6 +21,7 @@
 #include "core/ffmpeg/FfmpegCommandParser.h"
 #include "core/ffmpeg/FfmpegCommandPreflight.h"
 #include "core/ffmpeg/FfmpegCommandTemplate.h"
+#include "core/ffmpeg/FfmpegRunOutputs.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
@@ -179,6 +180,26 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     button_row->addWidget(stop_button_);
     button_row->addWidget(run_button_);
     layout->addLayout(button_row);
+
+    // ---- 跑完之后：产出清单 + 去结果 ----
+    // 单独一行、默认隐藏：命令还没跑的时候这里没有东西可说，
+    // 常驻一个空标签只会把命令区挤高。
+    result_actions_ = new QWidget(box);
+    QHBoxLayout* result_row = new QHBoxLayout(result_actions_);
+    result_row->setContentsMargins(0, 0, 0, 0);
+    result_row->setSpacing(6);
+    result_label_ = new QLabel(result_actions_);
+    result_label_->setTextInteractionFlags(Qt::TextSelectableByMouse); // 路径可选中复制
+    open_dir_button_ = new QPushButton(tr("打开输出目录"), result_actions_);
+    open_dir_button_->setToolTip(tr("在文件管理器里打开产出所在的目录"));
+    connect(open_dir_button_, &QPushButton::clicked, this, &FfmpegPanel::OnOpenOutputDir);
+    open_media_button_ = new QPushButton(tr("在 VideoEye 中打开"), result_actions_);
+    connect(open_media_button_, &QPushButton::clicked, this, &FfmpegPanel::OnOpenOutputMedia);
+    result_row->addWidget(result_label_, 1);
+    result_row->addWidget(open_media_button_);
+    result_row->addWidget(open_dir_button_);
+    result_actions_->setVisible(false);
+    layout->addWidget(result_actions_);
 
     return box;
 }
@@ -610,9 +631,65 @@ void FfmpegPanel::ApplyTemplate(const QString& id) {
     emit StatusMessage(note);
 }
 
+void FfmpegPanel::OnOpenOutputDir() {
+    const QString dir = ffmpeg::RevealDirectory(last_outputs_);
+    if (dir.isEmpty()) {
+        emit StatusMessage(tr("没有可打开的目录：这次命令没有本地输出文件"));
+        return;
+    }
+    // 用 openUrl 而不是 QProcess 调 explorer：Windows / macOS / Linux 各一套命令，
+    // 交给桌面环境自己决定最省事（项目里导出模块也是这么做的）。
+    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+}
+
+void FfmpegPanel::OnOpenOutputMedia() {
+    if (last_outputs_.files.isEmpty()) {
+        emit StatusMessage(tr("没有可打开的文件：这次运行没有产出"));
+        return;
+    }
+    const QString path = last_outputs_.files.front();
+    // 图片序列是一族文件，VideoEye 一次只能开一个 —— 明说是"第一帧"，
+    // 不然用户会以为整个序列都进去了
+    if (last_outputs_.has_sequence) {
+        emit StatusMessage(tr("抽帧输出是图片序列，这里打开的是第一帧：%1").arg(QFileInfo(path).fileName()));
+    }
+    emit OpenMediaRequested(path);
+}
+
+void FfmpegPanel::RefreshResultActions() {
+    const bool has_output = !last_outputs_.files.isEmpty();
+    result_actions_->setVisible(has_output);
+    if (!has_output) {
+        return;
+    }
+
+    const QString first = QFileInfo(last_outputs_.files.front()).fileName();
+    // 文件名可能很长，这一行还要留给两个按钮：截一下，完整路径进 tooltip
+    const QString shown = first.size() > 40 ? first.left(37) + QStringLiteral("…") : first;
+    QString text = last_run_finished_ ? tr("本次产出: %1").arg(shown)
+                                      // 失败/被停止时也可能留下半个文件，说清楚比藏起来好
+                                      : tr("已生成（未正常结束，可能不完整）: %1").arg(shown);
+    if (last_outputs_.files.size() > 1) {
+        text += tr(" 等 %1 个文件").arg(last_outputs_.files.size());
+    }
+    result_label_->setText(text);
+
+    // 完整路径进 tooltip：命令区这一行放不下长路径，但用户经常要复制它
+    result_label_->setToolTip(last_outputs_.files.join(QLatin1Char('\n')));
+    open_dir_button_->setEnabled(!ffmpeg::RevealDirectory(last_outputs_).isEmpty());
+    open_media_button_->setEnabled(true);
+    open_media_button_->setToolTip(last_outputs_.has_sequence ? tr("打开第一帧（图片序列不能整组打开）")
+                                                              : tr("用本程序打开这个文件"));
+}
+
 void FfmpegPanel::OnClearCommand() {
     command_edit_->clear();
     output_widget_->ClearOutput();
+    // 清空命令 = 换了话题，上一轮的产出清单不该继续挂在那儿
+    last_outputs_ = ffmpeg::FfmpegRunOutputs();
+    if (result_actions_ != nullptr) {
+        result_actions_->setVisible(false);
+    }
 }
 
 void FfmpegPanel::OnCommandTextChanged() {
@@ -634,6 +711,12 @@ void FfmpegPanel::SetRunUiState(bool running) {
     browse_button_->setEnabled(!running);
     insert_input_button_->setEnabled(!running);
     insert_output_button_->setEnabled(!running);
+
+    // 一开始跑就把上一次的产出清单收起来：那一行指的是**上一轮**的结果，
+    // 留着会让用户以为本次已经产出了东西。
+    if (running && result_actions_ != nullptr) {
+        result_actions_->setVisible(false);
+    }
 }
 
 void FfmpegPanel::OnRun() {
@@ -905,6 +988,12 @@ void FfmpegPanel::OnRunFinished(const ffmpeg::FfmpegRunResult& result) {
     // 状态行 / 退出码 / 耗时 / 失败切页 / 强杀警告全在输出区组件内；
     // 组件另经 StatusMessage 把终态文案发回页面统一展示。
     output_widget_->ShowRunResult(result);
+
+    // 「产出」用磁盘实测，而不是"命令里写了什么就报什么" —— 覆盖被拒、失败早退
+    // 都会让命令里的输出名根本没有落到盘上。
+    last_run_finished_ = result.status == ffmpeg::FfmpegRunStatus::Finished;
+    last_outputs_ = ffmpeg::CollectRunOutputs(current_arguments_);
+    RefreshResultActions();
 }
 
 void FfmpegPanel::SetCurrentFile(const QString& path) {

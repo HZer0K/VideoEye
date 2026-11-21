@@ -1723,6 +1723,20 @@ target_link_libraries(test_ffmpeg_template PRIVATE Qt6::Core)
 add_test(NAME FfmpegCommandTemplateTests COMMAND test_ffmpeg_template)
 
 # =================================================
+# 测试 75：FFmpeg 运行产出清单（序号模板展开 / 只认磁盘实证）
+#
+# 说明: 命令里写了输出名 ≠ 文件真的落盘（覆盖被拒、失败早退、-f null - 都不产出）。
+#       序号模板 out_%03d.png 指向的是一族文件：既不能 exists，也不能拿去打开，
+#       必须展开成第一张实际存在的帧。这一层就是"别骗人"。
+# =================================================
+videoeye_add_test(test_ffmpeg_run_outputs
+    unit/test_ffmpeg_run_outputs.cpp
+)
+target_link_libraries(test_ffmpeg_run_outputs PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_run_outputs PRIVATE Qt6::Core)
+add_test(NAME FfmpegRunOutputsTests COMMAND test_ffmpeg_run_outputs)
+
+# =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
 # 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
 #       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射
