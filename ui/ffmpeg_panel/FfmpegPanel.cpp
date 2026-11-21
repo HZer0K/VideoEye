@@ -12,11 +12,13 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMessageBox>
+#include <QSet>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include "core/ffmpeg/FfmpegCommandDraft.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "core/ffmpeg/FfmpegCommandPreflight.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
@@ -629,6 +631,67 @@ void FfmpegPanel::OnRun() {
         program = parsed.program_token;
     }
 
+    // ---- 运行前路径预检 ----
+    //
+    // 三类「必然失败」在启动 ffmpeg 之前就能看出来：输入不存在、输出目录还没建、
+    // 输出写成了输入。放在覆盖确认**之前**是有意的 —— 否则用户会先被问一遍
+    // "输出文件已存在，要覆盖吗"，答完才被告知"那是你的输入文件"，白绕一圈。
+    //
+    // 「输出 == 输入」不留"仍然运行"：ffmpeg 自己也会拒绝（实测带 -y 也拦得住，
+    // 源文件不会被改动），放过去只是多一次必然失败的等待。
+    // 其余问题留「仍然运行」：网络盘稍后才挂上、文件正被别的进程创建，都真实存在。
+    QSet<QString> acknowledged; // 已经确认过"仍然运行"的问题，改名之后不必再问一遍
+    const auto confirm_preflight = [this, &acknowledged](const QStringList& args) -> bool {
+        const auto issues = ffmpeg::PreflightCommand(args);
+        if (issues.empty()) {
+            return true;
+        }
+        QStringList lines;
+        bool blocks = false;
+        bool has_fresh = false;
+        for (const auto& issue : issues) {
+            lines << QStringLiteral("· %1").arg(issue.message);
+            if (issue.id == QLatin1String("same-as-input")) {
+                blocks = true;
+            }
+            if (!acknowledged.contains(issue.id)) {
+                has_fresh = true;
+            }
+        }
+
+        QMessageBox box(this);
+        box.setWindowTitle(blocks ? tr("输出和输入是同一个文件") : tr("命令可能跑不起来"));
+        box.setIcon(QMessageBox::Warning);
+        box.setText(lines.join(QLatin1Char('\n')));
+        if (blocks) {
+            box.setInformativeText(tr("ffmpeg 会拒绝执行这种命令（「same as Input #0 - exiting」），"
+                                      "源文件不会被改动。请换一个输出文件名。"));
+            box.addButton(tr("返回修改"), QMessageBox::AcceptRole);
+            box.exec();
+            return false;
+        }
+        if (!has_fresh) {
+            return true; // 全是已经点过"仍然运行"的问题，别再弹一次
+        }
+        box.setInformativeText(tr("这些都是运行前就能看出来的问题，按现在的命令，ffmpeg 多半在开头就退出了。\n"
+                                  "「仍然运行」不会改动命令内容。"));
+        QPushButton* run_anyway = box.addButton(tr("仍然运行"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel); // 默认停在安全的那一侧
+        box.exec();
+        if (box.clickedButton() != run_anyway) {
+            return false;
+        }
+        for (const auto& issue : issues) {
+            acknowledged.insert(issue.id);
+        }
+        return true;
+    };
+
+    if (!confirm_preflight(parsed.arguments)) {
+        return; // 命令原样留着，用户自己去改路径
+    }
+
     // ---- 覆盖确认 ----
     //
     // 目标已存在时若放行，ffmpeg 会停在 stdin 上问 "Overwrite? [y/N]"：本页的 stdin
@@ -683,6 +746,12 @@ void FfmpegPanel::OnRun() {
                 return; // 取消：什么都不做，命令保持原样
             }
         }
+    }
+
+    // 改名之后输出路径变了，得再查一遍：用户可能在保存对话框里又选回输入文件本身。
+    // 已经点过"仍然运行"的问题不会重复弹（acknowledged）。
+    if (!confirm_preflight(exec_arguments)) {
+        return;
     }
 
     current_arguments_ = exec_arguments;

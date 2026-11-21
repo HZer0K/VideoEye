@@ -1668,6 +1668,34 @@ videoeye_register_runtime_target(test_ffmpeg_process ${VIDEOEYE_GTEST_DLLS})
 add_test(NAME FfmpegProcessTests COMMAND test_ffmpeg_process)
 
 # =================================================
+# 测试 71：FFmpeg 失败诊断（stderr → 人话结论）
+#
+# 说明: 纯文本匹配，不启动子进程。用例里的原话都是从真实 ffmpeg 输出里抄的，
+#       另外专门留了两条负向用例（只有 `Conversion failed!`、以及完全正常的
+#       banner+进度行）—— 这一层最容易退化成"见谁都报故障"。
+# =================================================
+videoeye_add_test(test_ffmpeg_diagnostics
+    unit/test_ffmpeg_diagnostics.cpp
+)
+target_link_libraries(test_ffmpeg_diagnostics PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_diagnostics PRIVATE Qt6::Core)
+add_test(NAME FfmpegDiagnosticsTests COMMAND test_ffmpeg_diagnostics)
+
+# =================================================
+# 测试 72：FFmpeg 运行前路径预检
+#
+# 说明: 预检看的是磁盘现状，所以要在 QTemporaryDir 里真造文件；但仍然不启动 ffmpeg。
+#       误报和漏报两个方向都有用例 —— 尤其是 `-f lavfi` 的虚拟输入、URL、管道，
+#       它们本来就"不在磁盘上"，被拦下来就是纯误报。
+# =================================================
+videoeye_add_test(test_ffmpeg_preflight
+    unit/test_ffmpeg_preflight.cpp
+)
+target_link_libraries(test_ffmpeg_preflight PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_preflight PRIVATE Qt6::Core)
+add_test(NAME FfmpegPreflightTests COMMAND test_ffmpeg_preflight)
+
+# =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
 # 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
 #       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射

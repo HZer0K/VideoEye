@@ -14,6 +14,7 @@
 #include <QVBoxLayout>
 
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "core/ffmpeg/FfmpegFailureDiagnostics.h"
 #include "ui/theme/AppTheme.h"
 
 namespace videoeye {
@@ -127,7 +128,8 @@ void FfmpegOutputWidget::SetupUi() {
     error_view_->setLineWrapMode(QPlainTextEdit::NoWrap);
     error_view_->setMaximumBlockCount(20000);
     error_view_->setToolTip(tr("只显示 stderr。ffmpeg 的正常进度与 banner 也写在 stderr 上，"
-                               "所以这里往往是完整输出；要看时间顺序请回到「运行日志」。"));
+                               "所以这里往往是完整输出；要看时间顺序请回到「运行日志」。\n"
+                               "失败时末尾会附一段 VideoEye 归纳的诊断（不是 ffmpeg 原话）。"));
     error_view_->setStyleSheet(
         QStringLiteral("QPlainTextEdit { color: %1; }").arg(QLatin1String(theme::color::kWarning)));
     output_tabs_->addTab(error_view_, tr("错误输出"));
@@ -284,6 +286,19 @@ void FfmpegOutputWidget::AppendLog(const QString& text, bool is_error) {
     }
 }
 
+void FfmpegOutputWidget::AppendNotice(const QString& text) {
+    // 诊断最多十来行，不必走 AppendLog 里那个 2000 行兜底；攒批定时器还是要用，
+    // 否则一次失败要连刷十几次滚动条。
+    pending_log_lines_.append(text);
+    pending_error_lines_.append(text);
+    if (last_log_text_.size() < kMaxLogChars) {
+        last_log_text_ += text + QLatin1Char('\n');
+    }
+    if (log_flush_timer_ != nullptr && !log_flush_timer_->isActive()) {
+        log_flush_timer_->start();
+    }
+}
+
 void FfmpegOutputWidget::FlushLog() {
     if (log_flush_timer_ != nullptr) {
         log_flush_timer_->stop();
@@ -363,12 +378,29 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
         AppendLog(QStringLiteral("错误: %1").arg(result.error_message), true);
     }
     if (result.status == ffmpeg::FfmpegRunStatus::Failed) {
-        // ffmpeg 的错误原因几乎都在 stderr 上，帮用户直接切过去
-        FlushLog();
+        FlushLog(); // 诊断读的就是刚落地的那份 stderr，不能还压在缓冲里
+        // ffmpeg 的错误原因几乎都在 stderr 上，但那几十行里真正有用的只有一两行。
+        // 先把结论翻成人话贴在错误页末尾，再切过去 —— 用户落地就在答案上。
+        const std::vector<ffmpeg::FfmpegDiagnosis> diagnoses = ffmpeg::DiagnoseFailure(error_view_->toPlainText());
+        if (!diagnoses.empty()) {
+            AppendNotice(tr("── 诊断（VideoEye 归纳，不是 ffmpeg 输出）──"));
+            for (const auto& diagnosis : diagnoses) {
+                AppendNotice(QStringLiteral("● %1").arg(diagnosis.title));
+                if (!diagnosis.evidence.isEmpty()) {
+                    AppendNotice(tr("    ffmpeg 原话: %1").arg(diagnosis.evidence));
+                }
+                AppendNotice(tr("    怎么办: %1").arg(diagnosis.suggestion));
+            }
+            FlushLog();
+        }
         if (!error_view_->toPlainText().trimmed().isEmpty()) {
             output_tabs_->setCurrentWidget(error_view_);
         }
-        emit StatusMessage(tr("ffmpeg 失败（退出码 %1）：请看「错误输出」").arg(result.exit_code));
+        if (!diagnoses.empty()) {
+            emit StatusMessage(tr("ffmpeg 失败（退出码 %1）：%2").arg(result.exit_code).arg(diagnoses.front().title));
+        } else {
+            emit StatusMessage(tr("ffmpeg 失败（退出码 %1）：请看「错误输出」").arg(result.exit_code));
+        }
     } else if (result.status == ffmpeg::FfmpegRunStatus::Finished) {
         emit StatusMessage(tr("ffmpeg 完成，耗时 %1").arg(FormatDuration(result.elapsed_ms)));
     } else if (result.status == ffmpeg::FfmpegRunStatus::Stopped) {

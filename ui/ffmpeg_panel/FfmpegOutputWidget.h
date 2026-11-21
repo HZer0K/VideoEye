@@ -51,6 +51,9 @@ public:
     void PrepareForRun();
     /// 一行输出。is_error=true 表示来自 stderr（「运行日志」里加 [err] 前缀）。
     void AppendLog(const QString& text, bool is_error);
+    /// VideoEye 自己的一句话（不是 ffmpeg 输出，不加 [err] 前缀）：同时写进「运行日志」
+    /// 与「错误输出」——失败后用户正停在错误页，结论要在他眼皮底下，而不是另一个页签里。
+    void AppendNotice(const QString& text);
     /// 运行中刷新「进度」：percent < 0 表示总时长未知（流式输入），只显示已处理时长。
     void ShowProgress(double percent, const QString& position, const QString& duration);
     /// 运行结束：回填状态 / 退出码 / 耗时；失败切「错误输出」页并发出 StatusMessage。
