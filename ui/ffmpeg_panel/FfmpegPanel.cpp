@@ -23,6 +23,7 @@
 #include "core/ffmpeg/FfmpegCommandTemplate.h"
 #include "core/ffmpeg/FfmpegRunOutputs.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
+#include "ui/ffmpeg_panel/FfmpegCommandEditorDialog.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
 #include "ui/theme/AppTheme.h"
@@ -164,6 +165,10 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     templates_button_->setToolTip(tr("按场景给一整条命令（转码 / 只换封装 / 只留音轨 / 截片段 /\n"
                                      "压体积 / GIF / 抽帧），路径按当前素材自动填好"));
     connect(templates_button_, &QPushButton::clicked, this, &FfmpegPanel::OnShowTemplates);
+    expand_button_ = new QPushButton(tr("展开编辑…"), box);
+    expand_button_->setToolTip(tr("命令太长时摊成多行看：选项与它的值一行，路径一行。\n"
+                                  "换行只是排版，运行时仍拼成一行"));
+    connect(expand_button_, &QPushButton::clicked, this, &FfmpegPanel::OnOpenExpandedEditor);
     run_button_ = new QPushButton(tr("运行"), box);
     run_button_->setObjectName(QStringLiteral("PrimaryButton"));
     connect(run_button_, &QPushButton::clicked, this, &FfmpegPanel::OnRun);
@@ -175,6 +180,7 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     button_row->addWidget(insert_input_button_);
     button_row->addWidget(insert_output_button_);
     button_row->addWidget(templates_button_);
+    button_row->addWidget(expand_button_);
     button_row->addStretch(1);
     button_row->addWidget(clear_button);
     button_row->addWidget(stop_button_);
@@ -581,6 +587,22 @@ void FfmpegPanel::OnShowTemplates() {
     menu.exec(templates_button_->mapToGlobal(QPoint(0, templates_button_->height())));
 }
 
+void FfmpegPanel::OnOpenExpandedEditor() {
+    FfmpegCommandEditorDialog dialog(command_edit_->text(), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return; // 取消：命令原样留着
+    }
+    const QString command = dialog.Command();
+    if (command != command_edit_->text()) {
+        command_edit_->setText(command); // textChanged 会顺带刷新解释区
+        command_edit_->setCursorPosition(static_cast<int>(command.size()));
+    }
+    if (dialog.RunRequested()) {
+        // 对话框里点的是「运行」：直接跑，省掉"关窗再回车"这一步
+        OnRun();
+    }
+}
+
 void FfmpegPanel::ApplyTemplate(const QString& id) {
     const ffmpeg::FfmpegCommandTemplate* tmpl = ffmpeg::FindFfmpegTemplate(id);
     if (tmpl == nullptr) {
@@ -711,6 +733,9 @@ void FfmpegPanel::SetRunUiState(bool running) {
     browse_button_->setEnabled(!running);
     insert_input_button_->setEnabled(!running);
     insert_output_button_->setEnabled(!running);
+    // 运行中改命令不会影响已经在跑的那个进程（参数早就递过去了），
+    // 但"改了却没生效"比改不了更让人困惑
+    expand_button_->setEnabled(!running);
 
     // 一开始跑就把上一次的产出清单收起来：那一行指的是**上一轮**的结果，
     // 留着会让用户以为本次已经产出了东西。

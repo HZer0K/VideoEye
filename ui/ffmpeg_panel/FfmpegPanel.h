@@ -79,6 +79,8 @@ private slots:
     void OnInsertOutputPath();
     /// 弹出场景模板菜单（一键换成整条命令）
     void OnShowTemplates();
+    /// 打开多行编辑器（长命令摊开看/改）；里面点「运行」就直接跑
+    void OnOpenExpandedEditor();
     void OnOpenOutputDir();
     void OnOpenOutputMedia();
     void OnClearCommand();
@@ -137,6 +139,7 @@ private:
     QPushButton* insert_input_button_ = nullptr;
     QPushButton* insert_output_button_ = nullptr;
     QPushButton* templates_button_ = nullptr; // 「模板…」：场景级的一整条命令
+    QPushButton* expand_button_ = nullptr;    // 「展开编辑…」：多行查看与修改
 
     // ---- 跑完之后 ----
     // 只放"去结果"的动作：产出清单由 CollectRunOutputs 实测得出，没产出就不出现，

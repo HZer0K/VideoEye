@@ -284,6 +284,7 @@ set(VIDEOEYE_TESTS_NEEDING_AUTOMOC
     test_cancel_and_robustness
     test_control_bar_widget
     test_export_coordinator
+    test_ffmpeg_command_editor
     test_ffmpeg_dictionary_widget
     test_ffmpeg_output_widget
     test_format_support
@@ -1735,6 +1736,39 @@ videoeye_add_test(test_ffmpeg_run_outputs
 target_link_libraries(test_ffmpeg_run_outputs PRIVATE VideoEyeFfmpegTools)
 target_link_libraries(test_ffmpeg_run_outputs PRIVATE Qt6::Core)
 add_test(NAME FfmpegRunOutputsTests COMMAND test_ffmpeg_run_outputs)
+
+# =================================================
+# 测试 76：命令文本的两种排版（单行 ↔ 多行）
+#
+# 说明: 「展开编辑」把长命令摊成多行看，运行前再压回一行。压行/折行一旦改动了
+#       字符（丢了引号、压掉引号里的连续空格），命令就变成了另一条，而且不会报错。
+#       核心不变量是"折行再压回来，交给解析器后参数数组逐个相同"。
+# =================================================
+videoeye_add_test(test_ffmpeg_command_text
+    unit/test_ffmpeg_command_text.cpp
+)
+target_link_libraries(test_ffmpeg_command_text PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_command_text PRIVATE Qt6::Core)
+add_test(NAME FfmpegCommandTextTests COMMAND test_ffmpeg_command_text)
+
+# =================================================
+# 测试 77：展开编辑对话框（折行显示 / 压行回填 / 结构提示 / 运行分支）
+#
+# 说明: 对话框站在命令输入与执行之间，只做"读改"，写错也不崩 —— 但会把命令
+#       悄悄改掉。只编对话框源，解析链走 VideoEyeFfmpegTools。
+#       用 offscreen 平台跑。
+# =================================================
+videoeye_add_test(test_ffmpeg_command_editor
+    unit/test_ffmpeg_command_editor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegCommandEditorDialog.cpp
+)
+target_link_libraries(test_ffmpeg_command_editor PRIVATE
+    VideoEyeUiTheme
+    VideoEyeFfmpegTools
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FfmpegCommandEditorDialogTests COMMAND test_ffmpeg_command_editor)
+set_tests_properties(FfmpegCommandEditorDialogTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
