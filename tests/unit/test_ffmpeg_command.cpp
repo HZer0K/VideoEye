@@ -40,11 +40,15 @@ using videoeye::ffmpeg::FfmpegCommandHistory;
 using videoeye::ffmpeg::FfmpegEntryKind;
 using videoeye::ffmpeg::FfmpegFormatLists;
 using videoeye::ffmpeg::FfmpegInstallGuide;
+using videoeye::ffmpeg::FfmpegProgressSnapshot;
 using videoeye::ffmpeg::FfmpegProgressTracker;
 using videoeye::ffmpeg::FfmpegTokenRole;
 using videoeye::ffmpeg::FfmpegToolInfo;
 using videoeye::ffmpeg::FfmpegToolLocator;
+using videoeye::ffmpeg::FormatByteSize;
 using videoeye::ffmpeg::FormatProgressClock;
+using videoeye::ffmpeg::FormatProgressDetail;
+using videoeye::ffmpeg::FormatProgressSummary;
 using videoeye::ffmpeg::InformationOptionDescription;
 using videoeye::ffmpeg::IsExplicitProgramPath;
 using videoeye::ffmpeg::IsInformationCommand;
@@ -941,6 +945,137 @@ TEST(FfmpegProgressTracker, PositionIsClampedToHundredPercent) {
     tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
     tracker.Feed(QStringLiteral("frame=1 time=00:00:12.00 bitrate=..."));
     EXPECT_NEAR(100.0, tracker.percent(), 0.001);
+}
+
+TEST(FfmpegProgressTracker, DurationNotRetriedAfterNA) {
+    // 第一个 Duration 是 N/A（流式输入）时，第二个输入的 Duration 不能顶上来当分母：
+    // position 是整体输出的位置，两个口径对不上，宁可不给百分比。
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: N/A, start: 0.000000, bitrate: N/A"));
+    tracker.Feed(QStringLiteral("  Duration: 01:00:00.00, start: 0.000000, bitrate: 1 kb/s"));
+    EXPECT_FALSE(tracker.duration_known());
+    EXPECT_LT(tracker.percent(), 0.0);
+}
+
+// 本机 ffmpeg 6.1 实测原样（-preset slow 转 30 秒 720p）：
+//   frame=  579 fps=128 q=20.0 size=   14080kB time=00:00:19.23 bitrate=5997.1kbits/s speed=4.24x
+TEST(FfmpegProgressTracker, SpeedSizeAndFpsFromRealProgressLine) {
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:30.00, start: 0.000000, bitrate: 5997 kb/s"));
+    tracker.Feed(QStringLiteral(
+        "frame=  579 fps=128 q=20.0 size=   14080kB time=00:00:19.23 bitrate=5997.1kbits/s speed=4.24x    "));
+
+    EXPECT_NEAR(128.0, tracker.fps(), 0.001);
+    EXPECT_EQ(14080000, tracker.size_bytes()); // kB 是十进制（1000），不是 KiB
+    EXPECT_NEAR(4.24, tracker.speed(), 0.001);
+    EXPECT_NEAR(64.1, tracker.percent(), 0.01);
+
+    // 剩余媒体时长 30 - 19.23 = 10.77 秒，按 4.24 倍速约 2.54 秒
+    EXPECT_EQ(2540, tracker.eta_ms());
+}
+
+TEST(FfmpegProgressTracker, SpeedAveragesRecentSamples) {
+    // 收尾时 speed 会突然飙高，单点采样算出来的剩余时间会跳；取窗口平均压一压
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=1 fps=25 time=00:00:01.00 speed=2.0x"));
+    tracker.Feed(QStringLiteral("frame=2 fps=25 time=00:00:02.00 speed=6.0x"));
+    EXPECT_NEAR(4.0, tracker.speed(), 0.001);
+}
+
+TEST(FfmpegProgressTracker, FirstLinePlaceholdersAreNotFacts) {
+    // 开头那行是占位：fps=0.0 / size=0kB / speed=N/A / time=N/A 都不能当真值
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=    0 fps=0.0 q=0.0 size=       0kB time=N/A bitrate=N/A speed=N/A"));
+    EXPECT_LT(tracker.fps(), 0.0);
+    EXPECT_LT(tracker.size_bytes(), 0);
+    EXPECT_LT(tracker.speed(), 0.0);
+    EXPECT_LT(tracker.eta_ms(), 0);
+}
+
+TEST(FfmpegProgressTracker, EtaDividesRemainingBySpeed) {
+    // 剩余媒体时长要除以处理速度才是墙钟时间：剩 10 秒、2 倍速 → 约 5 秒
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:20.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=1 fps=25 time=00:00:10.00 speed=2.0x"));
+    EXPECT_EQ(5000, tracker.eta_ms());
+}
+
+TEST(FfmpegProgressTracker, EtaUnknownBeforePositionMoves) {
+    // position 还是 0 时算出来的是"满额剩余"，没有参考价值
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=0 fps=25 size=0kB time=00:00:00.00 speed=1.0x"));
+    EXPECT_LT(tracker.eta_ms(), 0);
+}
+
+TEST(FfmpegProgressTracker, SizeUnitsFollowSuffix) {
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("frame=1 size=  1.5MiB time=00:00:01.00 speed=1.0x"));
+    EXPECT_EQ(1572864, tracker.size_bytes()); // 1.5 * 1024 * 1024
+}
+
+TEST(FfmpegProgressTracker, ResetClearsDetailFields) {
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=10 fps=25 size=512kB time=00:00:01.00 speed=2.0x"));
+    tracker.Reset();
+
+    EXPECT_FALSE(tracker.duration_known());
+    EXPECT_LT(tracker.percent(), 0.0);
+    EXPECT_LT(tracker.speed(), 0.0);
+    EXPECT_LT(tracker.fps(), 0.0);
+    EXPECT_LT(tracker.size_bytes(), 0);
+    EXPECT_LT(tracker.eta_ms(), 0);
+    // Reset 之后要能重新吃下一条命令的 Duration
+    tracker.Feed(QStringLiteral("  Duration: 00:00:04.00, start: 0.000000, bitrate: 1 kb/s"));
+    EXPECT_EQ(4000, tracker.duration_ms());
+}
+
+TEST(FfmpegProgressTracker, SummaryShowsSpeedAndRemaining) {
+    FfmpegProgressSnapshot snapshot;
+    snapshot.percent = 64.1;
+    snapshot.position_ms = 19230;
+    snapshot.duration_ms = 30000;
+    snapshot.speed = 4.24;
+    snapshot.eta_ms = 2540;
+
+    const QString text = FormatProgressSummary(snapshot);
+    EXPECT_TRUE(text.contains(QStringLiteral("64.1%"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("00:19 / 00:30"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("4.2×"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("约剩 00:02"))) << text.toStdString();
+}
+
+TEST(FfmpegProgressTracker, SummaryWithoutDurationSkipsPercentAndEta) {
+    FfmpegProgressSnapshot snapshot;
+    snapshot.position_ms = 7000;
+    snapshot.speed = 2.0;
+
+    const QString text = FormatProgressSummary(snapshot);
+    EXPECT_TRUE(text.contains(QStringLiteral("总时长未知"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QStringLiteral("2.0×"))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QLatin1Char('%'))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QStringLiteral("约剩"))) << text.toStdString();
+}
+
+TEST(FfmpegProgressTracker, DetailOmitsUnknownFields) {
+    FfmpegProgressSnapshot snapshot;
+    snapshot.position_ms = 7000;
+
+    const QString text = FormatProgressDetail(snapshot);
+    EXPECT_TRUE(text.contains(QStringLiteral("总时长未知"))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QStringLiteral("速度"))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QStringLiteral("帧率"))) << text.toStdString();
+    EXPECT_FALSE(text.contains(QStringLiteral("已写入"))) << text.toStdString();
+}
+
+TEST(FfmpegProgressTracker, ByteSizeFormatting) {
+    EXPECT_EQ(QStringLiteral("512 B"), FormatByteSize(512));
+    EXPECT_EQ(QStringLiteral("1.0 KiB"), FormatByteSize(1024));
+    EXPECT_EQ(QStringLiteral("14.1 MiB"), FormatByteSize(14800000));
+    EXPECT_EQ(QString(), FormatByteSize(-1)); // 未知不编成 0 B
 }
 
 TEST(FfmpegProgressTracker, ClockFormatSwitchesAtOneHour) {

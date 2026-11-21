@@ -36,6 +36,7 @@
 using videoeye::ffmpeg::CommandParseStatus;
 using videoeye::ffmpeg::FfmpegCommandExplainer;
 using videoeye::ffmpeg::FfmpegCommandExplanation;
+using videoeye::ffmpeg::FfmpegProgressSnapshot;
 using videoeye::ffmpeg::FfmpegRunResult;
 using videoeye::ffmpeg::FfmpegRunStatus;
 using videoeye::ffmpeg::FfmpegStopStage;
@@ -333,12 +334,18 @@ TEST(FfmpegOutputWidgetTests, ProgressShowsPercentOnlyWhenDurationIsKnown) {
     ASSERT_TRUE(progress != nullptr);
     EXPECT_EQ(QStringLiteral("进度: —"), progress->text());
 
-    widget.ShowProgress(42.5, QStringLiteral("00:04"), QStringLiteral("00:00:10"));
+    FfmpegProgressSnapshot normal;
+    normal.percent = 42.5;
+    normal.position_ms = 4000;
+    normal.duration_ms = 10000;
+    widget.ShowProgress(normal);
     EXPECT_TRUE(progress->text().contains(QStringLiteral("42.5%")));
-    EXPECT_TRUE(progress->text().contains(QStringLiteral("00:04 / 00:00:10")));
+    EXPECT_TRUE(progress->text().contains(QStringLiteral("00:04 / 00:10")));
 
     // 流式输入（Duration: N/A）：没有分母就不给百分比，只报已处理时长
-    widget.ShowProgress(-1.0, QStringLiteral("00:07"), QString());
+    FfmpegProgressSnapshot streaming;
+    streaming.position_ms = 7000;
+    widget.ShowProgress(streaming);
     EXPECT_TRUE(progress->text().contains(QStringLiteral("总时长未知")));
     EXPECT_TRUE(progress->text().contains(QStringLiteral("00:07")));
     EXPECT_FALSE(progress->text().contains(QLatin1Char('%')));
@@ -353,7 +360,11 @@ TEST(FfmpegOutputWidgetTests, FinishedRunReplacesProgressWithCompleted) {
 
     FfmpegOutputWidget widget;
     widget.PrepareForRun();
-    widget.ShowProgress(99.4, QStringLiteral("00:09"), QStringLiteral("00:00:10"));
+    FfmpegProgressSnapshot near_done;
+    near_done.percent = 99.4;
+    near_done.position_ms = 9940;
+    near_done.duration_ms = 10000;
+    widget.ShowProgress(near_done);
 
     FfmpegRunResult result;
     result.status = FfmpegRunStatus::Finished;

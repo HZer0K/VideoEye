@@ -73,8 +73,7 @@ void FfmpegOutputWidget::SetupUi() {
     status_row->setSpacing(12);
     status_label_ = new QLabel(tr("状态: 未运行"), this);
     progress_label_ = new QLabel(tr("进度: —"), this);
-    progress_label_->setToolTip(tr("百分比 = 已处理时长 / 输入总时长。命令里写了 -ss / -t 时，"
-                                   "这个分母不等于本次要产出的时长，进度会偏小或提前到 100%。"));
+    progress_label_->setToolTip(ProgressHint());
     exit_code_label_ = new QLabel(tr("退出码: —"), this);
     elapsed_label_ = new QLabel(tr("耗时: —"), this);
     copy_button_ = new QPushButton(tr("复制日志"), this);
@@ -243,6 +242,7 @@ void FfmpegOutputWidget::ClearOutput() {
     run_elapsed_.invalidate();
     SetStatusText(tr("状态: 未运行"), QString());
     progress_label_->setText(tr("进度: —"));
+    progress_label_->setToolTip(ProgressHint());
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
 }
@@ -259,6 +259,7 @@ void FfmpegOutputWidget::PrepareForRun() {
     run_elapsed_.start();
     SetStatusText(tr("状态: 运行中"), QLatin1String(theme::color::kAccent));
     progress_label_->setText(tr("进度: —"));
+    progress_label_->setToolTip(ProgressHint());
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
     output_tabs_->setCurrentWidget(log_view_);
@@ -309,20 +310,28 @@ void FfmpegOutputWidget::FlushLog() {
     pending_error_lines_.clear();
 }
 
-void FfmpegOutputWidget::ShowProgress(double percent, const QString& position, const QString& duration) {
-    if (percent < 0.0 || duration.isEmpty()) {
-        // 流式输入 / Duration: N/A —— 没有分母就不给百分比，只报已处理时长
-        progress_label_->setText(tr("进度: 已处理 %1（总时长未知）").arg(position));
-    } else {
-        progress_label_->setText(tr("进度: %1%（%2 / %3）").arg(QString::number(percent, 'f', 1), position, duration));
-    }
+void FfmpegOutputWidget::ShowProgress(const ffmpeg::FfmpegProgressSnapshot& snapshot) {
+    progress_label_->setText(tr("进度: %1").arg(ffmpeg::FormatProgressSummary(snapshot)));
+
+    // 悬停看完整字段：状态行就那么宽，帧率与已写入大小挤进去会把状态/退出码顶掉。
+    const QString detail = ffmpeg::FormatProgressDetail(snapshot);
+    progress_label_->setToolTip(detail.isEmpty() ? ProgressHint()
+                                                 : QStringLiteral("%1\n\n%2").arg(detail, ProgressHint()));
+
     if (run_elapsed_.isValid()) {
         elapsed_label_->setText(tr("耗时: %1").arg(FormatDuration(run_elapsed_.elapsed())));
     }
 }
 
+QString FfmpegOutputWidget::ProgressHint() {
+    return tr("百分比 = 已处理时长 / 输入总时长。「约剩」由 ffmpeg 报的处理速度推算，"
+              "命令里写了 -ss / -t 时两者都会偏离本次要产出的时长。");
+}
+
 void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     FlushLog(); // 最后几行可能还压在缓冲里，状态行要跟它们一起出现
+    // 进度已经定住了，别让悬停还报着运行中那一刻的帧率与剩余时间
+    progress_label_->setToolTip(ProgressHint());
     exit_code_label_->setText(tr("退出码: %1").arg(result.exit_code));
     elapsed_label_->setText(tr("耗时: %1").arg(FormatDuration(result.elapsed_ms)));
 

@@ -825,7 +825,7 @@ bool FfmpegPanel::ConfirmShutdown() {
 void FfmpegPanel::OnRunOutput(const QString& text, bool is_error) {
     // 进度就从这条流里读：ffmpeg 的 `Duration:` 和 `time=` 都在 stderr，不用另起探测。
     if (progress_.Feed(text)) {
-        output_widget_->ShowProgress(progress_.percent(), progress_.position_text(), progress_.duration_text());
+        output_widget_->ShowProgress(progress_.Snapshot());
     }
     output_widget_->AppendLog(text, is_error);
 }

@@ -31,6 +31,7 @@
 
 #include "core/ffmpeg/FfmpegCommandExplainer.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
+#include "core/ffmpeg/FfmpegProgressTracker.h"
 
 class QTimer;
 
@@ -54,8 +55,9 @@ public:
     /// VideoEye 自己的一句话（不是 ffmpeg 输出，不加 [err] 前缀）：同时写进「运行日志」
     /// 与「错误输出」——失败后用户正停在错误页，结论要在他眼皮底下，而不是另一个页签里。
     void AppendNotice(const QString& text);
-    /// 运行中刷新「进度」：percent < 0 表示总时长未知（流式输入），只显示已处理时长。
-    void ShowProgress(double percent, const QString& position, const QString& duration);
+    /// 运行中刷新「进度」：百分比 / 速度 / 剩余时间在状态行，帧率与已写入大小在悬停提示。
+    /// 总时长未知（流式输入）时只有已处理时长，不编百分比。
+    void ShowProgress(const ffmpeg::FfmpegProgressSnapshot& snapshot);
     /// 运行结束：回填状态 / 退出码 / 耗时；失败切「错误输出」页并发出 StatusMessage。
     void ShowRunResult(const ffmpeg::FfmpegRunResult& result);
     /// 把攒着的日志立刻写进视图（结束 / 复制 / 保存前必须调，否则会漏最后几行）。
@@ -73,6 +75,8 @@ private:
     void SetupUi();
     /// setText + 颜色一次写完（三处状态更新共用；color 为空 = 清掉样式）
     void SetStatusText(const QString& text, const QString& color);
+    /// 进度标签的默认悬停说明（百分比与剩余时间的口径）。
+    static QString ProgressHint();
 
     // ---- 状态行 ----
     QLabel* status_label_ = nullptr;
