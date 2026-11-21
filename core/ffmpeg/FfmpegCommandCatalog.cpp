@@ -738,7 +738,8 @@ const std::vector<FfmpegCatalogEntry>& EntryTable() {
          Val::Filter,
          QStringLiteral("多路输入之间任意连接：拼接、画中画、混音、加动态水印。"),
          QStringLiteral("语法是 [输入标签]滤镜1[a];[a]滤镜2[输出标签]，一条命令里可以有多条链。"
-                        "本页只解释它的**整体用途**，不拆解滤镜图内部的连线 —— 复杂的图建议先在命令行里调通。"),
+                        "本页会把每条链拆成「标签 → 滤镜 → 标签」逐段列出，并逐个说明滤镜的作用与可用性；"
+                        "至于哪条流最终进哪个标签，以 ffmpeg 实际执行为准。"),
          QStringLiteral("输出文件之前；配合 -map 指定滤镜输出到哪条流"),
          QStringLiteral(
              "-i bg.mp4 -i logo.png -filter_complex \"[0:v][1:v]overlay=W-w-10:10[out]\" -map \"[out]\" out.mp4"),

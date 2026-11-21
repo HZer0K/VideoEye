@@ -2,6 +2,7 @@
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "core/ffmpeg/FfmpegFilterGraph.h"
 
 namespace videoeye {
 namespace ffmpeg {
@@ -20,12 +21,6 @@ bool IsInputSideOption(const QString& name) {
         QStringLiteral("-copyts"),   QStringLiteral("-framerate"),
     };
     return kInputSide.contains(name, Qt::CaseInsensitive);
-}
-
-// 滤镜链里第一个滤镜名（"scale=1280:-2,format=yuv420p" → "scale"）
-QString FirstFilterName(const QString& chain) {
-    const QString head = chain.section(QLatin1Char(','), 0, 0).trimmed();
-    return head.section(QLatin1Char('='), 0, 0).trimmed();
 }
 
 // 一条命令里有多个输出时给它们编号，否则就是普通的"输出文件"
@@ -311,10 +306,21 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                     } else if (!readable && !writable) {
                         item.warning = QStringLiteral("当前这个 ffmpeg 不支持封装格式「%1」。").arg(item.value);
                     }
-                } else if (entry->value_kind == FfmpegValueKind::Filter &&
-                           !caps.HasFilter(FirstFilterName(item.value))) {
-                    item.warning =
-                        QStringLiteral("滤镜「%1」在当前这个 ffmpeg 里不可用。").arg(FirstFilterName(item.value));
+                } else if (entry->value_kind == FfmpegValueKind::Filter) {
+                    // -vf / -af / -filter_complex 的值是一整串滤镜，逐个拆开看：
+                    // 原来只查第一个名字，串里第 2 个滤镜拼错也一句不说。
+                    const bool complex_graph = token == QLatin1String("-filter_complex");
+                    const FfmpegFilterGraph graph = ParseFilterGraph(item.value, complex_graph);
+                    const QString described = DescribeFilterGraph(graph);
+                    if (!described.isEmpty()) {
+                        item.description += QStringLiteral("\n\n") + described;
+                    }
+                    const QStringList missing = graph.UnavailableFilters();
+                    if (!missing.isEmpty()) {
+                        item.warning = QStringLiteral("当前这个 ffmpeg 里没有滤镜「%1」，运行会报 No such filter。"
+                                                      "用 ffmpeg -filters 可以列出实际可用的滤镜。")
+                                           .arg(missing.join(QStringLiteral("、")));
+                    }
                 }
             }
 

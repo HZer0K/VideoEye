@@ -1696,6 +1696,19 @@ target_link_libraries(test_ffmpeg_preflight PRIVATE Qt6::Core)
 add_test(NAME FfmpegPreflightTests COMMAND test_ffmpeg_preflight)
 
 # =================================================
+# 测试 73：FFmpeg 滤镜串拆解（-vf / -af / -filter_complex）
+#
+# 说明: 纯字符串解析，不启动 ffmpeg。重点在"切对"：参数里的逗号、标签、@实例名
+#       都不能被当成滤镜；括号不配对时必须如实报错而不是尽力拆。
+# =================================================
+videoeye_add_test(test_ffmpeg_filter_graph
+    unit/test_ffmpeg_filter_graph.cpp
+)
+target_link_libraries(test_ffmpeg_filter_graph PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_filter_graph PRIVATE Qt6::Core)
+add_test(NAME FfmpegFilterGraphTests COMMAND test_ffmpeg_filter_graph)
+
+# =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
 # 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
 #       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射

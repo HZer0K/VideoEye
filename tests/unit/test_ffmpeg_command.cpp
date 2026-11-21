@@ -36,12 +36,14 @@ using videoeye::ffmpeg::FfmpegCapabilityCache;
 using videoeye::ffmpeg::FfmpegCatalogEntry;
 using videoeye::ffmpeg::FfmpegCommandCatalog;
 using videoeye::ffmpeg::FfmpegCommandExplainer;
+using videoeye::ffmpeg::FfmpegCommandExplanation;
 using videoeye::ffmpeg::FfmpegCommandHistory;
 using videoeye::ffmpeg::FfmpegEntryKind;
 using videoeye::ffmpeg::FfmpegFormatLists;
 using videoeye::ffmpeg::FfmpegInstallGuide;
 using videoeye::ffmpeg::FfmpegProgressSnapshot;
 using videoeye::ffmpeg::FfmpegProgressTracker;
+using videoeye::ffmpeg::FfmpegTokenExplanation;
 using videoeye::ffmpeg::FfmpegTokenRole;
 using videoeye::ffmpeg::FfmpegToolInfo;
 using videoeye::ffmpeg::FfmpegToolLocator;
@@ -62,6 +64,16 @@ std::vector<std::string> ToStdList(const QStringList& list) {
         out.push_back(item.toStdString());
     }
     return out;
+}
+
+/// 按选项名找解释条目（找不到返回 nullptr）。
+const FfmpegTokenExplanation* FindToken(const FfmpegCommandExplanation& explanation, const QString& token) {
+    for (const FfmpegTokenExplanation& item : explanation.tokens) {
+        if (item.token == token) {
+            return &item;
+        }
+    }
+    return nullptr;
 }
 
 // ===================== 解析 =====================
@@ -484,6 +496,40 @@ TEST(FfmpegCommandExplainer, ExplainsTypicalTranscode) {
     EXPECT_TRUE(result.flow.contains(QStringLiteral("输出文件")));
     EXPECT_TRUE(result.flow.contains(QStringLiteral("视频编码器")));
     EXPECT_TRUE(result.flow.contains(QStringLiteral("视频质量 (CRF)")));
+}
+
+TEST(FfmpegCommandExplainer, ExplainsEveryFilterInChain) {
+    // 原来只查第一个滤镜名，串里后面的滤镜既不解释也不校验
+    FfmpegCapabilityCache::Instance().Clear();
+    const auto result =
+        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-vf"),
+                                         QStringLiteral("scale=1280:-2,unsharp=5:5"), QStringLiteral("out.mp4")});
+
+    const auto* vf = FindToken(result, QStringLiteral("-vf"));
+    ASSERT_TRUE(vf != nullptr);
+    EXPECT_TRUE(vf->description.contains(QStringLiteral("滤镜链拆解"))) << vf->description.toStdString();
+    EXPECT_TRUE(vf->description.contains(QStringLiteral("scale 1280:-2"))) << vf->description.toStdString();
+    EXPECT_TRUE(vf->description.contains(QStringLiteral("unsharp 5:5"))) << vf->description.toStdString();
+    // 没探测过能力清单就不许说人家不可用
+    EXPECT_TRUE(vf->warning.isEmpty()) << vf->warning.toStdString();
+}
+
+TEST(FfmpegCommandExplainer, WarnsForUnavailableFilterAnywhereInGraph) {
+    FfmpegCapabilityCache::Instance().Clear();
+    FfmpegCapabilityCache::Instance().SetFilters({QStringLiteral("scale")});
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-filter_complex"),
+         QStringLiteral("[0:v]scale=1[v];[0:a]volumex=2[a]"), QStringLiteral("-map"), QStringLiteral("[v]"),
+         QStringLiteral("out.mp4")});
+
+    const auto* graph = FindToken(result, QStringLiteral("-filter_complex"));
+    ASSERT_TRUE(graph != nullptr);
+    EXPECT_TRUE(graph->description.contains(QStringLiteral("2 条链"))) << graph->description.toStdString();
+    // 第二个链上的那个假滤镜要被抓出来，不能被第一个滤镜的"可用"掩盖
+    EXPECT_TRUE(graph->warning.contains(QStringLiteral("volumex"))) << graph->warning.toStdString();
+    EXPECT_FALSE(graph->warning.contains(QStringLiteral("scale"))) << graph->warning.toStdString();
+
+    FfmpegCapabilityCache::Instance().Clear();
 }
 
 TEST(FfmpegCommandExplainer, RecognizesMultipleOutputs) {
