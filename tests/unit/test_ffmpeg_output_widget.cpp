@@ -21,7 +21,9 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QTabWidget>
@@ -72,7 +74,6 @@ QLabel* LabelWithPrefix(FfmpegOutputWidget& widget, const QString& prefix) {
 }
 
 } // namespace
-
 // ---------------------------------------------------------------------------
 // 1. 构造：组标题 + 三个页签 + 状态行初值
 // ---------------------------------------------------------------------------
@@ -374,4 +375,174 @@ TEST(FfmpegOutputWidgetTests, FinishedRunReplacesProgressWithCompleted) {
     QLabel* progress = LabelWithPrefix(widget, QStringLiteral("进度: "));
     ASSERT_TRUE(progress != nullptr);
     EXPECT_EQ(QStringLiteral("进度: 完成"), progress->text());
+}
+
+// ---------------------------------------------------------------------------
+// 10. 日志过滤：只改显示，清空后能完整撤回
+// ---------------------------------------------------------------------------
+
+namespace {
+
+QLineEdit* FilterEdit(FfmpegOutputWidget& widget) {
+    return widget.findChild<QLineEdit*>();
+}
+
+void FeedLines(FfmpegOutputWidget& widget) {
+    widget.AppendLog(QStringLiteral("frame= 10"), false);
+    widget.AppendLog(QStringLiteral("Invalid argument"), true);
+    widget.AppendLog(QStringLiteral("frame= 20"), false);
+    widget.FlushLog();
+}
+
+} // namespace
+
+TEST(FfmpegOutputWidgetTests, LogFilterHidesNonMatchingLinesAndRestoresOnClear) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* log = TabTextEdit(tabs, 1);
+    QPlainTextEdit* error = TabTextEdit(tabs, 2);
+    ASSERT_TRUE(log != nullptr);
+    ASSERT_TRUE(error != nullptr);
+    ASSERT_TRUE(FilterEdit(widget) != nullptr);
+
+    FeedLines(widget);
+
+    widget.SetLogFilter(QStringLiteral("frame"));
+    // 命中的留下，没命中的消失 —— 两个页签用的是同一份历史，各筛各的
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 10")));
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 20")));
+    EXPECT_FALSE(log->toPlainText().contains(QStringLiteral("Invalid argument")));
+    EXPECT_TRUE(error->toPlainText().isEmpty()) << error->toPlainText().toStdString();
+
+    // 清空过滤：内容必须完全回来（历史不是为了显示才留的）
+    widget.SetLogFilter(QString());
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("[err] Invalid argument")));
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 10")));
+    EXPECT_TRUE(error->toPlainText().contains(QStringLiteral("Invalid argument")));
+}
+
+TEST(FfmpegOutputWidgetTests, LogFilterIgnoresCase) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* error = TabTextEdit(tabs, 2);
+    ASSERT_TRUE(error != nullptr);
+
+    FeedLines(widget);
+
+    // ffmpeg 的报错是 "Invalid ..."，用户不会先记住大小写再搜
+    widget.SetLogFilter(QStringLiteral("invalid"));
+    EXPECT_TRUE(error->toPlainText().contains(QStringLiteral("Invalid argument")));
+}
+
+TEST(FfmpegOutputWidgetTests, LinesArrivingWhileFilteredAreStillKeptInHistory) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* log = TabTextEdit(tabs, 1);
+    ASSERT_TRUE(log != nullptr);
+
+    widget.SetLogFilter(QStringLiteral("frame"));
+    // 运行中才到的行：不匹配就当没发生？不行 —— 清空过滤后它必须还在
+    widget.AppendLog(QStringLiteral("Error opening input: No such file or directory"), true);
+    widget.AppendLog(QStringLiteral("frame= 30"), false);
+    widget.FlushLog();
+
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 30")));
+    EXPECT_FALSE(log->toPlainText().contains(QStringLiteral("No such file")));
+
+    widget.SetLogFilter(QString());
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("No such file")));
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 30")));
+}
+
+TEST(FfmpegOutputWidgetTests, FilterCountFollowsCurrentTab) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    ASSERT_TRUE(FilterEdit(widget) != nullptr);
+
+    FeedLines(widget);
+    tabs->setCurrentIndex(1); // 运行日志：3 行，命中 2 行
+    widget.SetLogFilter(QStringLiteral("frame"));
+
+    QLabel* count = nullptr;
+    for (QLabel* label : widget.findChildren<QLabel*>()) {
+        if (label->text().startsWith(QStringLiteral("匹配 "))) {
+            count = label;
+        }
+    }
+    ASSERT_TRUE(count != nullptr);
+    EXPECT_EQ(QStringLiteral("匹配 2 / 共 3 行"), count->text());
+
+    // 切到错误输出：那边只有 1 行 stderr，一条都不命中 —— 「0 / 1」比空屏有用
+    tabs->setCurrentIndex(2);
+    EXPECT_EQ(QStringLiteral("匹配 0 / 共 1 行"), count->text());
+}
+
+TEST(FfmpegOutputWidgetTests, EscapeClearsFilter) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* log = TabTextEdit(tabs, 1);
+    QLineEdit* edit = FilterEdit(widget);
+    ASSERT_TRUE(log != nullptr);
+    ASSERT_TRUE(edit != nullptr);
+
+    FeedLines(widget);
+    widget.SetLogFilter(QStringLiteral("frame"));
+    ASSERT_FALSE(log->toPlainText().contains(QStringLiteral("Invalid argument")));
+
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(edit, &escape);
+
+    EXPECT_TRUE(edit->text().isEmpty());
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("Invalid argument")));
+}
+
+// ---------------------------------------------------------------------------
+// 11. 诊断不受过滤影响：过滤词把报错筛没了也不能没有结论
+// ---------------------------------------------------------------------------
+
+TEST(FfmpegOutputWidgetTests, DiagnosisSurvivesAStaleFilter) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* error = TabTextEdit(tabs, 2);
+    ASSERT_TRUE(error != nullptr);
+
+    widget.PrepareForRun();
+    widget.AppendLog(QStringLiteral("Error opening input: No such file or directory"), true);
+    widget.FlushLog();
+
+    // 上一轮留下的过滤词，恰好一条 ffmpeg 输出都不匹配
+    widget.SetLogFilter(QStringLiteral("zzz-nothing-matches"));
+    EXPECT_TRUE(error->toPlainText().isEmpty());
+
+    std::vector<QString> messages;
+    QObject::connect(&widget, &FfmpegOutputWidget::StatusMessage,
+                     [&messages](const QString& text) { messages.push_back(text); });
+
+    FfmpegRunResult result;
+    result.status = FfmpegRunStatus::Failed;
+    result.exit_code = 1;
+    widget.ShowRunResult(result);
+
+    // 诊断是 VideoEye 的结论，必须穿透过滤显示出来
+    EXPECT_TRUE(error->toPlainText().contains(QStringLiteral("诊断"))) << error->toPlainText().toStdString();
+    ASSERT_FALSE(messages.empty());
+    EXPECT_TRUE(messages.back().contains(QStringLiteral("路径不存在"))) << messages.back().toStdString();
 }

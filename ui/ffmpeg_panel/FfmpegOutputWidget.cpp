@@ -2,13 +2,17 @@
 
 #include <QClipboard>
 #include <QColor>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QSplitter>
+#include <QTextBlock>
+#include <QTextEdit>
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -26,6 +30,12 @@ constexpr int kMaxLogChars = 4 * 1024 * 1024; // 日志缓存上限，防止长�
 // 免得 -loglevel debug 底下先把内存吃光。
 constexpr int kMaxPendingLines = 2000;
 constexpr int kLogFlushIntervalMs = 50;
+// 历史行数上限与视图的 maximumBlockCount 对齐：视图留不住的旧行，历史也不必留着，
+// 否则「过滤一下」能翻出视图里根本没有的内容，用户会以为是 bug。
+constexpr int kMaxHistoryLines = 20000;
+// 高亮上限：-loglevel debug 里过滤 "frame" 能命中上万处，全标上比不标更卡。
+constexpr int kMaxHighlightSpans = 800;
+constexpr int kFilterDebounceMs = 150;
 
 QString FormatDuration(qint64 ms) {
     if (ms < 1000) {
@@ -53,6 +63,64 @@ void AppendLines(QPlainTextEdit* view, const QStringList& lines) {
     view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
 }
 
+bool LineMatches(const QString& line, const QString& needle) {
+    // 空过滤词 = 不过滤。大小写不敏感：ffmpeg 的报错首字母大写（Invalid / Error），
+    // 让人必须先记住大小写才能搜到东西是说不过去的。
+    return needle.isEmpty() || line.contains(needle, Qt::CaseInsensitive);
+}
+
+QStringList SelectLines(const QStringList& lines, const QString& needle) {
+    if (needle.isEmpty()) {
+        return lines;
+    }
+    QStringList out;
+    out.reserve(lines.size());
+    for (const QString& line : lines) {
+        if (LineMatches(line, needle)) {
+            out.append(line);
+        }
+    }
+    return out;
+}
+
+void ReplaceViewText(QPlainTextEdit* view, const QStringList& lines) {
+    // 重建期间不要触发 view 自己的信号，也不要在半成品状态上滚到底
+    const QSignalBlocker blocker(view);
+    view->setPlainText(lines.join(QLatin1Char('\n')));
+    view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
+}
+
+/// 命中片段的高亮选择集（只标匹配到的那几个字符，不是整行）
+QList<QTextEdit::ExtraSelection> BuildMatchSelections(QPlainTextEdit* view, const QString& needle) {
+    QList<QTextEdit::ExtraSelection> selections;
+    if (needle.isEmpty()) {
+        return selections;
+    }
+    QColor background;
+    background.setNamedColor(QString::fromLatin1(theme::color::kWarning));
+    background.setAlpha(70); // 半透明：底色是浅是深都能看清文字
+    QTextCharFormat format;
+    format.setBackground(background);
+
+    QTextBlock block = view->document()->firstBlock();
+    while (block.isValid() && selections.size() < kMaxHighlightSpans) {
+        const QString text = block.text();
+        int from = text.indexOf(needle, 0, Qt::CaseInsensitive);
+        while (from >= 0 && selections.size() < kMaxHighlightSpans) {
+            QTextCursor cursor(block);
+            cursor.setPosition(block.position() + from);
+            cursor.setPosition(block.position() + from + needle.size(), QTextCursor::KeepAnchor);
+            QTextEdit::ExtraSelection selection;
+            selection.cursor = cursor;
+            selection.format = format;
+            selections.append(selection);
+            from = text.indexOf(needle, from + needle.size(), Qt::CaseInsensitive);
+        }
+        block = block.next();
+    }
+    return selections;
+}
+
 } // namespace
 
 FfmpegOutputWidget::FfmpegOutputWidget(QWidget* parent) : QGroupBox(tr("输出与解释"), parent) {
@@ -60,6 +128,12 @@ FfmpegOutputWidget::FfmpegOutputWidget(QWidget* parent) : QGroupBox(tr("输出�
     log_flush_timer_->setSingleShot(true);
     log_flush_timer_->setInterval(kLogFlushIntervalMs);
     connect(log_flush_timer_, &QTimer::timeout, this, &FfmpegOutputWidget::FlushLog);
+
+    filter_debounce_ = new QTimer(this);
+    filter_debounce_->setSingleShot(true);
+    filter_debounce_->setInterval(kFilterDebounceMs);
+    connect(filter_debounce_, &QTimer::timeout, this, [this] { ApplyLogFilter(); });
+
     SetupUi();
 }
 
@@ -133,7 +207,43 @@ void FfmpegOutputWidget::SetupUi() {
         QStringLiteral("QPlainTextEdit { color: %1; }").arg(QLatin1String(theme::color::kWarning)));
     output_tabs_->addTab(error_view_, tr("错误输出"));
 
+    // ---- 过滤栏 ----
+    // 只在两个日志页签上有意义：命令解释页显示的是解析结果，没有"日志行"可过滤。
+    // 隐藏而不是禁用，是因为禁用态的输入框会让人以为功能坏了。
+    filter_bar_ = new QWidget(this);
+    QHBoxLayout* filter_layout = new QHBoxLayout(filter_bar_);
+    filter_layout->setContentsMargins(0, 0, 0, 0);
+    filter_layout->setSpacing(6);
+    filter_layout->addWidget(new QLabel(tr("过滤:"), filter_bar_));
+    filter_edit_ = new QLineEdit(filter_bar_);
+    filter_edit_->setPlaceholderText(tr("输入一段文字，只留下含它的行（不区分大小写）；Esc 清空"));
+    filter_edit_->setToolTip(tr("过滤只改**显示**：复制日志与保存日志拿到的仍是完整内容，\n"
+                                "不能因为筛掉了几行就丢掉排障线索。"));
+    filter_edit_->setClearButtonEnabled(true);
+    filter_edit_->installEventFilter(this); // Esc 清空
+    connect(filter_edit_, &QLineEdit::textChanged, this, [this] {
+        // 逐字输入时不必每个字符都重建两万行
+        if (filter_debounce_ != nullptr) {
+            filter_debounce_->start();
+        }
+    });
+    filter_count_label_ = new QLabel(filter_bar_);
+    filter_count_label_->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(theme::color::kTextSecondary)));
+    filter_count_label_->setVisible(false);
+    filter_layout->addWidget(filter_edit_, 1);
+    filter_layout->addWidget(filter_count_label_);
+    layout->addWidget(filter_bar_);
+    filter_bar_->setVisible(false); // 默认停在「命令解释」页
+
     layout->addWidget(output_tabs_, 1);
+
+    connect(output_tabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        filter_bar_->setVisible(index != 0);
+        UpdateFilterCount();
+        if (index != 0) {
+            RefreshHighlights();
+        }
+    });
 }
 
 // ===================== 命令解释 =====================
@@ -236,8 +346,16 @@ void FfmpegOutputWidget::ClearOutput() {
     if (log_flush_timer_ != nullptr) {
         log_flush_timer_->stop();
     }
+    // 历史与视图一起清：否则过滤框里敲个字，清掉的内容又"复活"了
+    log_history_.clear();
+    error_history_.clear();
+    log_matched_ = 0;
+    error_matched_ = 0;
     log_view_->clear();
     error_view_->clear();
+    log_view_->setExtraSelections({});
+    error_view_->setExtraSelections({});
+    UpdateFilterCount();
     last_log_text_.clear();
     run_elapsed_.invalidate();
     SetStatusText(tr("状态: 未运行"), QString());
@@ -253,8 +371,15 @@ void FfmpegOutputWidget::PrepareForRun() {
     if (log_flush_timer_ != nullptr) {
         log_flush_timer_->stop();
     }
+    log_history_.clear();
+    error_history_.clear();
+    log_matched_ = 0;
+    error_matched_ = 0;
     log_view_->clear();
     error_view_->clear();
+    log_view_->setExtraSelections({});
+    error_view_->setExtraSelections({});
+    UpdateFilterCount();
     last_log_text_.clear();
     run_elapsed_.start();
     SetStatusText(tr("状态: 运行中"), QLatin1String(theme::color::kAccent));
@@ -288,15 +413,23 @@ void FfmpegOutputWidget::AppendLog(const QString& text, bool is_error) {
 }
 
 void FfmpegOutputWidget::AppendNotice(const QString& text) {
-    // 诊断最多十来行，不必走 AppendLog 里那个 2000 行兜底；攒批定时器还是要用，
-    // 否则一次失败要连刷十几次滚动条。
-    pending_log_lines_.append(text);
-    pending_error_lines_.append(text);
+    // 先落地压着的行，保证「结论」排在这轮输出之后
+    FlushLog();
+    // VideoEye 自己的结论**不过滤**：用户可能挂着一个上一轮留下的过滤词，
+    // 恰好把 ffmpeg 的报错筛没了 —— 失败之后最该看见的正是这段归纳，
+    // 让它跟着一起被筛掉等于在最需要的时候给一片空白。
+    AppendLines(log_view_, {text});
+    AppendLines(error_view_, {text});
+    log_history_.append(text);
+    error_history_.append(text);
+    if (!ActiveFilter().isEmpty()) {
+        // 过滤态下计数要跟着涨：这两行确实进视图了
+        log_matched_ += 1;
+        error_matched_ += 1;
+        UpdateFilterCount();
+    }
     if (last_log_text_.size() < kMaxLogChars) {
         last_log_text_ += text + QLatin1Char('\n');
-    }
-    if (log_flush_timer_ != nullptr && !log_flush_timer_->isActive()) {
-        log_flush_timer_->start();
     }
 }
 
@@ -304,10 +437,121 @@ void FfmpegOutputWidget::FlushLog() {
     if (log_flush_timer_ != nullptr) {
         log_flush_timer_->stop();
     }
-    AppendLines(log_view_, pending_log_lines_);
+    if (pending_log_lines_.isEmpty() && pending_error_lines_.isEmpty()) {
+        return;
+    }
+
+    const QString needle = ActiveFilter();
+    const bool filtering = !needle.isEmpty();
+
+    // 历史照单全收（过滤只改显示），视图只收命中的行。
+    log_history_.append(pending_log_lines_);
+    error_history_.append(pending_error_lines_);
+
+    const QStringList visible_log = SelectLines(pending_log_lines_, needle);
+    const QStringList visible_error = SelectLines(pending_error_lines_, needle);
     pending_log_lines_.clear();
-    AppendLines(error_view_, pending_error_lines_);
     pending_error_lines_.clear();
+
+    AppendLines(log_view_, visible_log);
+    AppendLines(error_view_, visible_error);
+    if (filtering) {
+        log_matched_ += static_cast<int>(visible_log.size());
+        error_matched_ += static_cast<int>(visible_error.size());
+    }
+
+    // 超出上限：视图自己会丢掉最旧的行，历史必须跟着丢，否则"过滤"能翻出
+    // 视图里已经没有的内容。裁剪后行号整体前移，重建一次最省事。
+    const bool trimmed = log_history_.size() > kMaxHistoryLines || error_history_.size() > kMaxHistoryLines;
+    if (trimmed) {
+        if (log_history_.size() > kMaxHistoryLines) {
+            log_history_.erase(log_history_.begin(), log_history_.begin() + (log_history_.size() - kMaxHistoryLines));
+        }
+        if (error_history_.size() > kMaxHistoryLines) {
+            error_history_.erase(error_history_.begin(),
+                                 error_history_.begin() + (error_history_.size() - kMaxHistoryLines));
+        }
+        ApplyLogFilter(); // 内部会重建视图、重算计数
+        return;
+    }
+
+    UpdateFilterCount();
+    if (filtering) {
+        // 只把新写入的行补上高亮（全量重扫两万行不值当）
+        RefreshHighlights();
+    }
+}
+
+QString FfmpegOutputWidget::ActiveFilter() const {
+    return filter_edit_ != nullptr ? filter_edit_->text().trimmed() : QString();
+}
+
+void FfmpegOutputWidget::SetLogFilter(const QString& text) {
+    if (filter_edit_ == nullptr) {
+        return;
+    }
+    if (filter_edit_->text() == text) {
+        ApplyLogFilter();
+        return;
+    }
+    // 外部设置（含测试）立即生效，不等 150ms 防抖
+    const QSignalBlocker blocker(filter_edit_);
+    filter_edit_->setText(text);
+    if (filter_debounce_ != nullptr) {
+        filter_debounce_->stop();
+    }
+    ApplyLogFilter();
+}
+
+void FfmpegOutputWidget::ApplyLogFilter() {
+    if (filter_edit_ == nullptr) {
+        return;
+    }
+    const QString needle = ActiveFilter();
+    const QStringList shown_log = SelectLines(log_history_, needle);
+    const QStringList shown_error = SelectLines(error_history_, needle);
+    log_matched_ = needle.isEmpty() ? 0 : static_cast<int>(shown_log.size());
+    error_matched_ = needle.isEmpty() ? 0 : static_cast<int>(shown_error.size());
+
+    ReplaceViewText(log_view_, shown_log);
+    ReplaceViewText(error_view_, shown_error);
+    RefreshHighlights();
+    UpdateFilterCount();
+}
+
+void FfmpegOutputWidget::UpdateFilterCount() {
+    if (filter_count_label_ == nullptr || filter_edit_ == nullptr) {
+        return;
+    }
+    const QString needle = ActiveFilter();
+    if (needle.isEmpty()) {
+        filter_count_label_->clear();
+        filter_count_label_->setVisible(false);
+        return;
+    }
+    const bool on_log_tab = output_tabs_ == nullptr || output_tabs_->currentWidget() == log_view_;
+    const int matched = on_log_tab ? log_matched_ : error_matched_;
+    const int total = on_log_tab ? static_cast<int>(log_history_.size()) : static_cast<int>(error_history_.size());
+    // 「匹配 0 / 340 行」比空屏有用：至少证明日志本身有内容，只是这词不在里面
+    filter_count_label_->setText(tr("匹配 %1 / 共 %2 行").arg(matched).arg(total));
+    filter_count_label_->setVisible(true);
+}
+
+void FfmpegOutputWidget::RefreshHighlights() {
+    const QString needle = ActiveFilter();
+    log_view_->setExtraSelections(BuildMatchSelections(log_view_, needle));
+    error_view_->setExtraSelections(BuildMatchSelections(error_view_, needle));
+}
+
+bool FfmpegOutputWidget::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == filter_edit_ && event->type() == QEvent::KeyPress) {
+        auto* key_event = static_cast<QKeyEvent*>(event);
+        if (key_event->key() == Qt::Key_Escape && !filter_edit_->text().isEmpty()) {
+            SetLogFilter(QString());
+            return true; // 别让 Esc 冒泡去关窗口
+        }
+    }
+    return QGroupBox::eventFilter(watched, event);
 }
 
 void FfmpegOutputWidget::ShowProgress(const ffmpeg::FfmpegProgressSnapshot& snapshot) {
@@ -346,7 +590,8 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
                   true);
         emit StatusMessage(tr("ffmpeg 没有写入：输出文件已存在（原文件未改动）"));
         FlushLog(); // 上面那行还在缓冲里，不落地就判断不出「错误页非空」
-        if (!error_view_->toPlainText().trimmed().isEmpty()) {
+        // 判断"有没有内容"看历史而不是视图：视图可能正被过滤词清空着
+        if (!error_history_.isEmpty()) {
             output_tabs_->setCurrentWidget(error_view_);
         }
         return;
@@ -390,7 +635,10 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
         FlushLog(); // 诊断读的就是刚落地的那份 stderr，不能还压在缓冲里
         // ffmpeg 的错误原因几乎都在 stderr 上，但那几十行里真正有用的只有一两行。
         // 先把结论翻成人话贴在错误页末尾，再切过去 —— 用户落地就在答案上。
-        const std::vector<ffmpeg::FfmpegDiagnosis> diagnoses = ffmpeg::DiagnoseFailure(error_view_->toPlainText());
+        // 注意：诊断读完整历史，不能读错误页视图 —— 视图可能正被过滤词筛过，
+        // 拿筛过的内容去诊断等于让用户的过滤词决定看到什么结论。
+        const std::vector<ffmpeg::FfmpegDiagnosis> diagnoses =
+            ffmpeg::DiagnoseFailure(error_history_.join(QLatin1Char('\n')));
         if (!diagnoses.empty()) {
             AppendNotice(tr("── 诊断（VideoEye 归纳，不是 ffmpeg 输出）──"));
             for (const auto& diagnosis : diagnoses) {
@@ -402,7 +650,7 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
             }
             FlushLog();
         }
-        if (!error_view_->toPlainText().trimmed().isEmpty()) {
+        if (!error_history_.isEmpty()) {
             output_tabs_->setCurrentWidget(error_view_);
         }
         if (!diagnoses.empty()) {
@@ -425,6 +673,9 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     // 终态是"一次事件"，没有理由再攒批：最后这几行（错误说明、强杀警告）
     // 必须马上看得见，否则用户读到的是上一个瞬间的日志。
     FlushLog();
+    if (!ActiveFilter().isEmpty()) {
+        RefreshHighlights(); // 收尾补写的那几行也要标上
+    }
 }
 
 void FfmpegOutputWidget::OnCopyLog() {
