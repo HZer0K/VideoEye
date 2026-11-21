@@ -72,6 +72,8 @@ private slots:
     void OnRedetectTool();
     void OnInsertInputPath();
     void OnInsertOutputPath();
+    /// 弹出场景模板菜单（一键换成整条命令）
+    void OnShowTemplates();
     void OnClearCommand();
     void OnRun();
     void OnStop();
@@ -106,6 +108,8 @@ private:
     QString CurrentToolPath() const;
     /// 把片段按「不粘 token、光标落在引号里」的规则插进命令输入框
     void InsertSnippet(const QString& snippet);
+    /// 用场景模板整体替换命令框内容（模板是整条命令，逐片段插入没有意义）
+    void ApplyTemplate(const QString& id);
     /// 记住最近跑过的命令（去重、截断后回写设置）
     void RememberCommand(const QString& command);
 
@@ -123,6 +127,7 @@ private:
     QLineEdit* command_edit_ = nullptr;
     QPushButton* insert_input_button_ = nullptr;
     QPushButton* insert_output_button_ = nullptr;
+    QPushButton* templates_button_ = nullptr; // 「模板…」：场景级的一整条命令
     QPushButton* run_button_ = nullptr;
     QPushButton* stop_button_ = nullptr;
 

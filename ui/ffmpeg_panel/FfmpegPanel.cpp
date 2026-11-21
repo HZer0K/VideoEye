@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMessageBox>
 #include <QSet>
 #include <QUrl>
@@ -19,6 +20,7 @@
 #include "core/ffmpeg/FfmpegCommandDraft.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
 #include "core/ffmpeg/FfmpegCommandPreflight.h"
+#include "core/ffmpeg/FfmpegCommandTemplate.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
@@ -157,6 +159,10 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     connect(insert_input_button_, &QPushButton::clicked, this, &FfmpegPanel::OnInsertInputPath);
     insert_output_button_ = new QPushButton(tr("插入输出路径…"), box);
     connect(insert_output_button_, &QPushButton::clicked, this, &FfmpegPanel::OnInsertOutputPath);
+    templates_button_ = new QPushButton(tr("模板…"), box);
+    templates_button_->setToolTip(tr("按场景给一整条命令（转码 / 只换封装 / 只留音轨 / 截片段 /\n"
+                                     "压体积 / GIF / 抽帧），路径按当前素材自动填好"));
+    connect(templates_button_, &QPushButton::clicked, this, &FfmpegPanel::OnShowTemplates);
     run_button_ = new QPushButton(tr("运行"), box);
     run_button_->setObjectName(QStringLiteral("PrimaryButton"));
     connect(run_button_, &QPushButton::clicked, this, &FfmpegPanel::OnRun);
@@ -167,6 +173,7 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     connect(clear_button, &QPushButton::clicked, this, &FfmpegPanel::OnClearCommand);
     button_row->addWidget(insert_input_button_);
     button_row->addWidget(insert_output_button_);
+    button_row->addWidget(templates_button_);
     button_row->addStretch(1);
     button_row->addWidget(clear_button);
     button_row->addWidget(stop_button_);
@@ -538,6 +545,69 @@ void FfmpegPanel::OnInsertOutputPath() {
         return;
     }
     InsertSnippet(QStringLiteral("\"%1\"").arg(path));
+}
+
+void FfmpegPanel::OnShowTemplates() {
+    // 每次点开都新建菜单：模板表是静态的，没必要长期持有 QMenu（还省得跟主题样式纠缠）
+    QMenu menu(this);
+    menu.setToolTipsVisible(true); // 标题只有一行，说明放在悬停里
+    for (const ffmpeg::FfmpegCommandTemplate& tmpl : ffmpeg::FfmpegTemplateLibrary()) {
+        QAction* action = menu.addAction(tmpl.title);
+        action->setToolTip(tmpl.summary);
+        const QString id = tmpl.id;
+        connect(action, &QAction::triggered, this, [this, id]() { ApplyTemplate(id); });
+    }
+    menu.exec(templates_button_->mapToGlobal(QPoint(0, templates_button_->height())));
+}
+
+void FfmpegPanel::ApplyTemplate(const QString& id) {
+    const ffmpeg::FfmpegCommandTemplate* tmpl = ffmpeg::FindFfmpegTemplate(id);
+    if (tmpl == nullptr) {
+        return;
+    }
+
+    // 有当前素材就用它，没有就保留占位符（模板本身仍然可读，用户自己替换）
+    const QString input = current_media_path_;
+    const QString output = ffmpeg::TemplateOutputPath(*tmpl, input);
+    const QStringList arguments = ffmpeg::InstantiateTemplate(*tmpl, input, output);
+    const QString command = ffmpeg::ComposeTemplateCommand(arguments);
+    if (command.isEmpty()) {
+        return;
+    }
+
+    // 模板是**整条命令**，插到光标处只会得到半截能用的东西 —— 只能整体替换。
+    // 但用户可能已经手写了半条，直接盖掉不讲一声不合适。
+    const QString current = command_edit_->text();
+    if (!current.trimmed().isEmpty() && current != command) {
+        QMessageBox box(this);
+        box.setWindowTitle(tr("替换当前命令？"));
+        box.setIcon(QMessageBox::Question);
+        box.setText(tr("命令框里已经有内容，插入模板会把它整条替换掉。"));
+        box.setInformativeText(tr("模板内容：\n%1").arg(command));
+        QPushButton* replace_button = box.addButton(tr("替换"), QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel); // 默认不破坏已有输入
+        box.exec();
+        if (box.clickedButton() != replace_button) {
+            return;
+        }
+    }
+
+    command_edit_->setText(command);
+    // 模板里的默认值（片段时间、CRF）先选中，用户敲字就是改它
+    const int focus = ffmpeg::FindFocusToken(command, tmpl->focus_literal);
+    if (focus >= 0) {
+        command_edit_->setSelection(focus, static_cast<int>(tmpl->focus_literal.size()));
+    } else {
+        command_edit_->setCursorPosition(static_cast<int>(command.size()));
+    }
+
+    QString note = tr("已插入模板：%1。%2").arg(tmpl->title, tmpl->summary);
+    const QStringList missing = ffmpeg::MissingTemplateSlots(arguments);
+    if (!missing.isEmpty()) {
+        note += tr("（%1 还没填 —— 先打开一个素材，或手动把它们换成实际路径）").arg(missing.join(QStringLiteral(" ")));
+    }
+    emit StatusMessage(note);
 }
 
 void FfmpegPanel::OnClearCommand() {

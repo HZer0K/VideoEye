@@ -1017,6 +1017,21 @@ const std::vector<FfmpegCatalogEntry>& EntryTable() {
          {QStringLiteral("hvc1"), QStringLiteral("hev1"), QStringLiteral("avc1")},
          {QStringLiteral("-c:v"), QStringLiteral("-movflags")}},
 
+        {QStringLiteral("-loop"),
+         QStringLiteral("循环次数（GIF / 图片序列）"),
+         Cat::Muxing,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("设定输出循环播放多少次。"),
+         QStringLiteral("只对 gif / apng / 图片序列这类 muxer 有意义：`-loop 0` 是无限循环，"
+                        "`-loop 1` 只播一遍。放在输出文件之前。"),
+         QStringLiteral("输出文件之前"),
+         QStringLiteral("-vf fps=15,scale=480:-1 -loop 0 out.gif"),
+         QStringLiteral("-loop 0 "),
+         {QStringLiteral("0"), QStringLiteral("1")},
+         {QStringLiteral("-vf"), QStringLiteral("-t")}},
+
         // ===================== 滤镜（只能出现在 -vf / -af / -filter_complex 里） =====================
         {QStringLiteral("scale"),
          QStringLiteral("缩放"),

@@ -96,6 +96,14 @@ const std::vector<FailureRule>& Rules() {
          QStringLiteral("流拷贝意味着不解码，滤镜必须解码后才能处理，两者不能同时存在。"
                         "要么去掉 -c copy（重新编码），要么去掉滤镜。")},
 
+        // 抽帧时输出名没写序号。ffmpeg 6.1 实测原话就是这两句。
+        {QStringLiteral("image2-sequence"),
+         {QStringLiteral("Cannot write more than one file with the same name"),
+          QStringLiteral("does not contain an image sequence pattern")},
+         QStringLiteral("多帧写到了同一个文件名"),
+         QStringLiteral("抽帧的输出名要带序号，例如 `frame_%03d.png`；只想存一张就加 `-frames:v 1`"
+                        "（或 `-update 1`）。")},
+
         {QStringLiteral("encoder-open"),
          {QStringLiteral("Error while opening encoder for output stream")},
          QStringLiteral("编码器打不开（参数或像素格式不被支持）"),

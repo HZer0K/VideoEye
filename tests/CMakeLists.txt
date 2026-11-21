@@ -1709,6 +1709,20 @@ target_link_libraries(test_ffmpeg_filter_graph PRIVATE Qt6::Core)
 add_test(NAME FfmpegFilterGraphTests COMMAND test_ffmpeg_filter_graph)
 
 # =================================================
+# 测试 74：FFmpeg 场景模板（一键插入的一整条命令）
+#
+# 说明: 模板是数据，但错的模板会把用户带沟里。除了表结构自洽、占位符替换，
+#       每个模板拼出来的行都必须能过本页自己的 ParseCommandLine +
+#       AnalyzeCommandStructure（有输入、有输出、结构完整）—— 少一个引号就会翻车。
+# =================================================
+videoeye_add_test(test_ffmpeg_template
+    unit/test_ffmpeg_template.cpp
+)
+target_link_libraries(test_ffmpeg_template PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_template PRIVATE Qt6::Core)
+add_test(NAME FfmpegCommandTemplateTests COMMAND test_ffmpeg_template)
+
+# =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
 # 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
 #       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射

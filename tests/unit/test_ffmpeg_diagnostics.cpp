@@ -80,6 +80,33 @@ TEST(FfmpegFailureDiagnostics, DetectsMuxingQueueOverflow) {
     EXPECT_TRUE(HasDiagnosis(list, QStringLiteral("mux-queue-overflow")));
 }
 
+TEST(FfmpegFailureDiagnostics, DetectsImageSequenceMissingPattern) {
+    // 实测原话（ffmpeg 6.1，`-vf fps=1 out.png` 这种多帧写同一个名字的写法）：
+    //   三句连着打，前两句是 hint，最后一句才是硬错误
+    const auto list = DiagnoseFailure(
+        QStringLiteral("[image2 @ 000002] The specified filename 'out.png' does not contain an image sequence "
+                       "pattern or a pattern is invalid.\n"
+                       "[image2 @ 000002] Cannot write more than one file with the same name. Are you missing "
+                       "the -update option or a sequence pattern?\n"
+                       "[vost#0:0/png @ 000003] Error submitting a packet to the muxer: Invalid argument"));
+    ASSERT_EQ(1u, list.size()) << IdsOf(list).toStdString(); // 同一件事只出一条
+    EXPECT_EQ(QStringLiteral("image2-sequence"), list.front().id);
+    EXPECT_TRUE(list.front().suggestion.contains(QStringLiteral("%03d")));
+    EXPECT_TRUE(list.front().suggestion.contains(QStringLiteral("-frames:v 1")));
+
+    // 两句各自单独出现也要认：版本不同不一定两句都打（6.1 两句都打，
+    // 更老的版本只有第一句的 hint）。只认其中一句 = 换了版本就漏。
+    const auto hint_only = DiagnoseFailure(QStringLiteral(
+        "[image2 @ 000002] The specified filename 'out.png' does not contain an image sequence pattern or a "
+        "pattern is invalid."));
+    EXPECT_TRUE(HasDiagnosis(hint_only, QStringLiteral("image2-sequence"))) << IdsOf(hint_only).toStdString();
+
+    const auto error_only = DiagnoseFailure(QStringLiteral(
+        "[image2 @ 000002] Cannot write more than one file with the same name. Are you missing the -update option "
+        "or a sequence pattern?"));
+    EXPECT_TRUE(HasDiagnosis(error_only, QStringLiteral("image2-sequence"))) << IdsOf(error_only).toStdString();
+}
+
 TEST(FfmpegFailureDiagnostics, DetectsCorruptMp4) {
     const auto list =
         DiagnoseFailure(QStringLiteral("moov atom not found\nin.mp4: Invalid data found when processing input"));
