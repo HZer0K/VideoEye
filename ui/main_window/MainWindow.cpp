@@ -29,6 +29,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QCloseEvent>
 #include <QDebug>
 #include <QFileDialog>
 #include <QGroupBox>
@@ -1011,6 +1012,16 @@ bool MainWindow::PromptForPcmSettings(QString& demuxer_name, int& sample_rate, i
     }
 
     return true;
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    // FFmpeg 工作台在跑转码时，直接关窗只会走到执行器的析构（kill），产出缺 moov box。
+    // 这里拦一道，让页面自己问清楚并同步停干净；用户取消就整个不关。
+    if (ffmpeg_panel_ != nullptr && !ffmpeg_panel_->ConfirmShutdown()) {
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::OnExit() {

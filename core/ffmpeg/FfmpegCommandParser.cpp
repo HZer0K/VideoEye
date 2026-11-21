@@ -85,6 +85,38 @@ NextSignificant FindNextSignificant(const QStringList& arguments, int from) {
     return NextSignificant::None;
 }
 
+// 未收录选项后面那个裸 token 的归属判定。
+//
+// 字典里查不到的选项无从知道带不带值，它后面紧跟的裸 token 就有两种解释:
+//     -bsf:v h264_mp4toannexb out.ts   → 前者是值，out.ts 才是输出
+//     -i in.mp4 -foo out.mp4           → out.mp4 就是输出（-foo 是不带值的开关）
+// 判据是"这个裸 token 后面还有没有别的裸 token": 一条命令里连续两个裸 token
+// 全都属于选项值的情况不存在，而输出本来就可以有多个。有 → 前者只能是值。
+// 没有（它是最后一个）→ 保持 Uncertain，不替用户下结论。
+bool HasUnclaimedBareTokenAfter(const QStringList& arguments, int from) {
+    int i = from;
+    while (i < arguments.size()) {
+        const QString token = arguments.at(i);
+        if (token == QLatin1String("-i")) {
+            i += 2; // 跳过 -i 与它的输入目标
+            continue;
+        }
+        if (!IsOptionToken(token)) {
+            return true;
+        }
+        const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
+        bool takes_value = false;
+        if (entry != nullptr) {
+            const bool starts_with_dash =
+                (i + 1 < arguments.size()) && arguments.at(i + 1).startsWith(QLatin1Char('-'));
+            takes_value = entry->takes_value && (i + 1 < arguments.size()) &&
+                          (!starts_with_dash || entry->value_may_start_with_dash);
+        }
+        i += takes_value ? 2 : 1;
+    }
+    return false;
+}
+
 // 只产出文本的信息查询命令。它们天生没有输入也没有输出。
 struct InfoOption {
     const char* name;
@@ -285,8 +317,11 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
             const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
 
             if (entry != nullptr && entry->takes_value) {
-                // 值 '-' 开头的不吞（-ss -10 这种负数值极罕见，吞了输出文件更亏）
-                const bool has_value = (i + 1 < n) && !arguments.at(i + 1).startsWith(QLatin1Char('-'));
+                // 值 '-' 开头的不吞（-ss -10 这种负数值极罕见，吞了输出文件更亏）。
+                // 例外: -map / -map_metadata 的负号值是正式语法（-map -0:d），见词条上的
+                // value_may_start_with_dash。
+                const bool starts_with_dash = (i + 1 < n) && arguments.at(i + 1).startsWith(QLatin1Char('-'));
+                const bool has_value = (i + 1 < n) && (!starts_with_dash || entry->value_may_start_with_dash);
                 if (!has_value) {
                     continue;
                 }
@@ -308,12 +343,17 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments) {
             }
 
             if (entry == nullptr && i + 1 < n && !IsOptionToken(arguments.at(i + 1))) {
-                // 字典里没有这个选项 → 不知道它带不带值。紧跟着的裸 token 可能是它的值，
-                // 也可能是输出文件。认不出来就标 Uncertain，不替用户下结论。
+                // 字典里没有这个选项 → 不知道它带不带值。见 HasUnclaimedBareTokenAfter
+                // 的注释: 后面还有裸 token 时，紧跟的这个只能是它的值。
                 FfmpegArgPlacement& next = out.args[static_cast<size_t>(i + 1)];
-                next.role = FfmpegArgRole::Uncertain;
                 next.output_side = place.output_side;
-                out.complete = false;
+                if (HasUnclaimedBareTokenAfter(arguments, i + 2)) {
+                    next.role = FfmpegArgRole::OptionValue;
+                    place.value_index = i + 1;
+                } else {
+                    next.role = FfmpegArgRole::Uncertain;
+                    out.complete = false;
+                }
                 ++i;
             }
             continue;
@@ -359,6 +399,28 @@ QString DetectStdoutMediaOutput(const QStringList& arguments) {
         return target;
     }
     return QString();
+}
+
+QStringList ExistingOutputTargets(const QStringList& arguments) {
+    QStringList existing;
+    const FfmpegCommandStructure structure = AnalyzeCommandStructure(arguments);
+    if (!structure.complete) {
+        return existing; // 结构不明 → 不拿猜出来的路径去问"要覆盖吗"
+    }
+    for (const FfmpegArgPlacement& place : structure.args) {
+        if (place.role != FfmpegArgRole::OutputUrl) {
+            continue;
+        }
+        const QString& target = arguments.at(place.index);
+        if (IsPipeOutputTarget(target)) {
+            continue; // 管道/stdout 没有磁盘文件可撞名
+        }
+        const QFileInfo info(target);
+        if (info.exists() && info.isFile() && !existing.contains(target)) {
+            existing.append(target);
+        }
+    }
+    return existing;
 }
 
 } // namespace ffmpeg

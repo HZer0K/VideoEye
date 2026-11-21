@@ -14,6 +14,7 @@
 // 这样本头不必把整个播放面板拖进来 —— 两处枚举的映射只在 .cpp 里做一次。
 #include "ui/main_window/window_layout.h"
 
+class QCloseEvent;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -105,8 +106,11 @@ private:
 
 protected:
     void showEvent(QShowEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override; // 成员变量
-    player::MediaPlayer* player_;                   // MainWindow 拥有, 以裸指针注入 player_panel_
+    void resizeEvent(QResizeEvent* event) override;
+    // 关窗前先让 FFmpeg 工作台确认：有任务在跑时停干净再走。
+    // 不接这一道，关窗就只剩执行器析构里的 kill() —— 得到一个缺索引的 mp4。
+    void closeEvent(QCloseEvent* event) override; // 成员变量
+    player::MediaPlayer* player_;                 // MainWindow 拥有, 以裸指针注入 player_panel_
 
     // UI组件 - 整体布局
     QWidget* app_bar_;              // 顶部应用栏

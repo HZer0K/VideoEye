@@ -106,5 +106,12 @@ FfmpegCommandStructure AnalyzeCommandStructure(const QStringList& arguments);
 ///   * `-f md5` / `-f ffmetadata` 这类只产出文本的 muxer 可以放过。
 QString DetectStdoutMediaOutput(const QStringList& arguments);
 
+/// 输出目标里**已经存在于磁盘上**的那些，用于运行前做覆盖确认。
+///
+/// 只回答"哪些会撞名"，不回答"该不该覆盖" —— 后者要问用户。
+/// 命令结构确定不了（存在归属不明的 token）时一律返回空: 宁可少问一次，
+/// 也不能拿猜出来的路径去覆盖用户的文件。管道/stdout 目标不算（写不到磁盘上）。
+QStringList ExistingOutputTargets(const QStringList& arguments);
+
 } // namespace ffmpeg
 } // namespace videoeye

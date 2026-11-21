@@ -185,7 +185,12 @@ TEST(FfmpegDictionaryWidgetTests, InsertFilterEntryPrependsVfOrAfPrefix) {
     const QString snippet = snippets[0];
     EXPECT_TRUE(snippet.startsWith(QStringLiteral("-vf ")) || snippet.startsWith(QStringLiteral("-af ")));
     EXPECT_TRUE(snippet.contains(filter->name));
-    EXPECT_TRUE(snippet.endsWith(QLatin1Char(' ')));
+    // 组件只发「前缀 + insert_text」的原文：尾随空格由插入点决定，那边才看得见
+    // 光标右边是什么字符。这里统一补一个空格会把 `-i ""` 变成 `-i "" `，
+    // 光标就落在引号外面了（用户一输入路径，路径就写到引号外）。
+    const QString expected_prefix =
+        snippet.startsWith(QStringLiteral("-af ")) ? QStringLiteral("-af ") : QStringLiteral("-vf ");
+    EXPECT_EQ(snippet, expected_prefix + filter->insert_text);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +226,7 @@ TEST(FfmpegDictionaryWidgetTests, InsertOptionEntryEmitsRawSnippet) {
     EXPECT_TRUE(snippet.startsWith(option->name));
     EXPECT_FALSE(snippet.startsWith(QStringLiteral("-vf ")));
     EXPECT_FALSE(snippet.startsWith(QStringLiteral("-af ")));
-    EXPECT_TRUE(snippet.endsWith(QLatin1Char(' ')));
+    EXPECT_EQ(snippet, option->insert_text); // 原样发出，不补空格
 }
 
 // ---------------------------------------------------------------------------

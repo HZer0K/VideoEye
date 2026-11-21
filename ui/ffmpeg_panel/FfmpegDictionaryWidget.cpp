@@ -146,10 +146,9 @@ void FfmpegDictionaryWidget::OnInsertEntry() {
             (entry->category == ffmpeg::FfmpegEntryCategory::Audio) ? QStringLiteral("-af ") : QStringLiteral("-vf ");
         snippet = prefix + snippet;
     }
-    if (!snippet.endsWith(QLatin1Char(' '))) {
-        snippet += QLatin1Char(' ');
-    }
-    // 命令输入框属于页面，这里只发信号，由页面决定插到哪儿。
+    // 这里**不**硬补尾随空格：要不要空格取决于插入点两侧是什么字符，只有落地那一步
+    // （ComposeInsertion）看得见。以前统一补一个，`-i ""` 就变成 `-i "" `，光标落在
+    // 引号外面，用户一输入路径就写到了引号外。
     emit InsertRequested(snippet);
 }
 

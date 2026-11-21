@@ -4,15 +4,18 @@
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "core/ffmpeg/FfmpegCommandDraft.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
@@ -37,6 +40,7 @@ FfmpegPanel::FfmpegPanel(QWidget* parent) : QWidget(parent) {
     if (!saved.isEmpty()) {
         tool_path_edit_->setText(saved);
     }
+    history_.SetEntries(settings_.value(QStringLiteral("ffmpeg/history")).toStringList());
 
     RefreshToolInfo();
     RefreshExplanation();
@@ -70,10 +74,7 @@ void FfmpegPanel::BuildUi() {
     // 下面 InsertRequested 才能接到命令输入框上。
     dict_widget_ = new FfmpegDictionaryWidget(splitter);
     // 「插入到命令」的目标（命令编辑框）属于页面，组件只发片段，这里负责落地。
-    connect(dict_widget_, &FfmpegDictionaryWidget::InsertRequested, this, [this](const QString& snippet) {
-        command_edit_->insert(snippet);
-        command_edit_->setFocus();
-    });
+    connect(dict_widget_, &FfmpegDictionaryWidget::InsertRequested, this, &FfmpegPanel::InsertSnippet);
 
     dict_widget_->setMinimumWidth(280);
     splitter->addWidget(left);
@@ -137,11 +138,14 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     // ---- 命令输入 ----
     command_edit_ = new QLineEdit(box);
     command_edit_->setFont(theme::font::monoFont(9));
-    command_edit_->setPlaceholderText(tr("ffmpeg -i \"输入.mp4\" -c:v libx264 -crf 23 输出.mp4   （回车运行）"));
+    command_edit_->setPlaceholderText(
+        tr("ffmpeg -i \"输入.mp4\" -c:v libx264 -crf 23 输出.mp4   （回车运行，↑↓ 翻历史）"));
     command_edit_->setToolTip(tr("只支持单独一条 ffmpeg 命令：不支持 | 、&& 、> 等 shell 操作符；"
                                  "含空格的路径请用引号包起来"));
     connect(command_edit_, &QLineEdit::returnPressed, this, &FfmpegPanel::OnRun);
     connect(command_edit_, &QLineEdit::textChanged, this, &FfmpegPanel::OnCommandTextChanged);
+    // QLineEdit 自己不处理 ↑ / ↓，装上过滤器才能翻历史
+    command_edit_->installEventFilter(this);
     layout->addWidget(command_edit_);
 
     QHBoxLayout* button_row = new QHBoxLayout();
@@ -213,7 +217,7 @@ void FfmpegPanel::RefreshToolInfo() {
     run_button_->setEnabled(usable && !runner_->IsRunning());
     run_button_->setToolTip(run_tip);
     command_edit_->setToolTip(usable ? tr("只支持单独一条 ffmpeg 命令：不支持 | 、&& 、> 等 shell 操作符；"
-                                          "含空格的路径请用引号包起来")
+                                          "含空格的路径请用引号包起来。↑ / ↓ 可翻最近跑过的命令")
                                      : run_tip);
 }
 
@@ -474,27 +478,64 @@ void FfmpegPanel::MaybeRestartProbes() {
 
 // ===================== 命令编辑 =====================
 
+void FfmpegPanel::InsertSnippet(const QString& snippet) {
+    // 空光标紧贴已有 token 时直接 insert() 会粘成 "in.mp4-c:v"；`-i ""` 插完光标还会
+    // 落在引号外面，用户一输入路径就写到引号外了。规则都在 ComposeInsertion 里。
+    QString base = command_edit_->text();
+    int at = command_edit_->cursorPosition();
+    if (command_edit_->hasSelectedText()) {
+        // 有选区时按"替换选区"办，跟 QLineEdit::insert() 原本的行为一致
+        at = command_edit_->selectionStart();
+        base.remove(at, command_edit_->selectedText().size());
+    }
+    const auto composed = ffmpeg::ComposeInsertion(base, at, snippet);
+    if (composed.text != command_edit_->text()) {
+        command_edit_->setText(composed.text);
+    }
+    command_edit_->setCursorPosition(composed.cursor);
+    command_edit_->setFocus();
+}
+
+void FfmpegPanel::RememberCommand(const QString& command) {
+    if (!history_.Push(command)) {
+        return;
+    }
+    settings_.setValue(QStringLiteral("ffmpeg/history"), history_.Entries());
+}
+
+bool FfmpegPanel::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == command_edit_ && event->type() == QEvent::KeyPress && !history_.Entries().isEmpty()) {
+        auto* key_event = static_cast<QKeyEvent*>(event);
+        const bool up = key_event->key() == Qt::Key_Up;
+        const bool down = key_event->key() == Qt::Key_Down;
+        // 没在翻历史时按 ↓ 什么都不该发生（也别把按键吃掉，留给可能存在的默认行为）
+        if (up || (down && history_.browsing())) {
+            const QString next = up ? history_.Previous(command_edit_->text()) : history_.Next();
+            command_edit_->setText(next);
+            command_edit_->end(false); // 光标放到末尾，跟 shell 的手感一致
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void FfmpegPanel::OnInsertInputPath() {
     if (current_media_path_.isEmpty()) {
         QMessageBox::information(this, tr("提示"), tr("还没有打开媒体文件。可以先在主窗口打开一个，或手动输入路径。"));
         return;
     }
-    command_edit_->insert(QStringLiteral("\"%1\"").arg(current_media_path_));
-    command_edit_->setFocus();
+    InsertSnippet(QStringLiteral("\"%1\"").arg(current_media_path_));
 }
 
 void FfmpegPanel::OnInsertOutputPath() {
-    QString start;
-    if (!current_media_path_.isEmpty()) {
-        const QFileInfo info(current_media_path_);
-        start = info.dir().filePath(info.completeBaseName() + QStringLiteral("_out.mp4"));
-    }
+    // 默认名跟着素材走：in.mkv → in_out.mkv。写死 _out.mp4 会悄悄换掉容器
+    // （把 mkv 里的字幕/多音轨塞进 mp4 往往直接失败）。
+    const QString start = ffmpeg::DefaultOutputPath(current_media_path_);
     const QString path = QFileDialog::getSaveFileName(this, tr("选择输出文件"), start);
     if (path.isEmpty()) {
         return;
     }
-    command_edit_->insert(QStringLiteral("\"%1\"").arg(path));
-    command_edit_->setFocus();
+    InsertSnippet(QStringLiteral("\"%1\"").arg(path));
 }
 
 void FfmpegPanel::OnClearCommand() {
@@ -588,18 +629,81 @@ void FfmpegPanel::OnRun() {
         program = parsed.program_token;
     }
 
-    current_arguments_ = parsed.arguments;
+    // ---- 覆盖确认 ----
+    //
+    // 目标已存在时若放行，ffmpeg 会停在 stdin 上问 "Overwrite? [y/N]"：本页的 stdin
+    // 是留着给「停止」写 q 的，没有别的东西会回答它，于是任务看起来永远"运行中"；
+    // 点停止时那个 q 正好被当成"不覆盖"，ffmpeg 以退出码 0 收场 —— 界面上会显示
+    // "已停止（正常收尾）"，其实一个字节都没写。所以必须在这里先问清楚。
+    QStringList exec_arguments = parsed.arguments;
+    bool overwrite_appended = false;
+    if (!exec_arguments.contains(QStringLiteral("-y")) && !exec_arguments.contains(QStringLiteral("-n"))) {
+        const QStringList existing = ffmpeg::ExistingOutputTargets(exec_arguments);
+        if (!existing.isEmpty()) {
+            const QString detail =
+                existing.size() == 1
+                    ? tr("输出文件已存在：\n%1").arg(existing.front())
+                    : tr("有 %1 个输出文件已存在：\n%2").arg(existing.size()).arg(existing.join(QLatin1Char('\n')));
+            QMessageBox box(this);
+            box.setWindowTitle(tr("输出文件已存在"));
+            box.setIcon(QMessageBox::Warning);
+            box.setText(detail);
+            box.setInformativeText(tr("ffmpeg 默认不覆盖已存在的文件。继续运行会给这次执行加上 -y，"
+                                      "命令输入框里的内容不会被改动。"));
+            QPushButton* overwrite_btn = box.addButton(tr("覆盖"), QMessageBox::AcceptRole);
+            QPushButton* rename_btn =
+                existing.size() == 1 ? box.addButton(tr("换个文件名…"), QMessageBox::ActionRole) : nullptr;
+            box.addButton(QMessageBox::Cancel);
+            box.exec();
+
+            if (box.clickedButton() == overwrite_btn) {
+                exec_arguments.append(QStringLiteral("-y"));
+                overwrite_appended = true;
+            } else if (rename_btn != nullptr && box.clickedButton() == rename_btn) {
+                const QString chosen = QFileDialog::getSaveFileName(this, tr("选择输出文件"), existing.front());
+                if (chosen.isEmpty()) {
+                    return;
+                }
+                const int at = exec_arguments.indexOf(existing.front());
+                if (at < 0) {
+                    return; // 理论上不会发生：existing 就是从这份参数里挑出来的
+                }
+                exec_arguments[at] = chosen;
+                // 回填输入框，让"看到的命令"和"真正执行的命令"保持一致。用户在保存
+                // 对话框里已经确认过是否覆盖同名文件，所以这里按覆盖处理（补 -y），
+                // 否则又会回到"卡在覆盖提示"的老路上。
+                if (QFileInfo::exists(chosen) && !exec_arguments.contains(QStringLiteral("-y"))) {
+                    exec_arguments.append(QStringLiteral("-y"));
+                    overwrite_appended = true;
+                }
+                QString new_text =
+                    ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(parsed.program_token, exec_arguments);
+                command_edit_->setText(new_text.trimmed());
+            } else {
+                return; // 取消：什么都不做，命令保持原样
+            }
+        }
+    }
+
+    current_arguments_ = exec_arguments;
+    progress_.Reset();
     output_widget_->PrepareForRun();
     output_widget_->AppendLog(
-        QStringLiteral("$ %1").arg(ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(program, parsed.arguments)), false);
+        QStringLiteral("$ %1").arg(ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(program, exec_arguments)), false);
+    if (overwrite_appended) {
+        output_widget_->AppendLog(tr("(输出文件已存在：本次执行已自动加 -y 覆盖)"), false);
+    }
     if (program != tool_info_.path) {
         output_widget_->AppendLog(tr("(命令里写了完整路径: 本次用它执行；本页设置的 %1 已被忽略)").arg(tool_info_.path),
                                   false);
     }
     SetRunUiState(true);
-    const bool started = runner_->Start(program, parsed.arguments);
+    const bool started = runner_->Start(program, exec_arguments);
     if (!started) {
         SetRunUiState(false);
+    } else {
+        // 只记真正发起过的命令：解析失败 / 用户取消覆盖确认的那些不该混进历史
+        RememberCommand(command_edit_->text());
     }
     // 启动失败时不能再说"已启动" —— 否则状态栏会前后矛盾
     emit StatusMessage(started ? tr("已启动 ffmpeg") : tr("ffmpeg 启动失败"));
@@ -620,7 +724,40 @@ void FfmpegPanel::OnStop() {
     emit StatusMessage(tr("正在停止 ffmpeg"));
 }
 
+bool FfmpegPanel::ConfirmShutdown() {
+    if (runner_ == nullptr || !runner_->IsRunning()) {
+        return true;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("ffmpeg 还在运行"));
+    box.setIcon(QMessageBox::Warning);
+    box.setText(tr("有一条 ffmpeg 命令正在执行。"));
+    box.setInformativeText(tr("直接退出会掐断它 —— mp4/mov 这类容器要先写完索引（moov box）才能播放，"
+                              "收尾没做完就只有一个打不开的文件，已经转好的部分也白费。\n\n"
+                              "「停止并退出」会先请它自己收尾（最多等 5 秒），收不住才强杀。"));
+    QPushButton* stop_button = box.addButton(tr("停止并退出"), QMessageBox::AcceptRole);
+    QPushButton* cancel_button = box.addButton(tr("取消"), QMessageBox::RejectRole);
+    box.setDefaultButton(cancel_button); // 默认停在安全的那一侧
+    box.exec();
+    if (box.clickedButton() != stop_button) {
+        return false;
+    }
+
+    output_widget_->AppendLog(tr("(关闭窗口: 已请 ffmpeg 收尾，最多等 5 秒)"), false);
+    const bool stopped = runner_->StopAndWait(5000);
+    output_widget_->AppendLog(stopped ? tr("(ffmpeg 已退出，输出文件的收尾是完整的)")
+                                      : tr("(ffmpeg 没在宽限期内退出，已被强制终止 —— 输出文件可能不可用)"),
+                              !stopped);
+    output_widget_->FlushLog();
+    return true;
+}
+
 void FfmpegPanel::OnRunOutput(const QString& text, bool is_error) {
+    // 进度就从这条流里读：ffmpeg 的 `Duration:` 和 `time=` 都在 stderr，不用另起探测。
+    if (progress_.Feed(text)) {
+        output_widget_->ShowProgress(progress_.percent(), progress_.position_text(), progress_.duration_text());
+    }
     output_widget_->AppendLog(text, is_error);
 }
 

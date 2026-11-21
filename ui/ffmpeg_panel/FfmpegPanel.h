@@ -26,7 +26,9 @@
 #include <vector>
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
+#include "core/ffmpeg/FfmpegCommandHistory.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
+#include "core/ffmpeg/FfmpegProgressTracker.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 
 namespace videoeye {
@@ -48,6 +50,18 @@ signals:
 public slots:
     /// 主窗口打开/切换媒体时同步过来，供「插入当前媒体路径」使用
     void SetCurrentFile(const QString& path);
+
+public:
+    /// 关窗口 / 退出程序前调用。有 ffmpeg 在跑时问用户，并在确认后**同步**停干净
+    /// （走 q → terminate → kill，最多约 8.5 秒）。返回 false = 用户选择不退出。
+    ///
+    /// 为什么必须拦一道：全仓只有 ~FfmpegProcessRunner 里的 kill() 兜底，直接关窗
+    /// 会得到一个缺 moov box 的 mp4 —— 转了几十分钟的产出，最后一步白费。
+    bool ConfirmShutdown();
+
+protected:
+    /// 命令输入框里按 ↑ / ↓ 翻历史（QLineEdit 自己不管这两个键）。
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private slots:
     void OnBrowseTool();
@@ -90,6 +104,10 @@ private:
     void RefreshExplanation();
     void SetRunUiState(bool running);
     QString CurrentToolPath() const;
+    /// 把片段按「不粘 token、光标落在引号里」的规则插进命令输入框
+    void InsertSnippet(const QString& snippet);
+    /// 记住最近跑过的命令（去重、截断后回写设置）
+    void RememberCommand(const QString& command);
 
     // ---- 程序区 ----
     QLineEdit* tool_path_edit_ = nullptr;
@@ -137,6 +155,10 @@ private:
     ffmpeg::FfmpegToolInfo tool_info_;
     /// 本次运行的参数。停止时要用它判断能不能靠写 q 让 ffmpeg 优雅收尾。
     QStringList current_arguments_;
+    /// 上一次运行期间从 stderr 读到的进度（Duration + time=）
+    ffmpeg::FfmpegProgressTracker progress_;
+    /// ↑/↓ 翻阅用；内容存进 QSettings("ffmpeg/history")
+    ffmpeg::FfmpegCommandHistory history_;
     QString tool_version_;
     QString current_media_path_;
     QSettings settings_;

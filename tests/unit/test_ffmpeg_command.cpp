@@ -12,28 +12,39 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QFile>
+#include <QTemporaryDir>
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
+#include "core/ffmpeg/FfmpegCommandDraft.h"
 #include "core/ffmpeg/FfmpegCommandExplainer.h"
+#include "core/ffmpeg/FfmpegCommandHistory.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "core/ffmpeg/FfmpegProgressTracker.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 
 namespace {
 
 using videoeye::ffmpeg::AnalyzeCommandStructure;
 using videoeye::ffmpeg::CommandParseStatus;
+using videoeye::ffmpeg::ComposeInsertion;
+using videoeye::ffmpeg::DefaultOutputPath;
 using videoeye::ffmpeg::DetectStdoutMediaOutput;
+using videoeye::ffmpeg::ExistingOutputTargets;
 using videoeye::ffmpeg::FfmpegArgRole;
 using videoeye::ffmpeg::FfmpegCapabilityCache;
 using videoeye::ffmpeg::FfmpegCatalogEntry;
 using videoeye::ffmpeg::FfmpegCommandCatalog;
 using videoeye::ffmpeg::FfmpegCommandExplainer;
+using videoeye::ffmpeg::FfmpegCommandHistory;
 using videoeye::ffmpeg::FfmpegEntryKind;
 using videoeye::ffmpeg::FfmpegFormatLists;
 using videoeye::ffmpeg::FfmpegInstallGuide;
+using videoeye::ffmpeg::FfmpegProgressTracker;
 using videoeye::ffmpeg::FfmpegTokenRole;
 using videoeye::ffmpeg::FfmpegToolInfo;
 using videoeye::ffmpeg::FfmpegToolLocator;
+using videoeye::ffmpeg::FormatProgressClock;
 using videoeye::ffmpeg::InformationOptionDescription;
 using videoeye::ffmpeg::IsExplicitProgramPath;
 using videoeye::ffmpeg::IsInformationCommand;
@@ -265,11 +276,81 @@ TEST(FfmpegCommandStructure, FormatAfterAnOutputStillBelongsToTheNextInput) {
 }
 
 TEST(FfmpegCommandStructure, UnknownOptionLeavesNextTokenUnresolved) {
-    // 字典没有这个选项 → 后面那个 token 是它的值还是输出文件，不能猜
+    // 字典没有这个选项 → 后面那个 token 是它的值还是输出文件，不能猜。
+    // 这里它后面没有**别的**裸 token，两种解释都说得通，所以保持 Uncertain。
+    // （后面还有裸 token 时才能按位置定成值，见 UnknownOptionValueIsInferredWhenAnotherOutputFollows）
     const auto structure = AnalyzeCommandStructure(
-        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-x264-params"), QStringLiteral("out.mp4")});
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"), QStringLiteral("out.mp4")});
     EXPECT_FALSE(structure.complete);
     EXPECT_EQ(structure.args.at(3).role, FfmpegArgRole::Uncertain);
+}
+
+TEST(FfmpegCommandStructure, UnknownOptionValueIsInferredWhenAnotherOutputFollows) {
+    // 未收录选项后面紧跟的裸 token 有两种可能。判据: 它后面还有没有**别的**裸 token。
+    // 有 → 前者只能是值（一条命令里连续两个裸 token 都属于选项值的情况不存在，输出却可以有多个）。
+    // 少了这条推断，`-bsf:v h264_mp4toannexb out.ts` 会把 out.ts 当成值，
+    // 整条命令变成"没有输出文件"、覆盖检查也一并失效。
+    // （-bsf:v 现在已收进字典，但用户命令里永远会有下一个没收录的。）
+    const auto structure =
+        AnalyzeCommandStructure({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"),
+                                 QStringLiteral("value"), QStringLiteral("out.ts")});
+    ASSERT_EQ(structure.args.size(), 5u);
+    EXPECT_EQ(structure.args.at(3).role, FfmpegArgRole::OptionValue);
+    EXPECT_EQ(structure.args.at(4).role, FfmpegArgRole::OutputUrl);
+    EXPECT_TRUE(structure.complete);
+    EXPECT_EQ(structure.output_count, 1);
+}
+
+TEST(FfmpegCommandStructure, NegativeMapValueIsAValueNotAnOption) {
+    // 回归: `-map -0:d` 是合法的"排除第 0 个输入里某类流"。它后面的输出文件
+    // 不能被当成"这个以 - 开头的选项的值" —— 那样会连带误报"没有输出文件"。
+    const auto structure = AnalyzeCommandStructure({QStringLiteral("-i"), QStringLiteral("in.mp4"),
+                                                    QStringLiteral("-map"), QStringLiteral("0"), QStringLiteral("-map"),
+                                                    QStringLiteral("-0:d"), QStringLiteral("out.mp4")});
+
+    ASSERT_EQ(structure.args.size(), 7u);
+    EXPECT_EQ(structure.args.at(5).role, FfmpegArgRole::OptionValue); // -0:d 是 -map 的值
+    EXPECT_EQ(structure.args.at(6).role, FfmpegArgRole::OutputUrl);   // out.mp4 仍然是输出
+    EXPECT_TRUE(structure.complete);
+    EXPECT_EQ(structure.output_count, 1);
+
+    // -map_metadata -1 同理（清掉元数据）
+    const auto metadata =
+        AnalyzeCommandStructure({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-map_metadata"),
+                                 QStringLiteral("-1"), QStringLiteral("out.mp4")});
+    EXPECT_EQ(metadata.args.at(3).role, FfmpegArgRole::OptionValue);
+    EXPECT_EQ(metadata.args.at(4).role, FfmpegArgRole::OutputUrl);
+    EXPECT_TRUE(metadata.complete);
+}
+
+TEST(FfmpegCommandParser, ExistingOutputTargetsOnlyReportsRealFiles) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString existing = dir.filePath(QStringLiteral("out.mp4"));
+    {
+        QFile file(existing);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("x");
+    }
+    const QString absent = dir.filePath(QStringLiteral("new.mp4"));
+
+    EXPECT_EQ(ExistingOutputTargets({QStringLiteral("-i"), QStringLiteral("in.mp4"), existing, absent}),
+              QStringList{existing});
+
+    // 结构不明时宁可少问一次: 猜出来的"输出路径"绝不能拿去做覆盖确认
+    // （未收录选项 + 它后面就是最后一个裸 token —— 无法判断那是值还是输出）
+    EXPECT_TRUE(ExistingOutputTargets(
+                    {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"), existing})
+                    .isEmpty());
+
+    // 管道目标没有磁盘文件可撞名
+    EXPECT_TRUE(ExistingOutputTargets({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-f"),
+                                       QStringLiteral("null"), QStringLiteral("-")})
+                    .isEmpty());
+
+    // 没有 -y 时页面才会问；这条只验"哪些文件会撞名"，不替调用方做决定
+    EXPECT_EQ(ExistingOutputTargets({QStringLiteral("-y"), QStringLiteral("-i"), QStringLiteral("in.mp4"), existing}),
+              QStringList{existing});
 }
 
 // ===================== 字典 =====================
@@ -435,10 +516,10 @@ TEST(FfmpegCommandExplainer, SecondOutputIsNotCalledMisplaced) {
 }
 
 TEST(FfmpegCommandExplainer, UnresolvedTokensCarryNoAdvice) {
-    // 认不出来的结构必须说"未解析"，而不是给一条可能错的纠正建议
-    const auto result =
-        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-x264-params"),
-                                         QStringLiteral("x"), QStringLiteral("out.mp4")});
+    // 认不出来的结构必须说"未解析"，而不是给一条可能错的纠正建议。
+    // 这里选项没收录、后面又只剩一个裸 token —— 它可能是值，也可能是输出文件。
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"), QStringLiteral("out.mp4")});
     bool found_unresolved = false;
     for (const auto& token : result.tokens) {
         if (token.role == FfmpegTokenRole::Unresolved) {
@@ -453,10 +534,10 @@ TEST(FfmpegCommandExplainer, UnresolvedTokensCarryNoAdvice) {
 
 TEST(FfmpegCommandExplainer, UnknownOptionIsNotInvented) {
     const auto result = FfmpegCommandExplainer::Explain(
-        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-x264-params"), QStringLiteral("out.mp4")});
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"), QStringLiteral("out.mp4")});
     bool found_unknown = false;
     for (const auto& token : result.tokens) {
-        if (token.token == QStringLiteral("-x264-params")) {
+        if (token.token == QStringLiteral("-zzz-unknown")) {
             found_unknown = true;
             EXPECT_EQ(token.role, FfmpegTokenRole::UnknownOption);
             EXPECT_FALSE(token.known);
@@ -483,6 +564,25 @@ TEST(FfmpegCommandExplainer, NotesMissingOutput) {
     const auto result = FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4")});
     EXPECT_FALSE(result.has_output);
     EXPECT_FALSE(result.notes.empty());
+}
+
+TEST(FfmpegCommandExplainer, DoesNotClaimNoOutputWhenStructureIsUnknown) {
+    // 未收录选项后面那个 token 被标成「未解析」。这时不能断言"没有输出文件":
+    // 那个归属不明的 token 也可能就是输出文件，断言越肯定越会把人带偏。
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-zzz-unknown"), QStringLiteral("keyint=50")});
+
+    EXPECT_FALSE(result.structure_known);
+    for (const QString& note : result.notes) {
+        EXPECT_FALSE(note.contains(QStringLiteral("没有输出文件"))) << note.toStdString();
+    }
+    bool hedged = false;
+    for (const QString& note : result.notes) {
+        if (note.contains(QStringLiteral("归属不明"))) {
+            hedged = true;
+        }
+    }
+    EXPECT_TRUE(hedged);
 }
 
 TEST(FfmpegCommandExplainer, InformationCommandsAreNotToldTheyLackIo) {
@@ -584,6 +684,270 @@ TEST(FfmpegToolLocator, CommonSearchDirsCoverPackageManagers) {
     EXPECT_TRUE(dirs.contains(QStringLiteral("/usr/bin")));
     EXPECT_TRUE(dirs.contains(QStringLiteral("/snap/bin")));
 #endif
+}
+
+// ===================== 流拷贝判定：按选项-值配对，不做整串搜索 =====================
+//
+// copy 只作用于它自己那条流。用 arguments.contains("copy") 这种整串判断，
+// `-c:v libx264 -c:a copy` 会被误判成"视频也拷贝了"，而 `-c copy` 又彻底漏报。
+
+bool HasNoteContaining(const videoeye::ffmpeg::FfmpegCommandExplanation& result, const QString& needle) {
+    for (const QString& note : result.notes) {
+        if (note.contains(needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(FfmpegCommandExplainer, GlobalOrPerStreamCopyIsResolvedPerStream) {
+    // -c:v libx264 -c:a copy -crf 20: copy 属于音频，视频仍在重编码 → -crf 有效。
+    // 以前会误报"-c:v copy 表示不重新编码，-crf 不会生效"。
+    const auto result =
+        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-c:v"),
+                                         QStringLiteral("libx264"), QStringLiteral("-c:a"), QStringLiteral("copy"),
+                                         QStringLiteral("-crf"), QStringLiteral("20"), QStringLiteral("out.mp4")});
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("不会生效")));
+}
+
+TEST(FfmpegCommandExplainer, StreamCopyWarnsThatReencodeParamsAreIgnored) {
+    // -c copy -crf 20: 以前一句不说（漏报），ffmpeg 会静默忽略 -crf。
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-c"), QStringLiteral("copy"),
+         QStringLiteral("-crf"), QStringLiteral("20"), QStringLiteral("out.mp4")});
+    EXPECT_TRUE(HasNoteContaining(result, QStringLiteral("-crf")));
+    EXPECT_TRUE(HasNoteContaining(result, QStringLiteral("不会生效")));
+    // 已经指出参数无效，就不能同时说"这是一次干净的纯流拷贝"
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("这是一次纯流拷贝")));
+}
+
+TEST(FfmpegCommandExplainer, StreamCopyPlusFilterIsReportedAsFatal) {
+    // 实测 ffmpeg: "Filtering and streamcopy cannot be used together" → 直接退出，
+    // 不是静默忽略。文案必须区分这两种后果。
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-c:v"), QStringLiteral("copy"),
+         QStringLiteral("-vf"), QStringLiteral("scale=640:-2"), QStringLiteral("out.mp4")});
+    EXPECT_TRUE(HasNoteContaining(result, QStringLiteral("Filtering and streamcopy")));
+}
+
+TEST(FfmpegCommandExplainer, PureStreamCopyIsExplainedExactlyOnce) {
+    const auto result =
+        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mkv"), QStringLiteral("-c"),
+                                         QStringLiteral("copy"), QStringLiteral("out.mp4")});
+    EXPECT_TRUE(HasNoteContaining(result, QStringLiteral("纯流拷贝")));
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("不会生效")));
+}
+
+TEST(FfmpegCommandExplainer, PerStreamCodecOverridesGlobalCopy) {
+    // -c copy -c:a aac：音频被重新编码，-b:a 有效 —— 后写的按流选项覆盖全局 copy。
+    const auto result =
+        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-c"),
+                                         QStringLiteral("copy"), QStringLiteral("-c:a"), QStringLiteral("aac"),
+                                         QStringLiteral("-b:a"), QStringLiteral("128k"), QStringLiteral("out.mp4")});
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("音频流不重新编码")));
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("纯流拷贝")));
+}
+
+TEST(FfmpegCommandExplainer, OldCodecAliasesAreUnderstood) {
+    // -vcodec / -acodec / -codec 是老教程里的主力写法，不能被标成"未知参数"
+    // （那还会让后面的值变成归属不明，整条命令的结构判定失效）。
+    const auto result =
+        FfmpegCommandExplainer::Explain({QStringLiteral("-i"), QStringLiteral("in.mp4"), QStringLiteral("-vcodec"),
+                                         QStringLiteral("copy"), QStringLiteral("-acodec"), QStringLiteral("aac"),
+                                         QStringLiteral("-ar"), QStringLiteral("44100"), QStringLiteral("out.mp4")});
+    ASSERT_FALSE(result.tokens.empty());
+    for (const auto& token : result.tokens) {
+        EXPECT_NE(token.role, FfmpegTokenRole::UnknownOption) << token.token.toStdString();
+    }
+    // 视频 copy、音频重编码 + -ar 有效 → 没有任何"参数不会生效"
+    EXPECT_FALSE(HasNoteContaining(result, QStringLiteral("不会生效")));
+}
+
+TEST(FfmpegCommandExplainer, InformationOptionsAreNotCalledUnknown) {
+    // 查询命令列表里把 -encoders 标成「未知参数」，和下面"这是一条查询命令"自相矛盾。
+    const auto result = FfmpegCommandExplainer::Explain({QStringLiteral("-encoders")});
+    ASSERT_FALSE(result.tokens.empty());
+    EXPECT_TRUE(result.tokens.front().known);
+    EXPECT_NE(result.tokens.front().role, FfmpegTokenRole::UnknownOption);
+}
+
+TEST(FfmpegCommandCatalog, CoversStreamCopyAndMuxOptions) {
+    // 这些选项在真实命令里很常见，但以前没收录 —— 一条命令里出现一个，
+    // 整条命令就被判成"结构无法可靠判断"，值全显示「未解析」。
+    const QStringList names = {
+        QStringLiteral("-vcodec"),
+        QStringLiteral("-acodec"),
+        QStringLiteral("-codec"),
+        QStringLiteral("-c:s"),
+        QStringLiteral("-c:d"),
+        QStringLiteral("-bsf:v"),
+        QStringLiteral("-x264-params"),
+        QStringLiteral("-fflags"),
+        QStringLiteral("-err_detect"),
+        QStringLiteral("-max_muxing_queue_size"),
+        QStringLiteral("-avoid_negative_ts"),
+        QStringLiteral("-vsync"),
+        QStringLiteral("-tag:v"),
+        QStringLiteral("-segment_time"),
+        QStringLiteral("-hls_playlist_type"),
+        QStringLiteral("-hls_segment_filename"),
+        QStringLiteral("-dn"),
+    };
+    for (const QString& name : names) {
+        const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(name);
+        ASSERT_TRUE(entry != nullptr) << name.toStdString();
+        EXPECT_FALSE(entry->summary.isEmpty()) << name.toStdString();
+    }
+}
+
+// ===================== 命令草稿：插入片段 / 默认输出名 =====================
+//
+// 这两条规则以前散在 UI 里（`command_edit_->insert(snippet)` + 写死 "_out.mp4"），
+// 于是"片段粘到上一个 token 上""-i "" 插完光标在引号外""mkv 素材默认出 mp4"三个问题
+// 都没人管。抽出来之后就能在这里把边界钉住。
+
+TEST(FfmpegCommandDraft, InsertionSeparatesAdjacentTokens) {
+    const QString text = QStringLiteral("ffmpeg -i in.mp4");
+    const auto result = ComposeInsertion(text, text.size(), QStringLiteral("-c:v"));
+    // 以前直接 insert 会得到 "in.mp4-c:v"
+    EXPECT_FALSE(result.text.contains(QStringLiteral("in.mp4-c:v")));
+    EXPECT_TRUE(result.text.startsWith(QStringLiteral("ffmpeg -i in.mp4 -c:v")));
+    // 光标停在片段之后、补的那个空格之前 —— 用户接着打的就是这个选项的值
+    EXPECT_EQ(QStringLiteral(" "), result.text.mid(result.cursor, 1));
+}
+
+TEST(FfmpegCommandDraft, InsertionKeepsCursorInsideEmptyQuotes) {
+    // `-i ""`：光标必须落在两个引号之间，否则用户一输入路径就写到引号外面
+    const QString text = QStringLiteral("ffmpeg ");
+    const auto result = ComposeInsertion(text, text.size(), QStringLiteral("-i \"\""));
+    ASSERT_GT(result.cursor, 0);
+    ASSERT_LT(result.cursor, result.text.size());
+    EXPECT_EQ(QChar('"'), result.text.at(result.cursor - 1));
+    EXPECT_EQ(QChar('"'), result.text.at(result.cursor));
+}
+
+TEST(FfmpegCommandDraft, InsertionInMiddleKeepsFollowingTokenSeparated) {
+    const QString text = QStringLiteral("ffmpeg -crf 20 out.mp4");
+    const auto result = ComposeInsertion(text, 7, QStringLiteral("-i"));
+    EXPECT_EQ(QStringLiteral("ffmpeg -i -crf 20 out.mp4"), result.text);
+}
+
+TEST(FfmpegCommandDraft, InsertionIntoEmptyTextEndsWithOneSpace) {
+    const auto result = ComposeInsertion(QString(), 0, QStringLiteral("-version"));
+    EXPECT_EQ(QStringLiteral("-version "), result.text);
+    EXPECT_EQ(8, result.cursor);
+}
+
+TEST(FfmpegCommandDraft, DefaultOutputPathKeepsSourceExtension) {
+    // 写死 _out.mp4 会悄悄换容器：mkv 里的多音轨/字幕塞进 mp4 往往直接失败
+    EXPECT_EQ(QStringLiteral("D:/m/in_out.mkv"), DefaultOutputPath(QStringLiteral("D:/m/in.mkv")));
+    EXPECT_EQ(QStringLiteral("D:/m/a.b_out.mp4"), DefaultOutputPath(QStringLiteral("D:/m/a.b.mp4")));
+    // 没有扩展名 → 退回 mp4
+    EXPECT_EQ(QStringLiteral("D:/m/noext_out.mp4"), DefaultOutputPath(QStringLiteral("D:/m/noext")));
+}
+
+TEST(FfmpegCommandDraft, DefaultOutputPathIgnoresStreams) {
+    // 网络流 / 设备没有"同目录"可言；给个看起来像本地路径的默认值只会误导
+    EXPECT_TRUE(DefaultOutputPath(QStringLiteral("rtmp://host/live")).isEmpty());
+    EXPECT_TRUE(DefaultOutputPath(QString()).isEmpty());
+}
+
+// ===================== 命令历史 =====================
+
+TEST(FfmpegCommandHistory, PreviousWalksFromNewestAndNextReturnsDraft) {
+    FfmpegCommandHistory history;
+    history.Push(QStringLiteral("ffmpeg -i a.mp4 b.mp4"));
+    history.Push(QStringLiteral("ffmpeg -i c.mp4 d.mp4"));
+
+    // 最新在前
+    EXPECT_EQ(QStringLiteral("ffmpeg -i c.mp4 d.mp4"), history.Entries().front());
+    EXPECT_EQ(QStringLiteral("ffmpeg -i c.mp4 d.mp4"), history.Previous(QStringLiteral("半截输入")));
+    EXPECT_EQ(QStringLiteral("ffmpeg -i a.mp4 b.mp4"), history.Previous(QStringLiteral("半截输入")));
+    // 翻到最早那条就停住，不会转圈
+    EXPECT_EQ(QStringLiteral("ffmpeg -i a.mp4 b.mp4"), history.Previous(QStringLiteral("半截输入")));
+
+    EXPECT_EQ(QStringLiteral("ffmpeg -i c.mp4 d.mp4"), history.Next());
+    // 越过最新一条 → 回到用户原来输入的内容
+    EXPECT_EQ(QStringLiteral("半截输入"), history.Next());
+    EXPECT_FALSE(history.browsing());
+}
+
+TEST(FfmpegCommandHistory, AdjacentDuplicateIsNotRecordedTwice) {
+    FfmpegCommandHistory history;
+    EXPECT_TRUE(history.Push(QStringLiteral("ffmpeg -i a.mp4 b.mp4")));
+    // 同一条件又跑一次是常态，记两次只会让用户多按一下 ↑
+    EXPECT_FALSE(history.Push(QStringLiteral("  ffmpeg -i a.mp4 b.mp4  ")));
+    EXPECT_EQ(1, history.Entries().size());
+    EXPECT_FALSE(history.Push(QStringLiteral("   ")));
+    EXPECT_EQ(1, history.Entries().size());
+}
+
+TEST(FfmpegCommandHistory, EntriesAreCapped) {
+    FfmpegCommandHistory history;
+    for (int i = 0; i < FfmpegCommandHistory::kMaxEntries + 12; ++i) {
+        history.Push(QStringLiteral("ffmpeg %1").arg(i));
+    }
+    EXPECT_EQ(FfmpegCommandHistory::kMaxEntries, history.Entries().size());
+    // 留下的是最近的那些
+    EXPECT_EQ(QStringLiteral("ffmpeg %1").arg(FfmpegCommandHistory::kMaxEntries + 11), history.Entries().front());
+}
+
+// ===================== 进度解析 =====================
+//
+// 取样自真实 stderr（本机 ffmpeg 7.0.2）：
+//   Duration: 00:00:10.00, start: 0.000000, bitrate: 2456 kb/s
+//   frame=  300 fps= 60 q=28.0 size=... time=00:00:10.00 bitrate=...
+
+TEST(FfmpegProgressTracker, DurationAndTimeLineProducePercent) {
+    FfmpegProgressTracker tracker;
+    EXPECT_TRUE(tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 2456 kb/s")));
+    EXPECT_TRUE(tracker.duration_known());
+    EXPECT_EQ(QStringLiteral("00:10"), tracker.duration_text());
+
+    EXPECT_TRUE(tracker.Feed(QStringLiteral("frame=  120 fps= 60 q=28.0 size=512kB time=00:00:04.00 bitrate=...")));
+    EXPECT_NEAR(40.0, tracker.percent(), 0.001);
+    EXPECT_EQ(QStringLiteral("00:04"), tracker.position_text());
+}
+
+TEST(FfmpegProgressTracker, WithoutDurationThereIsNoPercent) {
+    // 流式输入打的是 "Duration: N/A"，绝不能编一个百分比出来
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: N/A, start: 0.000000, bitrate: N/A"));
+    tracker.Feed(QStringLiteral("frame=   30 fps= 30 time=00:00:01.00 bitrate=..."));
+    EXPECT_FALSE(tracker.duration_known());
+    EXPECT_LT(tracker.percent(), 0.0);
+    EXPECT_EQ(QStringLiteral("00:01"), tracker.position_text());
+}
+
+TEST(FfmpegProgressTracker, NegativeFirstTimestampClampsToZero) {
+    // ffmpeg 开头偶尔吐 time=-00:00:00.02（第一帧时间戳为负）
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=    0 fps=0.0 q=0.0 size=0kB time=-00:00:00.02 bitrate=N/A"));
+    EXPECT_EQ(0, tracker.position_ms());
+    EXPECT_NEAR(0.0, tracker.percent(), 0.001);
+}
+
+TEST(FfmpegProgressTracker, OnlyFirstDurationIsUsed) {
+    // 多输入（-i a -i b）后面那个 Duration 不是这次的总量
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("  Duration: 01:00:00.00, start: 0.000000, bitrate: 1 kb/s"));
+    EXPECT_EQ(10000, tracker.duration_ms());
+}
+
+TEST(FfmpegProgressTracker, PositionIsClampedToHundredPercent) {
+    FfmpegProgressTracker tracker;
+    tracker.Feed(QStringLiteral("  Duration: 00:00:10.00, start: 0.000000, bitrate: 1 kb/s"));
+    tracker.Feed(QStringLiteral("frame=1 time=00:00:12.00 bitrate=..."));
+    EXPECT_NEAR(100.0, tracker.percent(), 0.001);
+}
+
+TEST(FfmpegProgressTracker, ClockFormatSwitchesAtOneHour) {
+    EXPECT_EQ(QStringLiteral("00:05"), FormatProgressClock(5000));
+    EXPECT_EQ(QStringLiteral("59:59"), FormatProgressClock(59 * 60 * 1000 + 59000));
+    EXPECT_EQ(QStringLiteral("1:00:00"), FormatProgressClock(3600 * 1000));
+    EXPECT_EQ(QStringLiteral("00:00"), FormatProgressClock(-5)); // 负值按 0
 }
 
 } // namespace

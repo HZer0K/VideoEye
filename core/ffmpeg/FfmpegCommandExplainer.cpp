@@ -47,6 +47,143 @@ QString OutputDescription(const QString& target) {
     return text;
 }
 
+// ---- 编码方式（-c / -codec / -vcodec / -acodec / -c:v / -c:a …）----
+//
+// 「这条命令到底有没有重新编码」必须**按键值配对**去问，不能拿整条参数表做字符串
+// 搜索。早期实现是:
+//     arguments.indexOf("copy") > arguments.indexOf("-c:v")
+// 两个反例都判错:
+//   -c:v libx264 -c:a copy -crf 20  → copy 属于音频，视频仍在重编码，-crf 有效（不该报警）
+//   -c copy -crf 20                 → 视频也被拷贝了，-crf 静默失效（该报警却一句没说）
+
+enum class CodecScope { All, Video, Audio, Other };
+
+/// `-c` / `-codec` → 所有流；`-vcodec` / `-acodec` 是它们的旧写法别名；
+/// `-c:v` / `-c:a` / `-c:s` … 按流类型收窄。带流序号（`-c:v:0`）的不参与判定 ——
+/// 它只改某一路，把整类判成 copy 会误报。
+bool CodecScopeOf(const QString& option, CodecScope* scope) {
+    const QString name = option.toLower();
+    if (name == QLatin1String("-c") || name == QLatin1String("-codec")) {
+        *scope = CodecScope::All;
+        return true;
+    }
+    if (name == QLatin1String("-vcodec")) {
+        *scope = CodecScope::Video;
+        return true;
+    }
+    if (name == QLatin1String("-acodec")) {
+        *scope = CodecScope::Audio;
+        return true;
+    }
+    QString body = name;
+    if (body.startsWith(QLatin1String("-codec:"))) {
+        body = QLatin1String("-c") + body.mid(6); // -codec:v 与 -c:v 同义
+    }
+    if (!body.startsWith(QLatin1String("-c:"))) {
+        return false;
+    }
+    if (body.count(QLatin1Char(':')) > 1) {
+        return false; // -c:v:0 这种只覆盖单路流，不据此判定整类
+    }
+    const QString stream_type = body.section(QLatin1Char(':'), 1, 1);
+    if (stream_type == QLatin1String("v")) {
+        *scope = CodecScope::Video;
+    } else if (stream_type == QLatin1String("a")) {
+        *scope = CodecScope::Audio;
+    } else {
+        *scope = CodecScope::Other; // 字幕/数据/附件：不影响音视频参数是否生效
+    }
+    return true;
+}
+
+struct CopyState {
+    bool video_known = false;
+    bool video_copy = false;
+    QString video_source; // 让它变成 copy 的那个选项名（"-c" / "-c:v" …），用于文案
+    bool audio_known = false;
+    bool audio_copy = false;
+    QString audio_source;
+};
+
+/// 按出现顺序合成最终生效的编码方式：ffmpeg 里后写的同类型选项覆盖先写的。
+/// `-c copy -c:a aac` 的正确结果是"视频 copy、音频重编码"。
+CopyState ResolveCopyState(const QStringList& arguments, const FfmpegCommandStructure& structure) {
+    CopyState state;
+    for (size_t i = 0; i < structure.args.size(); ++i) {
+        const FfmpegArgPlacement& place = structure.args.at(i);
+        if (place.role != FfmpegArgRole::Option || place.value_index < 0) {
+            continue;
+        }
+        CodecScope scope = CodecScope::Other;
+        if (!CodecScopeOf(arguments.at(static_cast<int>(i)), &scope)) {
+            continue;
+        }
+        const bool copy = arguments.at(place.value_index).compare(QLatin1String("copy"), Qt::CaseInsensitive) == 0;
+        if (scope == CodecScope::All || scope == CodecScope::Video) {
+            state.video_known = true;
+            state.video_copy = copy;
+            state.video_source = arguments.at(static_cast<int>(i));
+        }
+        if (scope == CodecScope::All || scope == CodecScope::Audio) {
+            state.audio_known = true;
+            state.audio_copy = copy;
+            state.audio_source = arguments.at(static_cast<int>(i));
+        }
+    }
+    return state;
+}
+
+/// `-c copy` 之后还有没有按流收窄的编码设置（`-c:v` / `-c:a`）。
+/// 有的话，"音视频都不重新编码"这句话就不再成立 —— 后面的选项会覆盖它。
+bool HasLaterStreamOverride(const QStringList& arguments, const FfmpegCommandStructure& structure, int value_index) {
+    for (size_t j = static_cast<size_t>(value_index) + 1; j < structure.args.size(); ++j) {
+        const FfmpegArgPlacement& place = structure.args.at(j);
+        if (place.role != FfmpegArgRole::Option || place.value_index < 0) {
+            continue;
+        }
+        CodecScope scope = CodecScope::Other;
+        if (!CodecScopeOf(arguments.at(static_cast<int>(j)), &scope)) {
+            continue;
+        }
+        if (scope == CodecScope::Video || scope == CodecScope::Audio || scope == CodecScope::All) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// 只在"某个流被 copy"时才有必要数这些参数 —— 它们都需要重新编码才生效。
+QStringList HitVideoReencodeOptions(const QStringList& arguments) {
+    static const QStringList kOptions = {
+        QStringLiteral("-crf"),      QStringLiteral("-b:v"),         QStringLiteral("-vf"),
+        QStringLiteral("-filter:v"), QStringLiteral("-s"),           QStringLiteral("-pix_fmt"),
+        QStringLiteral("-preset"),   QStringLiteral("-qp"),          QStringLiteral("-g"),
+        QStringLiteral("-maxrate"),  QStringLiteral("-bufsize"),     QStringLiteral("-profile:v"),
+        QStringLiteral("-tune"),     QStringLiteral("-x264-params"), QStringLiteral("-aspect"),
+    };
+    QStringList hit;
+    for (const QString& name : kOptions) {
+        if (arguments.contains(name)) {
+            hit.push_back(name);
+        }
+    }
+    return hit;
+}
+
+QStringList HitAudioReencodeOptions(const QStringList& arguments) {
+    static const QStringList kOptions = {
+        QStringLiteral("-b:a"), QStringLiteral("-ar"),       QStringLiteral("-ac"),
+        QStringLiteral("-af"),  QStringLiteral("-filter:a"), QStringLiteral("-profile:a"),
+    };
+    QStringList hit;
+    for (const QString& name : kOptions) {
+        if (arguments.contains(name)) {
+            hit.push_back(name);
+        }
+    }
+    return hit;
+}
+
 } // namespace
 
 FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& arguments) {
@@ -129,6 +266,26 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                 item.value = arguments.at(place.value_index);
             }
 
+            // 值写 copy 时「编码器」这个称呼恰恰是反的 —— 它的意思是不编码。
+            // 流程串、列表标题都用 role_label，改这里一处两边同时正确。
+            if (entry->value_kind == FfmpegValueKind::Encoder && place.value_index >= 0 &&
+                arguments.at(place.value_index).compare(QLatin1String("copy"), Qt::CaseInsensitive) == 0) {
+                CodecScope scope = CodecScope::Other;
+                CodecScopeOf(token, &scope);
+                // `-c copy -c:a aac` 里 -c 的意思是"默认都拷，但后续按流覆盖"。
+                // 不区分的话流程串会自相矛盾: "音视频都不重新编码 → 音频编码器 aac"。
+                const bool overridden = HasLaterStreamOverride(arguments, structure, place.value_index);
+                if (scope == CodecScope::Video) {
+                    item.role_label = QStringLiteral("视频流拷贝（不重新编码）");
+                } else if (scope == CodecScope::Audio) {
+                    item.role_label = QStringLiteral("音频流拷贝（不重新编码）");
+                } else if (overridden) {
+                    item.role_label = QStringLiteral("流拷贝（默认不重编码，后面的 -c:x 会覆盖部分流）");
+                } else {
+                    item.role_label = QStringLiteral("流拷贝（音视频都不重新编码）");
+                }
+            }
+
             // 值是否真的能用（编码器 / 滤镜 / 格式）
             if (!item.value.isEmpty()) {
                 const auto& caps = FfmpegCapabilityCache::Instance();
@@ -176,11 +333,28 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                                               "输入之后、输出文件之前，放错位置不会报错但**不会生效**。");
             }
         } else {
-            item.role = FfmpegTokenRole::UnknownOption;
-            item.role_label = QStringLiteral("未知参数");
-            item.description = QStringLiteral("字典里没有收录「%1」。它可能是编码器私有选项、"
-                                              "新版本新增的参数，或者拼错了 —— 这里不做猜测，请以实际运行输出为准。")
-                                   .arg(token);
+            // 查询类选项（-encoders / -h / -version …）字典通常不单列，但它们不是
+            // "未知参数" —— 说成不认识，会和下面"这是一条查询命令"自相矛盾。
+            const QString info = InformationOptionDescription(token);
+            if (!info.isEmpty()) {
+                item.known = true;
+                item.role = FfmpegTokenRole::KnownOption;
+                item.role_label = QStringLiteral("查询项");
+                item.description = info;
+            } else {
+                item.role = FfmpegTokenRole::UnknownOption;
+                item.role_label = QStringLiteral("未知参数");
+                item.description =
+                    QStringLiteral("字典里没有收录「%1」。它可能是编码器私有选项、"
+                                   "新版本新增的参数，或者拼错了 —— 这里不做猜测，请以实际运行输出为准。")
+                        .arg(token);
+                if (place.value_index >= 0) {
+                    item.value = arguments.at(place.value_index);
+                    item.description += QStringLiteral("\n紧跟的「%1」按位置推断是它的值（本字典没收录这个选项，"
+                                                       "只能靠「它后面还有别的参数」来分辨值与输出目标）。")
+                                            .arg(item.value);
+                }
+            }
             // 私有选项通常带值，但值是否以 '-' 开头无从判断，保守地不吞掉下一个 token。
         }
         out.tokens.push_back(item);
@@ -212,11 +386,20 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
     }
 
     if (!out.has_input) {
-        out.notes.push_back(QStringLiteral("没有 -i，ffmpeg 拿不到输入（除非用的是 -f lavfi 之类的虚拟输入）。"));
+        // 结构不明时不能说"没有 -i"：那个归属不明的 token 可能正是 -i 的值，
+        // 断言得越肯定，用户越容易被引到错误的方向上。
+        out.notes.push_back(out.structure_known
+                                ? QStringLiteral("没有 -i，ffmpeg 拿不到输入（除非用的是 -f lavfi 之类的虚拟输入）。")
+                                : QStringLiteral("按目前的解析结果没有输入。命令里有归属不明的参数，"
+                                                 "不排除其中有输入 —— 请对照 ffmpeg 的实际输出确认。"));
     }
     if (!out.has_output) {
-        out.notes.push_back(QStringLiteral("没有输出文件。ffmpeg 至少要有一个输出目标，"
-                                           "否则它只会报错退出（或把数据写到 stdout，而本页不支持那样做）。"));
+        out.notes.push_back(out.structure_known
+                                ? QStringLiteral("没有输出文件。ffmpeg 至少要有一个输出目标，"
+                                                 "否则它只会报错退出（或把数据写到 stdout，而本页不支持那样做）。")
+                                : QStringLiteral("按目前的解析结果没有输出目标。命令里有归属不明的参数"
+                                                 "（列表中标为「未解析」的项），其中之一可能就是输出文件 —— "
+                                                 "运行前请确认，否则 ffmpeg 会直接报错退出。"));
     }
     if (arguments.contains(QStringLiteral("-nostdin"))) {
         out.notes.push_back(QStringLiteral("命令里有 -nostdin: ffmpeg 不会读标准输入，"
@@ -230,22 +413,61 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                                 .arg(out.output_count));
     }
     if (!out.structure_known) {
-        out.notes.push_back(QStringLiteral("命令里有归属不明参数（列表中标为「未解析」的项），"
-                                           "整体结构无法可靠判断 —— 上面的流程据此省略了对它们的推断。"));
+        int unresolved = 0;
+        for (const FfmpegTokenExplanation& item : out.tokens) {
+            if (item.role == FfmpegTokenRole::Unresolved) {
+                ++unresolved;
+            }
+        }
+        out.notes.push_back(
+            QStringLiteral("命令里有 %1 个归属不明的参数（列表中标为「未解析」）：这是一个字典"
+                           "没有收录的选项后面的内容，本页没法判断它是该选项的值还是输出文件。\n"
+                           "因此不据此推断输入/输出，运行前的覆盖检查也会跳过这一条 —— "
+                           "如果命令确实写了输出文件，请自己确认它会不会被改写（或先在命令里写上 -y / -n）。")
+                .arg(unresolved));
     }
 
-    const bool stream_copy = arguments.contains(QStringLiteral("-c:v")) &&
-                             arguments.indexOf(QStringLiteral("copy")) > arguments.indexOf(QStringLiteral("-c:v"));
-    bool reencode_param = false;
-    for (const QString& flag : {QStringLiteral("-crf"), QStringLiteral("-b:v"), QStringLiteral("-vf"),
-                                QStringLiteral("-s"), QStringLiteral("-pix_fmt"), QStringLiteral("-preset")}) {
-        if (arguments.contains(flag)) {
-            reencode_param = true;
+    // ---- 流拷贝 vs 编码参数 ----
+    //
+    // copy 只作用于它自己那条流: `-c:v libx264 -c:a copy` 里 -crf 仍然生效，
+    // 不能因为命令里出现了 copy 就一概而论。
+    const CopyState copy = ResolveCopyState(arguments, structure);
+    bool stream_param_ignored = false; // 有编码参数被 copy 吞掉 —— 此时别再说"这是一次纯流拷贝"
+    if (copy.video_copy) {
+        QStringList hit = HitVideoReencodeOptions(arguments);
+        // 滤镜与流拷贝是硬冲突 —— ffmpeg 不忽略，直接拒绝执行。
+        const bool filters_filter = hit.removeAll(QStringLiteral("-vf")) > 0;
+        const bool filters_filter_named = hit.removeAll(QStringLiteral("-filter:v")) > 0;
+        if (filters_filter || filters_filter_named) {
+            stream_param_ignored = true;
+            out.notes.push_back(QStringLiteral("视频流是拷贝（%1 copy），却又给了滤镜。ffmpeg 会直接报错退出：\n"
+                                               "「Filtering and streamcopy cannot be used together」。\n"
+                                               "要么去掉滤镜，要么把 copy 换成真正的编码器（例如 libx264）。")
+                                    .arg(copy.video_source));
+        }
+        if (!hit.isEmpty()) {
+            stream_param_ignored = true;
+            out.notes.push_back(QStringLiteral("视频流不重新编码（%1 copy），所以 %2 这些参数**不会生效**。\n"
+                                               "ffmpeg 不会报错，只会静默忽略 —— 表现为「参数写了但画面没变」。\n"
+                                               "想让它们生效，就把 copy 换成编码器（例如 libx264）。")
+                                    .arg(copy.video_source, hit.join(QStringLiteral(" "))));
         }
     }
-    if (stream_copy && reencode_param) {
-        out.notes.push_back(QStringLiteral("-c:v copy 表示不重新编码，此时 -crf / -vf / -s / -pix_fmt "
-                                           "这类需要重新编码的参数都不会生效。要么去掉 copy，要么去掉这些参数。"));
+    if (copy.audio_copy) {
+        const QStringList hit = HitAudioReencodeOptions(arguments);
+        if (!hit.isEmpty()) {
+            stream_param_ignored = true;
+            out.notes.push_back(QStringLiteral("音频流不重新编码（%1 copy），所以 %2 不会生效。\n"
+                                               "要改音量/采样率/声道/码率，得把 copy 换成编码器（例如 aac）。")
+                                    .arg(copy.audio_source, hit.join(QStringLiteral(" "))));
+        }
+    }
+    // 纯流拷贝是个正常且推荐的用法，值得单独说明一次；但命令里已经写了"不会生效"
+    // 的参数时再说"一切正常"会自相矛盾。
+    if (copy.video_copy && copy.audio_copy && copy.video_known && copy.audio_known && !stream_param_ignored) {
+        out.notes.push_back(
+            QStringLiteral("这是一次纯流拷贝：只换封装、不解码不重编码，速度最快且不损失画质。"
+                           "代价是分辨率/码率/帧率/滤镜都无法改变 —— 需要改动就得让对应的流重新编码。"));
     }
     if (arguments.contains(QStringLiteral("-crf")) && arguments.contains(QStringLiteral("-b:v"))) {
         out.notes.push_back(QStringLiteral("-crf（质量优先）与 -b:v（码率优先）是两种互斥的码率控制方式，"

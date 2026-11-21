@@ -10,6 +10,7 @@
 #include <QScrollBar>
 #include <QSplitter>
 #include <QTextStream>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "core/ffmpeg/FfmpegCommandParser.h"
@@ -20,6 +21,10 @@ namespace ui {
 namespace {
 
 constexpr int kMaxLogChars = 4 * 1024 * 1024; // 日志缓存上限，防止长任务把内存吃光
+// 攒批上限。50ms 一次的定时器在主线程被长操作顶住时不会触发，这里兜一个硬上限，
+// 免得 -loglevel debug 底下先把内存吃光。
+constexpr int kMaxPendingLines = 2000;
+constexpr int kLogFlushIntervalMs = 50;
 
 QString FormatDuration(qint64 ms) {
     if (ms < 1000) {
@@ -38,14 +43,22 @@ QString EscapeHtml(const QString& text) {
     return text.toHtmlEscaped();
 }
 
-void AppendLine(QPlainTextEdit* view, const QString& line) {
-    view->appendPlainText(line);
+void AppendLines(QPlainTextEdit* view, const QStringList& lines) {
+    if (lines.isEmpty()) {
+        return;
+    }
+    // 一次写多行：appendPlainText 里的换行会切成多个段落，滚动条只动一次。
+    view->appendPlainText(lines.join(QLatin1Char('\n')));
     view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum());
 }
 
 } // namespace
 
 FfmpegOutputWidget::FfmpegOutputWidget(QWidget* parent) : QGroupBox(tr("输出与解释"), parent) {
+    log_flush_timer_ = new QTimer(this);
+    log_flush_timer_->setSingleShot(true);
+    log_flush_timer_->setInterval(kLogFlushIntervalMs);
+    connect(log_flush_timer_, &QTimer::timeout, this, &FfmpegOutputWidget::FlushLog);
     SetupUi();
 }
 
@@ -58,6 +71,9 @@ void FfmpegOutputWidget::SetupUi() {
     QHBoxLayout* status_row = new QHBoxLayout();
     status_row->setSpacing(12);
     status_label_ = new QLabel(tr("状态: 未运行"), this);
+    progress_label_ = new QLabel(tr("进度: —"), this);
+    progress_label_->setToolTip(tr("百分比 = 已处理时长 / 输入总时长。命令里写了 -ss / -t 时，"
+                                   "这个分母不等于本次要产出的时长，进度会偏小或提前到 100%。"));
     exit_code_label_ = new QLabel(tr("退出码: —"), this);
     elapsed_label_ = new QLabel(tr("耗时: —"), this);
     copy_button_ = new QPushButton(tr("复制日志"), this);
@@ -65,6 +81,7 @@ void FfmpegOutputWidget::SetupUi() {
     connect(copy_button_, &QPushButton::clicked, this, &FfmpegOutputWidget::OnCopyLog);
     connect(save_button_, &QPushButton::clicked, this, &FfmpegOutputWidget::OnSaveLog);
     status_row->addWidget(status_label_);
+    status_row->addWidget(progress_label_);
     status_row->addWidget(exit_code_label_);
     status_row->addWidget(elapsed_label_);
     status_row->addStretch(1);
@@ -212,19 +229,34 @@ void FfmpegOutputWidget::SetStatusText(const QString& text, const QString& color
 }
 
 void FfmpegOutputWidget::ClearOutput() {
+    FlushLog(); // 理论上此时缓冲是空的，留着是为了"清空"这个动作本身不留半行残留
+    pending_log_lines_.clear();
+    pending_error_lines_.clear();
+    if (log_flush_timer_ != nullptr) {
+        log_flush_timer_->stop();
+    }
     log_view_->clear();
     error_view_->clear();
     last_log_text_.clear();
+    run_elapsed_.invalidate();
     SetStatusText(tr("状态: 未运行"), QString());
+    progress_label_->setText(tr("进度: —"));
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
 }
 
 void FfmpegOutputWidget::PrepareForRun() {
+    pending_log_lines_.clear();
+    pending_error_lines_.clear();
+    if (log_flush_timer_ != nullptr) {
+        log_flush_timer_->stop();
+    }
     log_view_->clear();
     error_view_->clear();
     last_log_text_.clear();
+    run_elapsed_.start();
     SetStatusText(tr("状态: 运行中"), QLatin1String(theme::color::kAccent));
+    progress_label_->setText(tr("进度: —"));
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
     output_tabs_->setCurrentWidget(log_view_);
@@ -235,18 +267,66 @@ void FfmpegOutputWidget::AppendLog(const QString& text, bool is_error) {
     // 按通道分页会让「运行日志」只剩一条命令抬头。所以主视图按到达顺序合并两路，
     // 来自 stderr 的行加 [err] 前缀保留原始通道；纯 stderr 另有分页便于单独排障。
     const QString merged = is_error ? QStringLiteral("[err] %1").arg(text) : text;
-    AppendLine(log_view_, merged);
+    pending_log_lines_.append(merged);
     if (is_error) {
-        AppendLine(error_view_, text);
+        pending_error_lines_.append(text);
     }
+    // 明文缓存按到达即时累积：复制 / 保存读的是它，不能等攒批定时器。
     if (last_log_text_.size() < kMaxLogChars) {
         last_log_text_ += merged + QLatin1Char('\n');
+    }
+    if (pending_log_lines_.size() >= kMaxPendingLines) {
+        FlushLog(); // 主线程被长操作顶住时的兜底：先落地，别把内存吃光
+        return;
+    }
+    if (log_flush_timer_ != nullptr && !log_flush_timer_->isActive()) {
+        log_flush_timer_->start();
+    }
+}
+
+void FfmpegOutputWidget::FlushLog() {
+    if (log_flush_timer_ != nullptr) {
+        log_flush_timer_->stop();
+    }
+    AppendLines(log_view_, pending_log_lines_);
+    pending_log_lines_.clear();
+    AppendLines(error_view_, pending_error_lines_);
+    pending_error_lines_.clear();
+}
+
+void FfmpegOutputWidget::ShowProgress(double percent, const QString& position, const QString& duration) {
+    if (percent < 0.0 || duration.isEmpty()) {
+        // 流式输入 / Duration: N/A —— 没有分母就不给百分比，只报已处理时长
+        progress_label_->setText(tr("进度: 已处理 %1（总时长未知）").arg(position));
+    } else {
+        progress_label_->setText(tr("进度: %1%（%2 / %3）").arg(QString::number(percent, 'f', 1), position, duration));
+    }
+    if (run_elapsed_.isValid()) {
+        elapsed_label_->setText(tr("耗时: %1").arg(FormatDuration(run_elapsed_.elapsed())));
     }
 }
 
 void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
+    FlushLog(); // 最后几行可能还压在缓冲里，状态行要跟它们一起出现
     exit_code_label_->setText(tr("退出码: %1").arg(result.exit_code));
     elapsed_label_->setText(tr("耗时: %1").arg(FormatDuration(result.elapsed_ms)));
+
+    // 「输出文件已存在，拒绝了覆盖」是独立结局：退出码可能是 0，也不能算"用户停止且
+    // 收尾干净" —— ffmpeg 根本没开始写，原文件原样未动。报"完成"或"已停止（正常收尾）"
+    // 都会让用户以为产出已经更新。
+    if (result.overwrite_refused) {
+        SetStatusText(tr("状态: 未写入（输出文件已存在）"), QLatin1String(theme::color::kDanger));
+        progress_label_->setText(tr("进度: —"));
+        AppendLog(tr("ffmpeg 停在「输出文件已存在，是否覆盖？」这一问上，没有改写任何数据 —— 原文件保持原样。"
+                     "要覆盖就加上 -y，或换一个输出文件名。"),
+                  true);
+        emit StatusMessage(tr("ffmpeg 没有写入：输出文件已存在（原文件未改动）"));
+        FlushLog(); // 上面那行还在缓冲里，不落地就判断不出「错误页非空」
+        if (!error_view_->toPlainText().trimmed().isEmpty()) {
+            output_tabs_->setCurrentWidget(error_view_);
+        }
+        return;
+    }
 
     QString text;
     QString color;
@@ -254,6 +334,8 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     case ffmpeg::FfmpegRunStatus::Finished:
         text = tr("状态: 完成");
         color = QLatin1String(theme::color::kSuccess);
+        // 跑完了就别留着最后一个 99.x% 让人以为还差一点
+        progress_label_->setText(tr("进度: 完成"));
         break;
     case ffmpeg::FfmpegRunStatus::Failed:
         text = tr("状态: 失败（退出码 %1）").arg(result.exit_code);
@@ -268,6 +350,7 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     case ffmpeg::FfmpegRunStatus::StartError:
         text = tr("状态: 无法启动");
         color = QLatin1String(theme::color::kDanger);
+        progress_label_->setText(tr("进度: —"));
         break;
     default:
         text = tr("状态: 未运行");
@@ -281,6 +364,7 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
     }
     if (result.status == ffmpeg::FfmpegRunStatus::Failed) {
         // ffmpeg 的错误原因几乎都在 stderr 上，帮用户直接切过去
+        FlushLog();
         if (!error_view_->toPlainText().trimmed().isEmpty()) {
             output_tabs_->setCurrentWidget(error_view_);
         }
@@ -297,6 +381,9 @@ void FfmpegOutputWidget::ShowRunResult(const ffmpeg::FfmpegRunResult& result) {
             emit StatusMessage(tr("ffmpeg 已停止，但输出可能不可用"));
         }
     }
+    // 终态是"一次事件"，没有理由再攒批：最后这几行（错误说明、强杀警告）
+    // 必须马上看得见，否则用户读到的是上一个瞬间的日志。
+    FlushLog();
 }
 
 void FfmpegOutputWidget::OnCopyLog() {

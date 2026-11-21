@@ -153,6 +153,8 @@ TEST(FfmpegOutputWidgetTests, AppendLogKeepsChannelsSeparateAndMarksStderr) {
 
     widget.AppendLog(QStringLiteral("frame= 10"), false);
     widget.AppendLog(QStringLiteral("Invalid argument"), true);
+    // 日志是攒批写进视图的（50ms），要立刻看到就得显式落地
+    widget.FlushLog();
 
     EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("frame= 10")));
     EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("[err] Invalid argument")));
@@ -281,4 +283,84 @@ TEST(FfmpegOutputWidgetTests, StoppedResultDistinguishesCleanExitFromForcedKill)
     EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("警告: ffmpeg 是被强制终止的")));
     ASSERT_EQ(2u, messages.size());
     EXPECT_TRUE(messages[1].contains(QStringLiteral("输出可能不可用")));
+}
+// ---------------------------------------------------------------------------
+// 7. 覆盖被拒：退出码 0 也不能报「完成」
+// ---------------------------------------------------------------------------
+
+TEST(FfmpegOutputWidgetTests, OverwriteRefusalIsNotReportedAsFinished) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+    QPlainTextEdit* log = TabTextEdit(tabs, 1);
+    ASSERT_TRUE(log != nullptr);
+
+    std::vector<QString> messages;
+    QObject::connect(&widget, &FfmpegOutputWidget::StatusMessage,
+                     [&messages](const QString& text) { messages.push_back(text); });
+
+    // ffmpeg 在"输出文件已存在"时的退出码是 0，但它一个字节都没写 ——
+    // 报"完成"会让用户以为产出已经更新，进而拿旧文件当新结果。
+    FfmpegRunResult refused;
+    refused.status = FfmpegRunStatus::Finished;
+    refused.exit_code = 0;
+    refused.overwrite_refused = true;
+    widget.ShowRunResult(refused);
+
+    QLabel* status = LabelWithPrefix(widget, QStringLiteral("状态: "));
+    ASSERT_TRUE(status != nullptr);
+    EXPECT_TRUE(status->text().contains(QStringLiteral("未写入")));
+    EXPECT_FALSE(status->text().contains(QStringLiteral("完成")));
+    // "原文件没被动过"必须说出来，否则用户会以为这次是失败而不是"什么都没做"
+    EXPECT_TRUE(log->toPlainText().contains(QStringLiteral("没有改写任何数据")));
+    ASSERT_EQ(1u, messages.size());
+    EXPECT_TRUE(messages[0].contains(QStringLiteral("没有写入")));
+}
+
+// ---------------------------------------------------------------------------
+// 8. 进度行：有总时长才报百分比，没有就说"总时长未知"
+// ---------------------------------------------------------------------------
+
+TEST(FfmpegOutputWidgetTests, ProgressShowsPercentOnlyWhenDurationIsKnown) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    widget.PrepareForRun();
+
+    QLabel* progress = LabelWithPrefix(widget, QStringLiteral("进度: "));
+    ASSERT_TRUE(progress != nullptr);
+    EXPECT_EQ(QStringLiteral("进度: —"), progress->text());
+
+    widget.ShowProgress(42.5, QStringLiteral("00:04"), QStringLiteral("00:00:10"));
+    EXPECT_TRUE(progress->text().contains(QStringLiteral("42.5%")));
+    EXPECT_TRUE(progress->text().contains(QStringLiteral("00:04 / 00:00:10")));
+
+    // 流式输入（Duration: N/A）：没有分母就不给百分比，只报已处理时长
+    widget.ShowProgress(-1.0, QStringLiteral("00:07"), QString());
+    EXPECT_TRUE(progress->text().contains(QStringLiteral("总时长未知")));
+    EXPECT_TRUE(progress->text().contains(QStringLiteral("00:07")));
+    EXPECT_FALSE(progress->text().contains(QLatin1Char('%')));
+}
+
+// ---------------------------------------------------------------------------
+// 9. 跑完了不能把最后一个 99.x% 留在状态行上
+// ---------------------------------------------------------------------------
+
+TEST(FfmpegOutputWidgetTests, FinishedRunReplacesProgressWithCompleted) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    widget.PrepareForRun();
+    widget.ShowProgress(99.4, QStringLiteral("00:09"), QStringLiteral("00:00:10"));
+
+    FfmpegRunResult result;
+    result.status = FfmpegRunStatus::Finished;
+    result.exit_code = 0;
+    widget.ShowRunResult(result);
+
+    QLabel* progress = LabelWithPrefix(widget, QStringLiteral("进度: "));
+    ASSERT_TRUE(progress != nullptr);
+    EXPECT_EQ(QStringLiteral("进度: 完成"), progress->text());
 }

@@ -56,6 +56,14 @@ struct FfmpegCatalogEntry {
     QString insert_text; // 「插入」按钮往命令行里写的东西
     QStringList typical_values;
     QStringList related;
+
+    /// 这个选项的值**可以以 '-' 开头**。命令行解析靠"值不以 '-' 开头"来区分
+    /// 「选项的值」与「下一个选项」；但对 -map / -map_metadata 这类选项，
+    /// `-map -0:d`（排除第 0 个输入里的数据流）、`-map_metadata -1`（清掉元数据）
+    /// 都是合法写法。少了这个标记，负号值会被当成选项，连带把它后面的输出目标
+    /// 吞成"该选项的值"，最后误报"没有输出文件"。
+    /// 放在最后：词条表是位置初始化，新增字段追加在末尾才不会挪动已有词条。
+    bool value_may_start_with_dash = false;
 };
 
 // `ffmpeg -formats` 的两张清单。**必须分开存**：D 是"能读"（解复用 / demuxer），

@@ -29,6 +29,24 @@ QString DescribeProcessError(QProcess::ProcessError error) {
     }
 }
 
+// ffmpeg 在"输出文件已存在"这件事上有三种收场，全部写在 stderr 上:
+//   File 'out.mp4' already exists. Overwrite? [y/N]   —— 等 stdin，回答不是 y 就放弃
+//   File 'out.mp4' already exists. Exiting.           —— -nostdin 等无交互场景
+//   Not overwriting - exiting
+// 命中任意一句就说明它**一个字节都没写**。注意这时退出码常是 0，
+// 只看退出码会把它当成"完成"，所以必须在结果里单独标出来。
+bool LooksLikeOverwriteRefusal(const QString& line) {
+    if (line.contains(QLatin1String("Not overwriting"), Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (line.contains(QLatin1String("already exists"), Qt::CaseInsensitive) &&
+        (line.contains(QLatin1String("Overwrite?"), Qt::CaseInsensitive) ||
+         line.contains(QLatin1String("Exiting"), Qt::CaseInsensitive))) {
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 FfmpegProcessRunner::FfmpegProcessRunner(QObject* parent) : QObject(parent) {
@@ -58,14 +76,32 @@ bool FfmpegProcessRunner::CanQuitViaStdin(const QStringList& arguments) {
 }
 
 QString FfmpegProcessRunner::BuildDisplayCommand(const QString& program, const QStringList& arguments) {
-    QString line = program;
-    for (const QString& a : arguments) {
-        line += QLatin1Char(' ');
-        if (a.isEmpty() || a.contains(QLatin1Char(' ')) || a.contains(QLatin1Char('\t'))) {
-            line += QLatin1Char('"') + a + QLatin1Char('"');
-        } else {
-            line += a;
+    // 只用于展示 / 回填输入框，但回填的那一行下次还要被 ParseCommandLine 读回来，
+    // 所以含 shell 元字符的 token 也必须加引号 —— 否则一个含 & 的路径回填后
+    // 下次运行会被当成 shell 操作符拒掉。
+    const auto needs_quote = [](const QString& a) {
+        if (a.isEmpty()) {
+            return true;
         }
+        for (const QChar c : a) {
+            if (c.isSpace() || c == QLatin1Char('"') || c == QLatin1Char('\'') || c == QLatin1Char('&') ||
+                c == QLatin1Char(';') || c == QLatin1Char('|') || c == QLatin1Char('<') || c == QLatin1Char('>') ||
+                c == QLatin1Char('`') || c == QLatin1Char('$') || c == QLatin1Char('(') || c == QLatin1Char(')')) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    QString line;
+    if (!program.isEmpty()) {
+        line = needs_quote(program) ? QLatin1Char('"') + program + QLatin1Char('"') : program;
+    }
+    for (const QString& a : arguments) {
+        if (!line.isEmpty()) {
+            line += QLatin1Char(' ');
+        }
+        line += needs_quote(a) ? QLatin1Char('"') + a + QLatin1Char('"') : a;
     }
     return line;
 }
@@ -175,6 +211,44 @@ bool FfmpegProcessRunner::IsRunning() const {
     return running_;
 }
 
+bool FfmpegProcessRunner::StopAndWait(int quit_grace_ms) {
+    if (!running_ || process_ == nullptr || process_->state() == QProcess::NotRunning) {
+        return true;
+    }
+    // 不设这个标记的话，收尾时会被判成"退出码 0 = 完成"—— 而这一次是我们中途掐断的。
+    stop_requested_ = true;
+
+    const auto set_stage = [this](FfmpegStopStage stage) {
+        if (stop_stage_ != stage) {
+            stop_stage_ = stage;
+            emit StopStageChanged(stage);
+        }
+    };
+
+    // 第一档：写 q，让 ffmpeg 自己写 trailer（唯一能保证输出文件完整的一档）
+    if (CanQuitViaStdin(arguments_)) {
+        set_stage(FfmpegStopStage::QuitSent);
+        process_->write("q\n");
+        process_->closeWriteChannel();
+        if (process_->waitForFinished(quit_grace_ms)) {
+            return true;
+        }
+    }
+
+    // 第二档：Unix 上 SIGTERM 会被 ffmpeg 接住并正常收尾（Windows 控制台程序收不到）
+    set_stage(FfmpegStopStage::Terminated);
+    process_->terminate();
+    if (process_->waitForFinished(1500)) {
+        return true;
+    }
+
+    // 第三档：强杀。走到这里输出文件多半已经不完整，界面必须说清楚。
+    set_stage(FfmpegStopStage::Killed);
+    process_->kill();
+    process_->waitForFinished(2000);
+    return process_->state() == QProcess::NotRunning;
+}
+
 QString FfmpegProcessRunner::DecodeLine(const QByteArray& raw) {
     QString text = QString::fromUtf8(raw);
     if (text.contains(QChar(kReplacementChar))) {
@@ -228,6 +302,11 @@ void FfmpegProcessRunner::EmitPending(const QString& text, bool is_error) {
     if (text.trimmed().isEmpty()) {
         return; // ffmpeg 的进度行会刷出大量空行，不进日志
     }
+    if (is_error && !last_result_.overwrite_refused && LooksLikeOverwriteRefusal(text)) {
+        // 只认标记，不改状态: 状态仍由退出码/停止阶段决定，但结果里要带上这一条，
+        // 否则"输出没写"会被显示成"完成"或"已停止（正常收尾）"。
+        last_result_.overwrite_refused = true;
+    }
     emit OutputLine(text, is_error);
 }
 
@@ -264,7 +343,14 @@ void FfmpegProcessRunner::OnProcessFinished(int exit_code, QProcess::ExitStatus 
         last_result_.status = FfmpegRunStatus::Failed;
         last_result_.error_message = QStringLiteral("进程异常退出（崩溃或被系统终止）");
     } else if (exit_code == 0) {
-        last_result_.status = FfmpegRunStatus::Finished;
+        if (last_result_.overwrite_refused) {
+            // 退出码 0，但 ffmpeg 其实什么都没写（输出文件已存在，它放弃了覆盖）。
+            // 这不是成功 —— 报"完成"会让用户以为产出已经更新。
+            last_result_.status = FfmpegRunStatus::Failed;
+            last_result_.error_message = QStringLiteral("输出文件已存在，ffmpeg 拒绝了覆盖 —— 没有写入任何数据。");
+        } else {
+            last_result_.status = FfmpegRunStatus::Finished;
+        }
     } else {
         last_result_.status = FfmpegRunStatus::Failed;
     }

@@ -77,6 +77,18 @@ int RunChildMode(const std::string& mode, const std::vector<std::string>& rest) 
         std::cerr << "child:err" << std::endl;
         return code;
     }
+    if (mode == "overwrite") {
+        // 模拟"输出文件已存在"的真实收场: 先问覆盖，拒绝后**退出码仍然是 0**。
+        // 真 ffmpeg 就是这样（实测），所以"退出码 0 = 成功"在这里不成立。
+        // rest[0] == "wait" → 等一个回答（页面「停止」写的就是 q）。
+        std::cerr << "File 'out.mp4' already exists. Overwrite? [y/N] " << std::flush;
+        if (!rest.empty() && rest.at(0) == "wait") {
+            std::string line;
+            std::getline(std::cin, line);
+        }
+        std::cerr << std::endl << "Not overwriting - exiting" << std::endl;
+        return 0;
+    }
     if (mode == "pwd") {
         std::cout << QDir::currentPath().toStdString() << std::endl;
         return 0;
@@ -315,6 +327,33 @@ TEST(FfmpegProcessRunner, StopWritesQuitToStdin) {
     EXPECT_FALSE(capture.stages.contains(ffmpeg::FfmpegStopStage::Killed));
 }
 
+TEST(FfmpegProcessRunner, OverwriteRefusalIsReportedAsFailure) {
+    SKIP_IF_NO_CHILD_PROCESS();
+    // 回归: ffmpeg 在"输出文件已存在"时退出码是 0，但一个字节都没写。
+    // 只看退出码会把它报成"完成" —— 用户会以为产出已经更新。
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("overwrite"), QStringLiteral("nowait")});
+
+    ASSERT_EQ(capture.finished_count, 1);
+    EXPECT_TRUE(capture.result.overwrite_refused);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Failed);
+    EXPECT_FALSE(capture.result.error_message.isEmpty());
+}
+
+TEST(FfmpegProcessRunner, StopAtOverwritePromptIsNotACleanStop) {
+    SKIP_IF_NO_CHILD_PROCESS();
+    // 用户在覆盖提示处点「停止」→ 页面写 q → ffmpeg 把它当成"不覆盖"后退出。
+    // 这一趟没有开始写文件，不能显示"已停止（正常收尾，输出文件完整）"。
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("overwrite"), QStringLiteral("wait")},
+        QString(), 8000, [](ffmpeg::FfmpegProcessRunner* runner) { runner->Stop(1500, 1500); });
+
+    ASSERT_EQ(capture.finished_count, 1);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
+    EXPECT_TRUE(capture.result.overwrite_refused);
+    EXPECT_FALSE(capture.result.stopped_cleanly());
+}
+
 TEST(FfmpegProcessRunner, StopEscalatesWhenQuitIsIgnored) {
     SKIP_IF_NO_CHILD_PROCESS();
     const auto capture = RunToCompletion(
@@ -325,6 +364,39 @@ TEST(FfmpegProcessRunner, StopEscalatesWhenQuitIsIgnored) {
     EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
     // 子进程不读 stdin，q 劝不住它 —— 必须升级到终止/强杀
     EXPECT_NE(capture.result.stop_stage, ffmpeg::FfmpegStopStage::QuitSent);
+}
+
+// StopAndWait 是"关窗口"那条路径用的：它不靠 QTimer 递进，而是自己阻塞等进程结束。
+// 关窗那一刻事件循环随时会停，靠定时器一档档走的 Stop() 可能一档都走不完。
+TEST(FfmpegProcessRunner, StopAndWaitBlocksUntilChildExits) {
+    SKIP_IF_NO_CHILD_PROCESS();
+
+    bool stopped = false;
+    const auto capture =
+        RunToCompletion(g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("echo")}, QString(), 8000,
+                        [&stopped](ffmpeg::FfmpegProcessRunner* runner) { stopped = runner->StopAndWait(3000); });
+
+    EXPECT_TRUE(stopped);
+    ASSERT_EQ(capture.finished_count, 1);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
+    // 子进程读 stdin，"q" 就能让它自己收尾 —— 不该升级到 terminate/kill
+    EXPECT_EQ(capture.result.stop_stage, ffmpeg::FfmpegStopStage::QuitSent);
+}
+
+TEST(FfmpegProcessRunner, StopAndWaitEscalatesForAChildThatIgnoresStdin) {
+    SKIP_IF_NO_CHILD_PROCESS();
+
+    bool stopped = false;
+    const auto capture = RunToCompletion(
+        g_child_program, {QStringLiteral("--videoeye-child"), QStringLiteral("sleep"), QStringLiteral("5000")},
+        QString(), 9000, [&stopped](ffmpeg::FfmpegProcessRunner* runner) { stopped = runner->StopAndWait(200); });
+
+    EXPECT_TRUE(stopped);
+    ASSERT_EQ(capture.finished_count, 1);
+    EXPECT_EQ(capture.result.status, ffmpeg::FfmpegRunStatus::Stopped);
+    // 关窗路径也必须如实记下"没优雅收住"，否则界面会报"输出完整"
+    EXPECT_NE(capture.result.stop_stage, ffmpeg::FfmpegStopStage::QuitSent);
+    EXPECT_FALSE(capture.result.stopped_cleanly());
 }
 
 TEST(FfmpegProcessRunner, StoppingOneRunDoesNotKillTheNext) {

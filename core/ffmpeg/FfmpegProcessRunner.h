@@ -61,10 +61,18 @@ struct FfmpegRunResult {
     QString command_line;  // 实际执行的命令（用于日志抬头）
     FfmpegStopStage stop_stage = FfmpegStopStage::None;
 
+    /// ffmpeg 停在「输出文件已存在，是否覆盖？」的确认上，并最终放弃了写入。
+    /// 这种退出**没有**改动目标文件（哪怕退出码是 0）—— 页面的「停止」会写一个 q，
+    /// 而 q 在这里只是回答了 no，不能当成"用户主动停止且文件完整"。
+    bool overwrite_refused = false;
+
     /// 被用户停止，且 ffmpeg 有机会自己收尾（输出文件可以放心用）
     bool stopped_cleanly() const {
         if (status != FfmpegRunStatus::Stopped) {
             return false;
+        }
+        if (overwrite_refused) {
+            return false; // 它压根没开始写，谈不上"收尾干净"
         }
         if (stop_stage == FfmpegStopStage::QuitSent) {
             return true;
@@ -96,6 +104,13 @@ public:
     ///   3. 再 terminate_grace_ms 后还没退出 → kill()。
     /// 已经请求过停止时再调用不会重复递进。
     void Stop(int quit_grace_ms = 3000, int terminate_grace_ms = 3000);
+
+    /// 同步停止：给「关窗口 / 退出程序」用。
+    /// 与 Stop() 的区别是它**阻塞等待**（最多 quit_grace_ms + 约 3.5s），不靠 QTimer 递进 ——
+    /// 关窗那一刻事件循环随时会停，靠定时器一档档往下走的 Stop() 可能一档都走不完，
+    /// 结果是析构里直接 kill()，产出缺 moov box 的 mp4。
+    /// 返回 true 表示进程已确认结束。
+    bool StopAndWait(int quit_grace_ms = 5000);
 
     bool IsRunning() const;
 
