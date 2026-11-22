@@ -31,8 +31,10 @@
 
 #include <vector>
 
+#include "core/ffmpeg/FfmpegChangeGraph.h"
 #include "core/ffmpeg/FfmpegCommandExplainer.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "ui/ffmpeg_panel/FfmpegChangeGraphView.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
 
 using videoeye::ffmpeg::CommandParseStatus;
@@ -58,7 +60,7 @@ QApplication* EnsureApp() {
     return app;
 }
 
-// 页签固定为 0=命令解释 / 1=运行日志 / 2=错误输出（测试按位置取页）。
+// 页签固定为 0=命令解释 / 1=运行日志 / 2=错误输出 / 3=转换图谱（测试按位置取页）。
 QPlainTextEdit* TabTextEdit(QTabWidget* tabs, int index) {
     return tabs ? qobject_cast<QPlainTextEdit*>(tabs->widget(index)) : nullptr;
 }
@@ -75,10 +77,10 @@ QLabel* LabelWithPrefix(FfmpegOutputWidget& widget, const QString& prefix) {
 
 } // namespace
 // ---------------------------------------------------------------------------
-// 1. 构造：组标题 + 三个页签 + 状态行初值
+// 1. 构造：组标题 + 四个页签 + 状态行初值
 // ---------------------------------------------------------------------------
 
-TEST(FfmpegOutputWidgetTests, ConstructorBuildsThreeTabsAndIdleStatus) {
+TEST(FfmpegOutputWidgetTests, ConstructorBuildsFourTabsAndIdleStatus) {
     EnsureApp();
 
     FfmpegOutputWidget widget;
@@ -87,10 +89,12 @@ TEST(FfmpegOutputWidgetTests, ConstructorBuildsThreeTabsAndIdleStatus) {
 
     // 组件就是 QGroupBox 本身：标题必须还是「输出与解释」（拆分类的视觉锚点）
     EXPECT_EQ(QStringLiteral("输出与解释"), widget.title());
-    ASSERT_EQ(3, tabs->count());
+    ASSERT_EQ(4, tabs->count());
     EXPECT_EQ(QStringLiteral("命令解释"), tabs->tabText(0));
     EXPECT_EQ(QStringLiteral("运行日志"), tabs->tabText(1));
     EXPECT_EQ(QStringLiteral("错误输出"), tabs->tabText(2));
+    // 第四页是"这次运行改变了什么"，它与日志并列而不是塞进日志页
+    EXPECT_EQ(QStringLiteral("转换图谱"), tabs->tabText(3));
     EXPECT_EQ(0, tabs->currentIndex());
 
     QLabel* status = LabelWithPrefix(widget, QStringLiteral("状态: "));
@@ -545,4 +549,40 @@ TEST(FfmpegOutputWidgetTests, DiagnosisSurvivesAStaleFilter) {
     EXPECT_TRUE(error->toPlainText().contains(QStringLiteral("诊断"))) << error->toPlainText().toStdString();
     ASSERT_FALSE(messages.empty());
     EXPECT_TRUE(messages.back().contains(QStringLiteral("路径不存在"))) << messages.back().toStdString();
+}
+
+// ---------------------------------------------------------------------------
+// 14. 转换图谱页：不参与日志过滤，且新一轮运行不许留着上一轮的图
+// ---------------------------------------------------------------------------
+
+TEST(FfmpegOutputWidgetTests, ChangeGraphTabHasNoLogFilterAndResetsOnNewRun) {
+    EnsureApp();
+
+    FfmpegOutputWidget widget;
+    QTabWidget* tabs = widget.findChild<QTabWidget*>();
+    ASSERT_TRUE(tabs != nullptr);
+
+    QLineEdit* filter_edit = FilterEdit(widget);
+    ASSERT_TRUE(filter_edit != nullptr);
+    QWidget* filter_bar = filter_edit->parentWidget();
+    ASSERT_TRUE(filter_bar != nullptr);
+
+    // 过滤栏只在两个日志页签出现：图谱页显示的是解析出来的结构，没有"日志行"可筛。
+    tabs->setCurrentIndex(1);
+    EXPECT_TRUE(filter_bar->isVisibleTo(&widget));
+    tabs->setCurrentIndex(3);
+    EXPECT_FALSE(filter_bar->isVisibleTo(&widget));
+
+    videoeye::ffmpeg::ChangeGraph graph;
+    graph.ok = true;
+    graph.target = QStringLiteral("out.mp4");
+    graph.output_measured = false;
+    widget.ShowChangeGraphs({graph});
+    EXPECT_FALSE(tabs->tabToolTip(3).isEmpty());
+
+    // 新一轮运行：上一轮的图不能留着冒充这次的结果
+    widget.PrepareForRun();
+    EXPECT_TRUE(tabs->tabToolTip(3).isEmpty());
+    EXPECT_FALSE(widget.ChangeGraphView()->HasGraph());
+    EXPECT_FALSE(widget.ChangeGraphView()->EmptyHintText().isEmpty());
 }

@@ -1771,6 +1771,54 @@ set_tests_properties(FfmpegCommandEditorDialogTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 测试 78：FFmpeg 媒体探测（`ffmpeg -i` 的 stderr → 流参数快照）
+#
+# 说明: 纯文本解析，不启动子进程。样本全是真实 ffmpeg 输出的原文，覆盖三层坑：
+#       切段（像素格式括号里的逗号）、双层括号（(High) (avc1 / 0x..)）、
+#       以及"读不到 ≠ 0"（N/A 时长、0.00 fps、N/A 码率）。
+#       另有两条负向用例：流映射行不能算成流、封面图不能算成一路视频。
+# =================================================
+videoeye_add_test(test_ffmpeg_media_probe
+    unit/test_ffmpeg_media_probe.cpp
+)
+target_link_libraries(test_ffmpeg_media_probe PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_media_probe PRIVATE Qt6::Core)
+add_test(NAME FfmpegMediaProbeTests COMMAND test_ffmpeg_media_probe)
+
+# =================================================
+# 测试 79：FFmpeg 转换图谱（声明 + 实测 → 变化清单）
+#
+# 说明: 只测数据层，不画图、不启动 ffmpeg。重点全在"别悄悄说错"：
+#       声明不能顶替实测（没探测输出时不许有字段对比）、配对不能想当然（没 -map 就
+#       明说按类型顺序配）、被 -map 丢掉的流不能从图上消失。
+# =================================================
+videoeye_add_test(test_ffmpeg_change_graph
+    unit/test_ffmpeg_change_graph.cpp
+)
+target_link_libraries(test_ffmpeg_change_graph PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_ffmpeg_change_graph PRIVATE Qt6::Core)
+add_test(NAME FfmpegChangeGraphTests COMMAND test_ffmpeg_change_graph)
+
+# =================================================
+# 测试 80：转换图谱画布（几何 / 命中 / 导出）
+#
+# 说明: 只编画布源，不 new 主窗口、不启动 ffmpeg。断言全在 Visual 列表上，不比像素：
+#       每个元素中心点必须命中它自己（画的和点的是一回事）、空图不产 SVG、
+#       被丢弃的流不能画成空白输出节点。
+# =================================================
+videoeye_add_test(test_ffmpeg_change_graph_view
+    unit/test_ffmpeg_change_graph_view.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegChangeGraphView.cpp
+    AUTOMOC
+)
+target_link_libraries(test_ffmpeg_change_graph_view PRIVATE
+    VideoEyeFfmpegTools
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FfmpegChangeGraphViewTests COMMAND test_ffmpeg_change_graph_view)
+set_tests_properties(FfmpegChangeGraphViewTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试 31：报告页助手（导出路径唯一性 / 不可写目录导出失败 / 线程回收 / 扫描状态映射）
 # 说明: ReportingPanel 的导出与线程逻辑抽到 ui/reporting_panel/{report_path,analysis_task}.h，
 #       这里只测纯逻辑，不需要 Qt 事件循环或真实媒体文件。QcRuleEngine 的扫描状态映射
@@ -2149,6 +2197,8 @@ set_tests_properties(PacketTableWidgetTests PROPERTIES
 videoeye_add_test(test_ffmpeg_output_widget
     unit/test_ffmpeg_output_widget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegOutputWidget.cpp
+    # 「转换图谱」页签的内容组件：输出区只负责把它放进去，行为归它自己
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegChangeGraphView.cpp
 )
 # 解释链（Parser / Explainer / Catalog）在 VideoEyeFfmpegTools 里，链库即可。
 target_link_libraries(test_ffmpeg_output_widget PRIVATE

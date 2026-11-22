@@ -27,10 +27,15 @@
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
 #include "core/ffmpeg/FfmpegCommandHistory.h"
+#include "core/ffmpeg/FfmpegMediaProbe.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
 #include "core/ffmpeg/FfmpegProgressTracker.h"
 #include "core/ffmpeg/FfmpegRunOutputs.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
+
+// 前向声明必须在命名空间**外**：放到 videoeye::ui 里会变成 videoeye::ui::QTimer，
+// 任何 include 本头的 .cpp 里写的 QTimer 都会被这个名字遮蔽（实测踩过一次）。
+class QTimer;
 
 namespace videoeye {
 namespace ui {
@@ -94,6 +99,11 @@ private slots:
     void OnProbeOutput(const QString& text, bool is_error);
     void OnProbeFinished(const ffmpeg::FfmpegRunResult& result);
 
+    // ---- 转换图谱用的一次性媒体探测 ----
+    void OnMediaProbeOutput(const QString& text, bool is_error);
+    void OnMediaProbeFinished(const ffmpeg::FfmpegRunResult& result);
+    void OnMediaProbeTimeout();
+
 private:
     void BuildUi();
     QWidget* BuildCommandArea();
@@ -123,6 +133,21 @@ private:
     void RefreshResultActions();
     /// 记住最近跑过的命令（去重、截断后回写设置）
     void RememberCommand(const QString& command);
+
+    // ---- 转换图谱（声明 + 实测）----
+    //
+    // 为什么单独一套 runner / 世代号：能力探测（-version/-encoders/…）与这里的
+    // "-i 读一遍素材"是两件毫不相干的事，共用一套会把两边的结果串在一起 ——
+    // 换程序时能力探测会被整轮作废，媒体探测不该跟着一起没了；反过来也一样。
+    //
+    // 探测一律**不阻塞**：跑命令前探输入、跑完后逐输出探，探测失败只影响图谱，
+    // 绝不影响命令本身的执行与日志。
+    void BeginMediaProbeForRun(const QString& program);
+    void QueueOutputMediaProbes();
+    void RunNextMediaProbe();
+    void CancelMediaProbes();
+    /// 用现有快照重建图谱并推进输出区（探测每完成一项就刷一次）
+    void RefreshChangeGraph();
 
     // ---- 程序区 ----
     QLineEdit* tool_path_edit_ = nullptr;
@@ -181,6 +206,29 @@ private:
     bool probe_restart_pending_ = false;
 
     ffmpeg::FfmpegToolInfo tool_info_;
+
+    // ---- 转换图谱 ----
+    struct MediaProbeJob {
+        QString path;
+        bool is_input = false;
+        int output_index = -1; // 对应命令里的第几个输出
+    };
+    ffmpeg::FfmpegProcessRunner* media_probe_runner_ = nullptr;
+    QTimer* media_probe_timeout_ = nullptr;
+    /// 每轮探测一个世代号：换命令 / 关了页面，在飞的回调一律作废
+    quint64 media_probe_generation_ = 0;
+    quint64 media_probe_launch_generation_ = 0;
+    std::vector<MediaProbeJob> media_probe_jobs_;
+    size_t media_probe_cursor_ = 0;
+    QString media_probe_buffer_;
+    QString media_probe_program_;
+    bool media_probe_timed_out_ = false;
+    ffmpeg::MediaProbeSnapshot input_probe_;
+    std::vector<ffmpeg::MediaProbeSnapshot> output_probes_;
+    /// 图谱对应的那组参数（命令框被改过时用来判断"图上是不是旧结果"）
+    QStringList graph_arguments_;
+    /// 已经排过输出探测的那组参数，避免重复排队
+    QStringList probed_output_arguments_;
     /// 本次运行的参数。停止时要用它判断能不能靠写 q 让 ffmpeg 优雅收尾。
     QStringList current_arguments_;
     /// 上一次运行期间从 stderr 读到的进度（Duration + time=）

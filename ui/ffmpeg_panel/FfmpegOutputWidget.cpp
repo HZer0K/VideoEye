@@ -1,5 +1,7 @@
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
 
+#include "ui/ffmpeg_panel/FfmpegChangeGraphView.h"
+
 #include <QClipboard>
 #include <QColor>
 #include <QEvent>
@@ -9,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMessageBox>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QTextBlock>
@@ -207,6 +210,16 @@ void FfmpegOutputWidget::SetupUi() {
         QStringLiteral("QPlainTextEdit { color: %1; }").arg(QLatin1String(theme::color::kWarning)));
     output_tabs_->addTab(error_view_, tr("错误输出"));
 
+    // Tab 4: 转换图谱（输入 → 滤镜 → 编码 → 输出，逐字段标变化）
+    // 画布可能比可视区高（多音轨 / 多条字幕），所以放进滚动区：宁可滚动，
+    // 也不能把下面几行裁掉 —— 被裁掉的恰好可能是"字幕流被丢了"。
+    QScrollArea* graph_scroll = new QScrollArea(output_tabs_);
+    graph_scroll->setWidgetResizable(true);
+    graph_scroll->setFrameShape(QFrame::NoFrame);
+    change_graph_view_ = new FfmpegChangeGraphView(graph_scroll);
+    graph_scroll->setWidget(change_graph_view_);
+    output_tabs_->addTab(graph_scroll, tr("转换图谱"));
+
     // ---- 过滤栏 ----
     // 只在两个日志页签上有意义：命令解释页显示的是解析结果，没有"日志行"可过滤。
     // 隐藏而不是禁用，是因为禁用态的输入框会让人以为功能坏了。
@@ -238,7 +251,8 @@ void FfmpegOutputWidget::SetupUi() {
     layout->addWidget(output_tabs_, 1);
 
     connect(output_tabs_, &QTabWidget::currentChanged, this, [this](int index) {
-        filter_bar_->setVisible(index != 0);
+        // 命令解释（0）与转换图谱（3）都不是日志，没有"可过滤的行"。
+        filter_bar_->setVisible(index == 1 || index == 2);
         UpdateFilterCount();
         if (index != 0) {
             RefreshHighlights();
@@ -363,6 +377,7 @@ void FfmpegOutputWidget::ClearOutput() {
     progress_label_->setToolTip(ProgressHint());
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
+    ClearChangeGraph();
 }
 
 void FfmpegOutputWidget::PrepareForRun() {
@@ -387,7 +402,45 @@ void FfmpegOutputWidget::PrepareForRun() {
     progress_label_->setToolTip(ProgressHint());
     exit_code_label_->setText(tr("退出码: —"));
     elapsed_label_->setText(tr("耗时: —"));
+    // 新一轮：上一轮的图谱不能留在这儿冒充这次的结果
+    ClearChangeGraph();
     output_tabs_->setCurrentWidget(log_view_);
+}
+
+void FfmpegOutputWidget::ShowChangeGraphs(std::vector<ffmpeg::ChangeGraph> graphs) {
+    if (change_graph_view_ == nullptr) {
+        return;
+    }
+    change_graph_view_->SetGraphs(std::move(graphs));
+    if (output_tabs_ != nullptr && change_graph_view_->HasGraph()) {
+        output_tabs_->setTabToolTip(3, tr("这次运行改变了哪些内容（实测对比）"));
+    }
+}
+
+void FfmpegOutputWidget::SetChangeGraphStaleHint(const QString& text) {
+    if (change_graph_view_ != nullptr) {
+        change_graph_view_->SetStaleHint(text);
+    }
+}
+
+void FfmpegOutputWidget::ClearChangeGraph() {
+    if (change_graph_view_ != nullptr) {
+        change_graph_view_->Clear();
+    }
+    if (output_tabs_ != nullptr) {
+        output_tabs_->setTabToolTip(3, QString());
+    }
+}
+
+void FfmpegOutputWidget::FocusChangeGraphTab() {
+    if (change_graph_view_ == nullptr || !change_graph_view_->HasGraph() || output_tabs_ == nullptr) {
+        return;
+    }
+    // 用户正在看错误输出时不抢页面 —— 失败现场比"变了什么"更要紧。
+    if (output_tabs_->currentWidget() == error_view_) {
+        return;
+    }
+    output_tabs_->setCurrentWidget(output_tabs_->widget(3));
 }
 
 void FfmpegOutputWidget::AppendLog(const QString& text, bool is_error) {

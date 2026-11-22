@@ -14,9 +14,11 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QSet>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "core/ffmpeg/FfmpegChangeGraph.h"
 #include "core/ffmpeg/FfmpegCommandDraft.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
 #include "core/ffmpeg/FfmpegCommandPreflight.h"
@@ -42,6 +44,17 @@ FfmpegPanel::FfmpegPanel(QWidget* parent) : QWidget(parent) {
     connect(probe_runner_, &ffmpeg::FfmpegProcessRunner::OutputLine, this, &FfmpegPanel::OnProbeOutput);
     connect(probe_runner_, &ffmpeg::FfmpegProcessRunner::Finished, this, &FfmpegPanel::OnProbeFinished);
 
+    // 转换图谱的媒体探测：**独立的 runner**。与上面那轮能力探测共用会把「换程序时
+    // 整轮作废」的语义带过来，而这两件事互相不该牵连。
+    media_probe_runner_ = new ffmpeg::FfmpegProcessRunner(this);
+    connect(media_probe_runner_, &ffmpeg::FfmpegProcessRunner::OutputLine, this, &FfmpegPanel::OnMediaProbeOutput);
+    connect(media_probe_runner_, &ffmpeg::FfmpegProcessRunner::Finished, this, &FfmpegPanel::OnMediaProbeFinished);
+    // 网络流 / 坏文件的 -i 可能卡很久。10 秒还没读完文件头就当没探到 ——
+    // 图谱少一行，比界面挂在那儿强。
+    media_probe_timeout_ = new QTimer(this);
+    media_probe_timeout_->setSingleShot(true);
+    connect(media_probe_timeout_, &QTimer::timeout, this, &FfmpegPanel::OnMediaProbeTimeout);
+
     const QString saved = settings_.value(QStringLiteral("ffmpeg/toolPath")).toString();
     if (!saved.isEmpty()) {
         tool_path_edit_->setText(saved);
@@ -53,7 +66,10 @@ FfmpegPanel::FfmpegPanel(QWidget* parent) : QWidget(parent) {
     StartProbes();
 }
 
-FfmpegPanel::~FfmpegPanel() = default;
+FfmpegPanel::~FfmpegPanel() {
+    // 关页 / 退出时别把探测进程留在后台（它只是读文件头，直接停）
+    CancelMediaProbes();
+}
 
 // ===================== UI =====================
 
@@ -716,6 +732,15 @@ void FfmpegPanel::OnClearCommand() {
 
 void FfmpegPanel::OnCommandTextChanged() {
     RefreshExplanation();
+    // 图谱描述的永远是**上一次运行**。命令一改就得挂提醒，否则用户会把旧图当成
+    // 当前命令的效果 —— 这是这类"事后对比"最容易骗人的地方。
+    if (graph_arguments_.isEmpty()) {
+        return;
+    }
+    const auto parsed = ffmpeg::ParseCommandLine(command_edit_->text());
+    const bool same = parsed.status == ffmpeg::CommandParseStatus::Ok && parsed.arguments == graph_arguments_;
+    output_widget_->SetChangeGraphStaleHint(same ? QString()
+                                                 : tr("命令已改动：图上是上一次运行的结果，重新运行后更新"));
 }
 
 void FfmpegPanel::RefreshExplanation() {
@@ -935,6 +960,9 @@ void FfmpegPanel::OnRun() {
     current_arguments_ = exec_arguments;
     progress_.Reset();
     output_widget_->PrepareForRun();
+    // 排在 PrepareForRun 之后：它会清空图谱（新一轮不能留着上一轮的结果），
+    // 先排队的话，万一探测比清空先回来，那张刚画好的"工序预览"就被抹掉了。
+    BeginMediaProbeForRun(program);
     output_widget_->AppendLog(
         QStringLiteral("$ %1").arg(ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(program, exec_arguments)), false);
     if (overwrite_appended) {
@@ -1019,6 +1047,211 @@ void FfmpegPanel::OnRunFinished(const ffmpeg::FfmpegRunResult& result) {
     last_run_finished_ = result.status == ffmpeg::FfmpegRunStatus::Finished;
     last_outputs_ = ffmpeg::CollectRunOutputs(current_arguments_);
     RefreshResultActions();
+    // 产出逐个探一遍：图谱的"实测"一列只能这么来
+    QueueOutputMediaProbes();
+}
+
+// ===================== 转换图谱：媒体探测 =====================
+//
+// 这一节只干一件事：把「输入 / 每个输出到底是什么参数」问出来，交给
+// FfmpegChangeGraph 去对比。它**不参与**运行决策 —— 探测失败只让图谱少一列，
+// 命令照跑，日志照记。
+
+namespace {
+
+/// 命令里第一个 -i 的值。多输入命令的合并是另一件事（图谱按第一个输入画）。
+QString FirstInputTarget(const QStringList& arguments) {
+    const ffmpeg::FfmpegCommandStructure structure = ffmpeg::AnalyzeCommandStructure(arguments);
+    for (const ffmpeg::FfmpegArgPlacement& place : structure.args) {
+        if (place.role == ffmpeg::FfmpegArgRole::InputUrl) {
+            return arguments.at(place.index);
+        }
+    }
+    return QString();
+}
+
+/// 值不值得探：本地文件与 URL 可以（URL 会真连，所以有 10 秒看门狗）；
+/// `-f lavfi` 的虚拟源、`-`、`pipe:`、`concat:` 这类"不存在于磁盘"的目标不探 ——
+/// 探了也只会得到一句"文件不存在"，纯噪声。
+bool IsProbeableTarget(const QString& target) {
+    if (target.isEmpty()) {
+        return false;
+    }
+    if (ffmpeg::IsLocalPathTarget(target)) {
+        return true;
+    }
+    return target.contains(QLatin1String("://"));
+}
+
+} // namespace
+
+void FfmpegPanel::BeginMediaProbeForRun(const QString& program) {
+    CancelMediaProbes();
+    ++media_probe_generation_;
+    media_probe_program_ = program;
+    media_probe_timed_out_ = false;
+    input_probe_ = ffmpeg::MediaProbeSnapshot{};
+    output_probes_.clear();
+    probed_output_arguments_.clear();
+    graph_arguments_ = current_arguments_;
+
+    const QString input = FirstInputTarget(current_arguments_);
+    if (IsProbeableTarget(input)) {
+        media_probe_jobs_.push_back({input, true, -1});
+    }
+    if (media_probe_jobs_.empty()) {
+        return;
+    }
+    media_probe_cursor_ = 0;
+    RunNextMediaProbe();
+}
+
+void FfmpegPanel::QueueOutputMediaProbes() {
+    if (current_arguments_.isEmpty() || probed_output_arguments_ == current_arguments_) {
+        return; // 同一组参数只探一次（重跑才重新探）
+    }
+    probed_output_arguments_ = current_arguments_;
+
+    QStringList targets;
+    const ffmpeg::FfmpegCommandStructure structure = ffmpeg::AnalyzeCommandStructure(current_arguments_);
+    for (const ffmpeg::FfmpegArgPlacement& place : structure.args) {
+        if (place.role == ffmpeg::FfmpegArgRole::OutputUrl) {
+            targets << current_arguments_.at(place.index);
+        }
+    }
+    if (targets.isEmpty()) {
+        return;
+    }
+
+    // 与命令里的输出**同序**占位：BuildChangeGraphs 按下标取，缺一个就整列错位。
+    output_probes_.assign(static_cast<size_t>(targets.size()), ffmpeg::MediaProbeSnapshot{});
+    for (int i = 0; i < targets.size(); ++i) {
+        const QString target = targets.at(i);
+        ffmpeg::MediaProbeSnapshot& slot = output_probes_.at(static_cast<size_t>(i));
+        if (ffmpeg::HasSequencePattern(target)) {
+            // 图片序列没有"那一个文件"，逐字段对比无从谈起 —— 说明白，别画空节点。
+            slot.error = tr("图片序列（%1）没有单一成品文件，不做逐字段对比").arg(target);
+            continue;
+        }
+        if (!ffmpeg::IsLocalPathTarget(target)) {
+            slot.error = tr("输出不是本地文件（URL / 管道），没有可探测的成品");
+            continue;
+        }
+        if (!QFileInfo::exists(target)) {
+            slot.error = tr("命令声明了这个输出，但磁盘上没有产出");
+            continue;
+        }
+        media_probe_jobs_.push_back({target, false, i});
+    }
+    if (media_probe_jobs_.empty()) {
+        RefreshChangeGraph();
+        return;
+    }
+    media_probe_cursor_ = 0;
+    RunNextMediaProbe();
+}
+
+void FfmpegPanel::RunNextMediaProbe() {
+    if (media_probe_cursor_ >= media_probe_jobs_.size()) {
+        media_probe_buffer_.clear();
+        if (media_probe_timeout_ != nullptr) {
+            media_probe_timeout_->stop();
+        }
+        RefreshChangeGraph();
+        if (!output_probes_.empty()) {
+            // 实测齐了才切过去看一眼；「错误输出」页不动（见 FocusChangeGraphTab）
+            output_widget_->FocusChangeGraphTab();
+        }
+        return;
+    }
+    if (media_probe_program_.isEmpty() || media_probe_runner_ == nullptr) {
+        return;
+    }
+    const MediaProbeJob& job = media_probe_jobs_.at(media_probe_cursor_);
+    media_probe_buffer_.clear();
+    media_probe_timed_out_ = false;
+    media_probe_launch_generation_ = media_probe_generation_;
+    // 启动失败会走 Finished(StartError)，游标在那里推进，别在这儿再推一次。
+    if (media_probe_runner_->Start(media_probe_program_, ffmpeg::BuildMediaProbeArguments(job.path))) {
+        if (media_probe_timeout_ != nullptr) {
+            media_probe_timeout_->start(10000);
+        }
+    }
+}
+
+void FfmpegPanel::OnMediaProbeOutput(const QString& text, bool /*is_error*/) {
+    if (media_probe_launch_generation_ != media_probe_generation_) {
+        return; // 上一轮的残余输出
+    }
+    media_probe_buffer_ += text + QLatin1Char('\n');
+}
+
+void FfmpegPanel::OnMediaProbeFinished(const ffmpeg::FfmpegRunResult& result) {
+    if (media_probe_timeout_ != nullptr) {
+        media_probe_timeout_->stop();
+    }
+    if (media_probe_launch_generation_ != media_probe_generation_) {
+        media_probe_buffer_.clear();
+        return;
+    }
+    if (media_probe_cursor_ >= media_probe_jobs_.size()) {
+        return;
+    }
+    const MediaProbeJob job = media_probe_jobs_.at(media_probe_cursor_);
+
+    // ⚠️ `ffmpeg -i <file>` 恒定以退出码 1 结束（"At least one output file must be
+    // specified"），所以这里**不看** status == Failed；只看能不能解析出流信息。
+    ffmpeg::MediaProbeSnapshot snapshot = ffmpeg::ParseMediaProbe(media_probe_buffer_, job.path);
+    if (!snapshot.parsed) {
+        if (media_probe_timed_out_) {
+            snapshot.error = tr("探测超时（10 秒没读完文件头），这一项留空");
+        } else if (result.status == ffmpeg::FfmpegRunStatus::StartError) {
+            snapshot.error = result.error_message.isEmpty() ? tr("探测程序没能启动")
+                                                            : tr("探测程序没能启动：%1").arg(result.error_message);
+        }
+    }
+    ffmpeg::FillLocalFileFacts(&snapshot);
+
+    if (job.is_input) {
+        input_probe_ = snapshot;
+    } else if (job.output_index >= 0 && job.output_index < static_cast<int>(output_probes_.size())) {
+        output_probes_.at(static_cast<size_t>(job.output_index)) = snapshot;
+    }
+    ++media_probe_cursor_;
+    RunNextMediaProbe();
+}
+
+void FfmpegPanel::OnMediaProbeTimeout() {
+    media_probe_timed_out_ = true;
+    if (media_probe_runner_ != nullptr && media_probe_runner_->IsRunning()) {
+        // 探测没有输出文件要收尾 —— 直接终止，不用给优雅退出的时间
+        media_probe_runner_->Stop(0, 0);
+        return;
+    }
+    RunNextMediaProbe();
+}
+
+void FfmpegPanel::CancelMediaProbes() {
+    ++media_probe_generation_; // 在飞的回调一律作废
+    media_probe_jobs_.clear();
+    media_probe_cursor_ = 0;
+    media_probe_buffer_.clear();
+    if (media_probe_timeout_ != nullptr) {
+        media_probe_timeout_->stop();
+    }
+    if (media_probe_runner_ != nullptr && media_probe_runner_->IsRunning()) {
+        media_probe_runner_->Stop(0, 0);
+    }
+}
+
+void FfmpegPanel::RefreshChangeGraph() {
+    if (current_arguments_.isEmpty()) {
+        return;
+    }
+    std::vector<ffmpeg::ChangeGraph> graphs =
+        ffmpeg::BuildChangeGraphs(input_probe_, current_arguments_, output_probes_);
+    output_widget_->ShowChangeGraphs(std::move(graphs));
+    output_widget_->SetChangeGraphStaleHint(QString());
 }
 
 void FfmpegPanel::SetCurrentFile(const QString& path) {

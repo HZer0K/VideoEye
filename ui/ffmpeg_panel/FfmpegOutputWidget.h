@@ -34,6 +34,9 @@
 #include <QTabWidget>
 #include <QTextBrowser>
 
+#include <vector>
+
+#include "core/ffmpeg/FfmpegChangeGraph.h"
 #include "core/ffmpeg/FfmpegCommandExplainer.h"
 #include "core/ffmpeg/FfmpegProcessRunner.h"
 #include "core/ffmpeg/FfmpegProgressTracker.h"
@@ -42,6 +45,8 @@ class QTimer;
 
 namespace videoeye {
 namespace ui {
+
+class FfmpegChangeGraphView;
 
 class FfmpegOutputWidget : public QGroupBox {
     Q_OBJECT
@@ -71,6 +76,20 @@ public:
     /// 日志过滤：子串匹配、不区分大小写；空串 = 不过滤（视图按全量历史重建）。
     /// 只影响两个日志页签的**显示**，复制 / 保存拿到的仍是完整日志。
     void SetLogFilter(const QString& text);
+
+    // ---- 转换图谱页 ----
+    //
+    // 数据由页面探测后推进来：组件不跑 ffmpeg、也不判断"该不该探测"。
+    // 空图谱（graphs 为空）显示"跑一次命令后…"，而不是一张空画布。
+    void ShowChangeGraphs(std::vector<ffmpeg::ChangeGraph> graphs);
+    /// 命令被改过时挂一句提醒：图上是上一次运行的结果，不是当前命令的。
+    void SetChangeGraphStaleHint(const QString& text);
+    void ClearChangeGraph();
+    /// 图谱刚填好时切过去看一眼（失败时不抢「错误输出」页）。
+    void FocusChangeGraphTab();
+    FfmpegChangeGraphView* ChangeGraphView() const {
+        return change_graph_view_;
+    }
 
 signals:
     void StatusMessage(const QString& text);
@@ -106,8 +125,9 @@ private:
     QPushButton* copy_button_ = nullptr;
     QPushButton* save_button_ = nullptr;
 
-    // ---- 三个页签 ----
+    // ---- 四个页签 ----
     QTabWidget* output_tabs_ = nullptr;
+    FfmpegChangeGraphView* change_graph_view_ = nullptr;
     QListWidget* explain_list_ = nullptr;
     QTextBrowser* explain_detail_ = nullptr;
     QPlainTextEdit* log_view_ = nullptr;
