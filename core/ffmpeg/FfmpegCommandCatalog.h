@@ -15,6 +15,8 @@
 #include <QStringList>
 #include <vector>
 
+#include "core/ffmpeg/FfmpegToolKind.h"
+
 namespace videoeye {
 namespace ffmpeg {
 
@@ -27,6 +29,8 @@ enum class FfmpegEntryCategory {
     Video,           // 画面
     Audio,           // 音频
     Muxing,          // 封装
+    ProbeOutput,     // 信息输出（ffprobe 专有：-show_streams / -of …）
+    Playback,        // 播放控制（ffplay 专有：-autoexit / -x / -nodisp …）
 };
 
 enum class FfmpegEntryKind {
@@ -64,6 +68,14 @@ struct FfmpegCatalogEntry {
     /// 吞成"该选项的值"，最后误报"没有输出文件"。
     /// 放在最后：词条表是位置初始化，新增字段追加在末尾才不会挪动已有词条。
     bool value_may_start_with_dash = false;
+
+    /// 这个选项归哪些工具（FfmpegToolMask 位掩码）。
+    /// **0（kToolNone）= 没显式标注**：由 FfmpegCommandCatalog 按"通用选项表 + 默认 ffmpeg"
+    /// 推导。做成"不标就走推导"而不是"每条都标"，是因为词条表是**位置初始化**：
+    /// 66 条已有条目逐个补字段，只要有一条对不齐就会静默错位，而错位的后果是解释文案串行。
+    /// 新加的 ffprobe / ffplay 专有词条才显式写自己的工具。
+    /// 同样放在最后，理由同上。
+    unsigned tools = kToolNone;
 };
 
 // `ffmpeg -formats` 的两张清单。**必须分开存**：D 是"能读"（解复用 / demuxer），
@@ -116,6 +128,22 @@ public:
         return muxers_.size();
     }
 
+    /// 完整清单，供**输入补全**列候选用（"能写成什么样"）。
+    /// 判断"这份 ffmpeg 到底支不支持某个值"仍然只走 HasXxx —— 两者语义不同：
+    /// 清单里有不代表该参数在这个位置可用，Has 里也没有"方向"信息。
+    const QStringList& Encoders() const {
+        return encoders_;
+    }
+    const QStringList& Filters() const {
+        return filters_;
+    }
+    const QStringList& Demuxers() const {
+        return demuxers_;
+    }
+    const QStringList& Muxers() const {
+        return muxers_;
+    }
+
     void Clear();
 
 private:
@@ -136,6 +164,18 @@ public:
 
     /// 按名字精确查找（"-crf" / "scale"）
     static const FfmpegCatalogEntry* Find(const QString& name);
+
+    /// 按工具查找：只返回 tools 掩码含该工具的条目。kind == Unknown 时返回全部
+    /// （"+ 省略程序名"的写法在工具定下来之前不该丢掉任何候选）。
+    static std::vector<const FfmpegCatalogEntry*> EntriesFor(FfmpegToolKind kind);
+
+    /// 按名字精确查找，且这条必须归该工具。
+    /// 找不到 / 名字属于别的工具都返回 nullptr —— 调用方据此说"这个参数 ffprobe 没有"。
+    /// kind == Unknown 时等价于 Find(name)。
+    static const FfmpegCatalogEntry* Find(const QString& name, FfmpegToolKind kind);
+
+    /// 这条词条能不能被该工具使用（掩码判据的唯一出口）。
+    static bool IsAvailableTo(const FfmpegCatalogEntry& entry, FfmpegToolKind kind);
 
     /// 分类显示名
     static QString CategoryName(FfmpegEntryCategory category);

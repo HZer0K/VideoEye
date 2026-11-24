@@ -147,15 +147,7 @@ const InfoOption kInfoOptions[] = {
 } // namespace
 
 bool LooksLikeFfmpegProgram(const QString& token) {
-    if (token.isEmpty()) {
-        return false;
-    }
-    const QString base = QFileInfo(token).fileName();
-    QString name = base;
-    if (name.endsWith(QLatin1String(".exe"), Qt::CaseInsensitive)) {
-        name.chop(4);
-    }
-    return name.compare(QLatin1String("ffmpeg"), Qt::CaseInsensitive) == 0;
+    return ClassifyProgramToken(token) == FfmpegToolKind::Ffmpeg;
 }
 
 bool IsExplicitProgramPath(const QString& token) {
@@ -259,20 +251,23 @@ ParsedCommand ParseCommandLine(const QString& text) {
         return result;
     }
 
-    // 程序名: 是 ffmpeg → 丢掉（实际执行的是设置里那个 ffmpeg）; 以 '-' 开头 → 用户省略了程序名。
+    // 程序名: 是三个 FFmpeg 工具之一 → 丢掉并记下是哪个（实际执行的是设置里对应的那个程序）;
+    // 以 '-' 开头 → 用户省略了程序名，由调用方决定落到哪个工具上。
     int arg_start = 0;
     const QString& first = tokens.front();
-    if (LooksLikeFfmpegProgram(first)) {
+    const FfmpegToolKind kind = ClassifyProgramToken(first);
+    if (kind != FfmpegToolKind::Unknown) {
         result.program_token = first;
         result.program_is_path = IsExplicitProgramPath(first);
+        result.tool_kind = kind;
         arg_start = 1;
     } else if (first.startsWith(QLatin1Char('-'))) {
         arg_start = 0;
     } else {
         result.status = CommandParseStatus::UnsupportedProgram;
-        result.message = QStringLiteral("第一个参数是「%1」，不是 ffmpeg。\n"
-                                        "命令工作台只执行 ffmpeg 命令（可写 ffmpeg、ffmpeg.exe 或它的完整路径，"
-                                        "也可以直接省略程序名从 -i 开始写）。")
+        result.message = QStringLiteral("第一个参数是「%1」，不是 ffmpeg / ffprobe / ffplay。\n"
+                                        "命令工作台只执行这三个程序（可写程序名、带 .exe 的文件名，"
+                                        "或它们的完整路径；也可以直接省略程序名，从选项开始写）。")
                              .arg(first);
         return result;
     }

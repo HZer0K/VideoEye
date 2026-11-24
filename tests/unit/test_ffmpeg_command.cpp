@@ -26,6 +26,7 @@
 namespace {
 
 using videoeye::ffmpeg::AnalyzeCommandStructure;
+using videoeye::ffmpeg::ClassifyProgramToken;
 using videoeye::ffmpeg::CommandParseStatus;
 using videoeye::ffmpeg::ComposeInsertion;
 using videoeye::ffmpeg::DefaultOutputPath;
@@ -38,6 +39,7 @@ using videoeye::ffmpeg::FfmpegCommandCatalog;
 using videoeye::ffmpeg::FfmpegCommandExplainer;
 using videoeye::ffmpeg::FfmpegCommandExplanation;
 using videoeye::ffmpeg::FfmpegCommandHistory;
+using videoeye::ffmpeg::FfmpegEntryCategory;
 using videoeye::ffmpeg::FfmpegEntryKind;
 using videoeye::ffmpeg::FfmpegFormatLists;
 using videoeye::ffmpeg::FfmpegInstallGuide;
@@ -46,6 +48,7 @@ using videoeye::ffmpeg::FfmpegProgressTracker;
 using videoeye::ffmpeg::FfmpegTokenExplanation;
 using videoeye::ffmpeg::FfmpegTokenRole;
 using videoeye::ffmpeg::FfmpegToolInfo;
+using videoeye::ffmpeg::FfmpegToolKind;
 using videoeye::ffmpeg::FfmpegToolLocator;
 using videoeye::ffmpeg::FormatByteSize;
 using videoeye::ffmpeg::FormatProgressClock;
@@ -117,6 +120,101 @@ TEST(FfmpegCommandParser, AcceptsFullPathToFfmpeg) {
     EXPECT_EQ(parsed.arguments.at(0), QStringLiteral("-i"));
 }
 
+TEST(FfmpegToolKind, ClassifiesTheThreeFfmpegTools) {
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("ffmpeg")), FfmpegToolKind::Ffmpeg);
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("ffprobe")), FfmpegToolKind::Ffprobe);
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("ffplay")), FfmpegToolKind::Ffplay);
+
+    // 带后缀 / 带路径 / 大小写不同，都是同一个程序
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("FFPROBE.EXE")), FfmpegToolKind::Ffprobe);
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("C:/tools/ffmpeg-8.1/bin/ffplay.exe")), FfmpegToolKind::Ffplay);
+
+    // 选项、别的程序、空串都不算
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("-i")), FfmpegToolKind::Unknown);
+    EXPECT_EQ(ClassifyProgramToken(QStringLiteral("ffmpeg-probe")), FfmpegToolKind::Unknown);
+    EXPECT_EQ(ClassifyProgramToken(QString()), FfmpegToolKind::Unknown);
+
+    // LooksLikeFfmpegProgram 的语义收窄成"就是 ffmpeg"，不能被 ffprobe 带偏
+    EXPECT_TRUE(LooksLikeFfmpegProgram(QStringLiteral("ffmpeg")));
+    EXPECT_FALSE(LooksLikeFfmpegProgram(QStringLiteral("ffprobe")));
+}
+
+TEST(FfmpegCommandParser, ParsesFfprobeAndFfplayCommands) {
+    // ffprobe / ffplay 的第一个词同样是程序名，要丢掉并记住是哪个工具
+    const auto probe = ParseCommandLine(QStringLiteral("ffprobe -show_streams \"D:/素材/a.mp4\""));
+    ASSERT_EQ(probe.status, CommandParseStatus::Ok);
+    EXPECT_EQ(probe.tool_kind, FfmpegToolKind::Ffprobe);
+    EXPECT_EQ(probe.program_token, QStringLiteral("ffprobe"));
+    EXPECT_FALSE(probe.program_is_path);
+    ASSERT_EQ(probe.arguments.size(), 2);
+    EXPECT_EQ(probe.arguments.at(0), QStringLiteral("-show_streams"));
+    EXPECT_EQ(probe.arguments.at(1), QStringLiteral("D:/素材/a.mp4"));
+
+    const auto play = ParseCommandLine(QStringLiteral("ffplay -autoexit a.mp4"));
+    ASSERT_EQ(play.status, CommandParseStatus::Ok);
+    EXPECT_EQ(play.tool_kind, FfmpegToolKind::Ffplay);
+    EXPECT_EQ(ToStdList(play.arguments), std::vector<std::string>({"-autoexit", "a.mp4"}));
+
+    // 省略程序名时工具种类未知 —— 由调用方决定落到哪个工具上
+    const auto bare = ParseCommandLine(QStringLiteral("-version"));
+    ASSERT_EQ(bare.status, CommandParseStatus::Ok);
+    EXPECT_EQ(bare.tool_kind, FfmpegToolKind::Unknown);
+}
+
+TEST(FfmpegCommandCatalog, ScopesEntriesToTheRightTool) {
+    // 通用选项：三个工具都认
+    EXPECT_NE(FfmpegCommandCatalog::Find(QStringLiteral("-hide_banner"), FfmpegToolKind::Ffplay), nullptr);
+    EXPECT_NE(FfmpegCommandCatalog::Find(QStringLiteral("-hide_banner"), FfmpegToolKind::Ffprobe), nullptr);
+
+    // -i 只有 ffmpeg / ffprobe 有：ffplay 把文件直接写在裸参数位
+    EXPECT_NE(FfmpegCommandCatalog::Find(QStringLiteral("-i"), FfmpegToolKind::Ffprobe), nullptr);
+    EXPECT_EQ(FfmpegCommandCatalog::Find(QStringLiteral("-i"), FfmpegToolKind::Ffplay), nullptr);
+
+    // 输出编码选项不该出现在 ffprobe / ffplay 的候选里
+    EXPECT_EQ(FfmpegCommandCatalog::Find(QStringLiteral("-crf"), FfmpegToolKind::Ffprobe), nullptr);
+    EXPECT_EQ(FfmpegCommandCatalog::Find(QStringLiteral("-crf"), FfmpegToolKind::Ffplay), nullptr);
+
+    // ffprobe 专有选项反方向也不该漏到 ffmpeg 里
+    ASSERT_NE(FfmpegCommandCatalog::Find(QStringLiteral("-show_streams"), FfmpegToolKind::Ffprobe), nullptr);
+    EXPECT_EQ(FfmpegCommandCatalog::Find(QStringLiteral("-show_streams"), FfmpegToolKind::Ffmpeg), nullptr);
+
+    // 不指定工具时仍是全字典（历史行为不变，解释器和字典页都靠它）
+    EXPECT_NE(FfmpegCommandCatalog::Find(QStringLiteral("-show_streams")), nullptr);
+}
+
+TEST(FfmpegCommandCatalog, ResolvesSameNameOptionsPerTool) {
+    // -y 在 ffmpeg 里是"覆盖输出"，在 ffplay 里是"窗口高度" —— 同名不同义。
+    // 这就是 Find(name, tool) 必须遍历到底、不能先取第一条的原因。
+    const FfmpegCatalogEntry* ffmpeg_y = FfmpegCommandCatalog::Find(QStringLiteral("-y"), FfmpegToolKind::Ffmpeg);
+    const FfmpegCatalogEntry* ffplay_y = FfmpegCommandCatalog::Find(QStringLiteral("-y"), FfmpegToolKind::Ffplay);
+    ASSERT_NE(ffmpeg_y, nullptr);
+    ASSERT_NE(ffplay_y, nullptr);
+    EXPECT_NE(ffmpeg_y, ffplay_y);
+    EXPECT_EQ(ffmpeg_y->category, FfmpegEntryCategory::Global);
+    EXPECT_EQ(ffplay_y->category, FfmpegEntryCategory::Playback);
+    EXPECT_FALSE(ffmpeg_y->takes_value); // ffmpeg 的 -y 是开关
+    EXPECT_TRUE(ffplay_y->takes_value);  // ffplay 的 -y 要一个高度
+}
+
+TEST(FfmpegCommandCatalog, EntriesForFiltersByTool) {
+    const auto probe_entries = FfmpegCommandCatalog::EntriesFor(FfmpegToolKind::Ffprobe);
+    bool has_show_streams = false;
+    bool has_crf = false;
+    for (const FfmpegCatalogEntry* entry : probe_entries) {
+        if (entry->name == QLatin1String("-show_streams")) {
+            has_show_streams = true;
+        }
+        if (entry->name == QLatin1String("-crf")) {
+            has_crf = true;
+        }
+    }
+    EXPECT_TRUE(has_show_streams);
+    EXPECT_FALSE(has_crf);
+
+    // Unknown 不做筛选：工具还没定下来时不能把候选砍掉
+    EXPECT_EQ(FfmpegCommandCatalog::EntriesFor(FfmpegToolKind::Unknown).size(), FfmpegCommandCatalog::Entries().size());
+}
+
 TEST(FfmpegCommandParser, MarksExplicitProgramPath) {
     // 命令里写了完整路径就必须**真的执行它**（原生命令行的直觉）；
     // 只写裸的 "ffmpeg" 才用页面设置里那个程序。
@@ -182,8 +280,11 @@ TEST(FfmpegCommandParser, RejectsShellOperators) {
 }
 
 TEST(FfmpegCommandParser, RejectsForeignProgramAndEmptyInput) {
-    const auto other = ParseCommandLine(QStringLiteral("ffprobe -i in.mp4"));
+    // ffprobe / ffplay 现在是合法程序（本页支持三个 FFmpeg 工具），
+    // 所以"外来程序"要拿真正不相干的程序来验。
+    const auto other = ParseCommandLine(QStringLiteral("vlc in.mp4"));
     EXPECT_EQ(other.status, CommandParseStatus::UnsupportedProgram);
+    EXPECT_FALSE(other.message.isEmpty());
 
     const auto empty = ParseCommandLine(QStringLiteral("   "));
     EXPECT_EQ(empty.status, CommandParseStatus::Empty);
@@ -708,6 +809,43 @@ TEST(FfmpegToolLocator, MissingToolIsReportedAsMissing) {
     }
 }
 
+TEST(FfmpegToolLocator, FindsEachToolUnderItsOwnName) {
+    // 一个目录里只有 ffprobe.exe：找 ffprobe 要命中，找 ffmpeg 不能张冠李戴。
+    // Windows 上 IsExecutable 只按后缀认，所以这里用空文件就能造出"可执行程序"。
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString probe_path = dir.filePath(QStringLiteral("ffprobe.exe"));
+    QFile probe_file(probe_path);
+    ASSERT_TRUE(probe_file.open(QIODevice::WriteOnly));
+    probe_file.close();
+
+    const QString found_probe = FfmpegToolLocator::FindInDirectory(dir.path(), FfmpegToolKind::Ffprobe);
+    EXPECT_FALSE(found_probe.isEmpty());
+    EXPECT_TRUE(found_probe.endsWith(QStringLiteral("ffprobe.exe"))) << found_probe.toStdString();
+
+    // 默认重载找的是 ffmpeg —— 这个目录里没有它
+    EXPECT_TRUE(FfmpegToolLocator::FindInDirectory(dir.path()).isEmpty());
+    EXPECT_TRUE(FfmpegToolLocator::FindInDirectory(dir.path(), FfmpegToolKind::Ffplay).isEmpty());
+}
+
+TEST(FfmpegToolLocator, UnknownToolResolvesToNothing) {
+    // Unknown 没有可找的东西：不能顺手退回 ffmpeg，否则界面会显示"找到了"却跑错程序
+    const FfmpegToolInfo info = FfmpegToolLocator::Resolve(QString(), FfmpegToolKind::Unknown);
+    EXPECT_FALSE(info.exists);
+    EXPECT_TRUE(info.path.isEmpty());
+}
+
+TEST(FfmpegToolLocator, ParsesVersionLineForEveryTool) {
+    EXPECT_EQ(FfmpegToolLocator::ParseVersionLine(
+                  QStringLiteral("ffmpeg version 8.1.2-full_build-www.gyan.dev Copyright (c) 2000-2025")),
+              QStringLiteral("8.1.2-full_build-www.gyan.dev"));
+    EXPECT_EQ(
+        FfmpegToolLocator::ParseVersionLine(QStringLiteral("ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023")),
+        QStringLiteral("6.1.1-3ubuntu5"));
+    EXPECT_EQ(FfmpegToolLocator::ParseVersionLine(QStringLiteral("ffplay version 7.0 Copyright (c) 2003-2024")),
+              QStringLiteral("7.0"));
+}
+
 TEST(FfmpegToolLocator, InstallGuideIsActionable) {
     const FfmpegInstallGuide guide = FfmpegToolLocator::InstallGuide();
     EXPECT_FALSE(guide.platform.isEmpty());
@@ -819,6 +957,41 @@ TEST(FfmpegCommandExplainer, InformationOptionsAreNotCalledUnknown) {
     ASSERT_FALSE(result.tokens.empty());
     EXPECT_TRUE(result.tokens.front().known);
     EXPECT_NE(result.tokens.front().role, FfmpegTokenRole::UnknownOption);
+}
+
+TEST(FfmpegCommandExplainer, ExplainsFfprobeWithItsOwnStructure) {
+    const auto result = FfmpegCommandExplainer::Explain({QStringLiteral("-show_streams"), QStringLiteral("in.mp4")},
+                                                        FfmpegToolKind::Ffprobe);
+
+    EXPECT_TRUE(result.has_input);
+    EXPECT_EQ(result.input_count, 1);
+    EXPECT_FALSE(result.has_output);
+    // 关键：不能在提醒里说"没有输出文件" —— ffprobe 本来就不产出文件
+    for (const QString& note : result.notes) {
+        EXPECT_FALSE(note.contains(QStringLiteral("没有输出文件"))) << note.toStdString();
+    }
+    ASSERT_EQ(result.tokens.size(), 2u);
+    EXPECT_EQ(result.tokens.at(0).role, FfmpegTokenRole::KnownOption);
+    EXPECT_EQ(result.tokens.at(0).role_label, QStringLiteral("显示流信息"));
+    EXPECT_EQ(result.tokens.at(1).role, FfmpegTokenRole::InputFile);
+}
+
+TEST(FfmpegCommandExplainer, FfplayYIsExplainedAsWindowHeight) {
+    // 同名不同义：按 ffplay 解释 -y 必须说"窗口高度"，不能沿用 ffmpeg 的"覆盖输出"
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-y"), QStringLiteral("720"), QStringLiteral("in.mp4")}, FfmpegToolKind::Ffplay);
+    ASSERT_FALSE(result.tokens.empty());
+    EXPECT_EQ(result.tokens.front().role_label, QStringLiteral("窗口高度（ffplay）"));
+    EXPECT_EQ(result.tokens.front().value, QStringLiteral("720"));
+}
+
+TEST(FfmpegCommandExplainer, FfprobeDoesNotBorrowFfmpegEncodingOptions) {
+    // -crf 是 ffmpeg 的输出编码选项，ffprobe 里没有 —— 必须如实说"不认识"，
+    // 而不是把 ffmpeg 的词条解释贴上来。
+    const auto result = FfmpegCommandExplainer::Explain(
+        {QStringLiteral("-crf"), QStringLiteral("23"), QStringLiteral("in.mp4")}, FfmpegToolKind::Ffprobe);
+    ASSERT_FALSE(result.tokens.empty());
+    EXPECT_EQ(result.tokens.front().role, FfmpegTokenRole::UnknownOption);
 }
 
 TEST(FfmpegCommandCatalog, CoversStreamCopyAndMuxOptions) {

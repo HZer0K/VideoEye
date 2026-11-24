@@ -30,6 +30,14 @@ struct FfmpegCommandWord {
 /// 引号未闭合时，词一直延续到行尾（不报错 —— 报错是解析器的活）。
 std::vector<FfmpegCommandWord> SplitCommandWords(const QString& text);
 
+/// 这个词是不是一个选项名（`-crf` 是；单独的 `-` 是标准输出，不是；
+/// `-0:d` 是给 -map 用的流说明符，也不是）。切词 / 折行 / 输入补全共用这一条判据。
+bool IsOptionWord(const QString& word);
+
+/// 词里的选项名：去掉引号、去掉 `=值` 后缀（`-map=0:v` → `-map`）。
+/// 不是选项时返回空串。查字典一律用它，别自己截。
+QString OptionNameOf(const QString& word);
+
 /// 单行命令 → 多行排版：程序名一行，之后每个「选项 + 它的值」一行，
 /// 裸的参数（输入 / 输出路径）各自一行。
 /// 只影响显示，不改任何字符（引号原样保留）。

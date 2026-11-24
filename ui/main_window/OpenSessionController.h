@@ -27,6 +27,7 @@ namespace videoeye {
 namespace ui {
 
 class AnalysisPanel;
+class ConversionPanel;
 class FfmpegPanel;
 class MediaInfoCoordinator;
 class OverviewPage;
@@ -41,7 +42,8 @@ public:
         player::MediaPlayer* player = nullptr;
         PlayerPanel* player_panel = nullptr;
         AnalysisPanel* analysis_panel = nullptr;
-        FfmpegPanel* ffmpeg_panel = nullptr; // 可为 null（面板未创建）
+        FfmpegPanel* ffmpeg_panel = nullptr;         // 可为 null（面板未创建）
+        ConversionPanel* conversion_panel = nullptr; // 可为 null；只用它的"用当前媒体"
         OverviewPage* overview_page = nullptr;
         MediaInfoCoordinator* media_info = nullptr;
         // 打开 PCM 前的参数弹窗（demuxer / 采样率 / 声道）。未注入时视为用户取消。

@@ -1,6 +1,7 @@
 #include "ui/main_window/MainWindow.h"
 #include "infrastructure/logging/Logger.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "ui/conversion_panel/ConversionPanel.h"
 #include "ui/dialogs/FormatSupportDialog.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/ElidedLabel.h"
@@ -399,6 +400,23 @@ void MainWindow::SetupContentArea() {
     repair_scroll->setProperty("pageScope", QString());
     content_stack_->addWidget(repair_scroll);
 
+    // Page N+2: 格式转换
+    // 与工作台/修复页同属"报告与工具"分组。这一页是**任务级**入口（选容器与编码，
+    // 命令由 core/ffmpeg 拼），工作台是命令级入口，两者刻意不重复。
+    // 页面自然高度同样大于内容区常见高度，套 QScrollArea 保住分组框的自然尺寸。
+    conversion_panel_ = new ui::ConversionPanel();
+    QScrollArea* conversion_scroll = new QScrollArea(content_stack_);
+    conversion_scroll->setObjectName("ConversionScroll");
+    conversion_scroll->setWidgetResizable(true);
+    conversion_scroll->setFrameShape(QFrame::NoFrame);
+    conversion_scroll->setWidget(conversion_panel_);
+    conversion_scroll->setProperty("pageTitle", tr("格式转换"));
+    conversion_scroll->setProperty("pageId", QStringLiteral("format_conversion"));
+    conversion_scroll->setProperty("pageGroup", QStringLiteral("report_tools"));
+    conversion_scroll->setProperty("pageOrder", 3);
+    conversion_scroll->setProperty("pageScope", QString());
+    content_stack_->addWidget(conversion_scroll);
+
     // 页面全部注册完毕后才生成侧边栏条目，保证行号 == stack 下标
     PopulateSidebarItems();
 
@@ -557,6 +575,7 @@ void MainWindow::SetupOpenSession() {
     deps.player_panel = player_panel_;
     deps.analysis_panel = analysis_panel_;
     deps.ffmpeg_panel = ffmpeg_panel_;
+    deps.conversion_panel = conversion_panel_;
     deps.overview_page = overview_page_;
     deps.media_info = media_info_coordinator_.get();
     // PCM 参数弹窗是 UI 交互 (QInputDialog), 留在本窗口 —— 控制器不认识对话框。
@@ -722,6 +741,16 @@ void MainWindow::SetupConnections() {
     // FFmpeg 页跑完想直接看结果：走和菜单同一个入口（OpenMedia），
     // 不在这里另写一套换源逻辑 —— 换源复位、异步收尾都在 OpenSessionController 里。
     connect(ffmpeg_panel_, &ui::FfmpegPanel::OpenMediaRequested, this, [this](const QString& path) {
+        if (!OpenMedia(path, true) && statusBar()) {
+            statusBar()->showMessage(tr("打不开这个文件: %1").arg(path), 8000);
+        }
+    });
+    connect(conversion_panel_, &ui::ConversionPanel::StatusMessage, this, [this](const QString& text) {
+        if (statusBar())
+            statusBar()->showMessage(text);
+    });
+    // 转换完成后直接看结果：与工作台走同一个入口（OpenMedia），不另写换源逻辑。
+    connect(conversion_panel_, &ui::ConversionPanel::OpenMediaRequested, this, [this](const QString& path) {
         if (!OpenMedia(path, true) && statusBar()) {
             statusBar()->showMessage(tr("打不开这个文件: %1").arg(path), 8000);
         }
@@ -1025,6 +1054,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     // FFmpeg 工作台在跑转码时，直接关窗只会走到执行器的析构（kill），产出缺 moov box。
     // 这里拦一道，让页面自己问清楚并同步停干净；用户取消就整个不关。
     if (ffmpeg_panel_ != nullptr && !ffmpeg_panel_->ConfirmShutdown()) {
+        event->ignore();
+        return;
+    }
+    // 格式转换页同理：正在写 moov 的时候关窗，产物会变成打不开的文件。
+    if (conversion_panel_ != nullptr && !conversion_panel_->ConfirmShutdown()) {
         event->ignore();
         return;
     }

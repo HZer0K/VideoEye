@@ -40,8 +40,9 @@ class QTimer;
 namespace videoeye {
 namespace ui {
 
-class FfmpegDictionaryWidget; // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
-class FfmpegOutputWidget;     // 前向声明：输出与解释区 (见 FfmpegOutputWidget.{h,cpp})
+class FfmpegDictionaryWidget;   // 前向声明：指令字典区 (见 FfmpegDictionaryWidget.{h,cpp})
+class FfmpegOutputWidget;       // 前向声明：输出与解释区 (见 FfmpegOutputWidget.{h,cpp})
+class FfmpegCommandInputAssist; // 前向声明：命令框的实时解释与补全 (见 FfmpegCommandInputAssist.{h,cpp})
 
 class FfmpegPanel : public QWidget {
     Q_OBJECT
@@ -161,6 +162,9 @@ private:
 
     // ---- 命令区 ----
     QLineEdit* command_edit_ = nullptr;
+    // 输入框的实时解释 / 补全：光标停在哪就说明哪个参数、并按前缀给候选。
+    // 逻辑全在 core/ffmpeg/FfmpegCommandInputHint，组件只管排版与键盘。
+    FfmpegCommandInputAssist* input_assist_ = nullptr;
     QPushButton* insert_input_button_ = nullptr;
     QPushButton* insert_output_button_ = nullptr;
     QPushButton* templates_button_ = nullptr; // 「模板…」：场景级的一整条命令
@@ -231,6 +235,9 @@ private:
     QStringList probed_output_arguments_;
     /// 本次运行的参数。停止时要用它判断能不能靠写 q 让 ffmpeg 优雅收尾。
     QStringList current_arguments_;
+    /// 本次运行交给哪个工具。停止策略与文案按它分：
+    /// ffmpeg 可以靠 stdin 的 q 收尾，ffprobe / ffplay 不读 stdin，只能直接终止。
+    ffmpeg::FfmpegToolKind current_tool_ = ffmpeg::FfmpegToolKind::Ffmpeg;
     /// 上一次运行期间从 stderr 读到的进度（Duration + time=）
     ffmpeg::FfmpegProgressTracker progress_;
     /// ↑/↓ 翻阅用；内容存进 QSettings("ffmpeg/history")

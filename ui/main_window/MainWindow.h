@@ -29,6 +29,7 @@ namespace ui {
 // 以前每个碰主窗口的 TU 都会顺带编进分析面板整棵页面头树、播放面板与
 // FFmpeg 工作台，编译图白白变大。
 class AnalysisPanel;
+class ConversionPanel;
 class ExportCoordinator;
 class FfmpegPanel;
 class MediaInfoCoordinator;
@@ -147,6 +148,9 @@ protected:
 
     // 视频修复页 (诊断 -> 计划 -> 执行 -> 验证 -> 报告; 同样不依赖已打开媒体)
     ui::RepairPanel* repair_panel_ = nullptr;
+
+    // 格式转换页 (容器/编码/质量 → ffmpeg 命令; 不依赖已打开媒体)
+    ui::ConversionPanel* conversion_panel_ = nullptr;
 
     // 导出协调器: 三个导出入口 + 十条播放器导出信号接线 (构造时自连), 菜单动作
     // 接收者就是它。对话框 parent 与状态查询在构造时注入; 查询 lambda 读本窗口

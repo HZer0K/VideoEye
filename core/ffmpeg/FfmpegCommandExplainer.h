@@ -19,6 +19,8 @@
 #include <QStringList>
 #include <vector>
 
+#include "core/ffmpeg/FfmpegToolKind.h"
+
 namespace videoeye {
 namespace ffmpeg {
 
@@ -60,7 +62,13 @@ struct FfmpegCommandExplanation {
 
 class FfmpegCommandExplainer {
 public:
+    /// 按 ffmpeg 的语法解释（历史行为，等价于 Explain(arguments, FfmpegToolKind::Ffmpeg)）。
     static FfmpegCommandExplanation Explain(const QStringList& arguments);
+
+    /// 按指定工具的语法解释。
+    /// ffprobe / ffplay 没有输出文件、也不要求 -i —— 裸参数就是输入媒体。
+    /// 拿 ffmpeg 的"输入组 / 输出组"结构去套，会把输入判成"没有输出文件"。
+    static FfmpegCommandExplanation Explain(const QStringList& arguments, FfmpegToolKind kind);
 };
 
 } // namespace ffmpeg

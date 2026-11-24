@@ -15,6 +15,8 @@
 #include <QStringList>
 #include <vector>
 
+#include "core/ffmpeg/FfmpegToolKind.h"
+
 namespace videoeye {
 namespace ffmpeg {
 
@@ -23,7 +25,7 @@ enum class CommandParseStatus {
     Empty,             // 空命令
     UnterminatedQuote, // 引号没闭合
     ShellOperator,     // 出现了 | && || ; > < 等 shell 操作符
-    UnsupportedProgram // 第一个 token 不是 ffmpeg
+    UnsupportedProgram // 第一个 token 不是 ffmpeg / ffprobe / ffplay
 };
 
 struct ParsedCommand {
@@ -31,17 +33,25 @@ struct ParsedCommand {
     QString message;              // 失败时给用户的说明（成功时为空）
     QString program_token;        // 命令里写的可执行程序 token（可能是 "ffmpeg" 或完整路径）
     bool program_is_path = false; // program_token 是一个路径（而不是裸的 "ffmpeg"）
-    QStringList arguments;        // 传给 ffmpeg 的参数，不含程序本身
+    /// 这条命令要交给哪个程序执行。
+    /// Unknown 有两种情况：省略了程序名（第一个 token 就是选项），或者还没开始写。
+    /// 调用方必须自己决定 Unknown 落到哪个工具上（本页默认 ffmpeg）。
+    FfmpegToolKind tool_kind = FfmpegToolKind::Unknown;
+    /// 传给该工具的参数，不含程序本身。
+    QStringList arguments;
 };
 
 /// 解析一行命令文本。
-/// 允许三种写法:
+/// 允许这些写法（三种工具都适用）:
 ///   C:/tools/ffmpeg.exe -i in.mp4 out.mp4   （完整路径 —— 用它，不用设置里那个）
 ///   ffmpeg -i in.mp4 out.mp4                （裸程序名 —— 用设置里那个 ffmpeg）
 ///   -i in.mp4 out.mp4                       （省略程序名 —— 同上）
+///   ffprobe -show_streams in.mp4
+///   ffplay -autoexit in.mp4
 ParsedCommand ParseCommandLine(const QString& text);
 
 /// 判断 token 是否"看起来像 ffmpeg 可执行程序"（文件名去掉 .exe 后等于 ffmpeg）。
+/// 只回答"是不是 ffmpeg"；要判"是哪个 FFmpeg 工具"请用 ClassifyProgramToken。
 bool LooksLikeFfmpegProgram(const QString& token);
 
 /// 判断 token 是否是一个**显式路径**（含 / 或 \，或 ./ ../ 开头）。

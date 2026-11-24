@@ -277,7 +277,10 @@ void FfmpegOutputWidget::RefreshExplanation(const QString& command_text) {
         return;
     }
 
-    explanation_ = ffmpeg::FfmpegCommandExplainer::Explain(parsed.arguments);
+    // 省略程序名时按 ffmpeg 解释 —— 和运行时同一条口径，避免"解释说的"和"跑的"不是一回事。
+    const ffmpeg::FfmpegToolKind tool =
+        parsed.tool_kind == ffmpeg::FfmpegToolKind::Unknown ? ffmpeg::FfmpegToolKind::Ffmpeg : parsed.tool_kind;
+    explanation_ = ffmpeg::FfmpegCommandExplainer::Explain(parsed.arguments, tool);
 
     explain_list_->blockSignals(true);
     for (const auto& item : explanation_.tokens) {

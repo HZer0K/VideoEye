@@ -26,6 +26,7 @@
 #include "core/ffmpeg/FfmpegRunOutputs.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
 #include "ui/ffmpeg_panel/FfmpegCommandEditorDialog.h"
+#include "ui/ffmpeg_panel/FfmpegCommandInputAssist.h"
 #include "ui/ffmpeg_panel/FfmpegDictionaryWidget.h"
 #include "ui/ffmpeg_panel/FfmpegOutputWidget.h"
 #include "ui/theme/AppTheme.h"
@@ -161,7 +162,7 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     command_edit_ = new QLineEdit(box);
     command_edit_->setFont(theme::font::monoFont(9));
     command_edit_->setPlaceholderText(
-        tr("ffmpeg -i \"输入.mp4\" -c:v libx264 -crf 23 输出.mp4   （回车运行，↑↓ 翻历史）"));
+        tr("ffmpeg -i \"输入.mp4\" -c:v libx264 -crf 23 输出.mp4   （回车运行，Tab 看下一个参数，↑↓ 翻历史）"));
     command_edit_->setToolTip(tr("只支持单独一条 ffmpeg 命令：不支持 | 、&& 、> 等 shell 操作符；"
                                  "含空格的路径请用引号包起来"));
     connect(command_edit_, &QLineEdit::returnPressed, this, &FfmpegPanel::OnRun);
@@ -169,6 +170,11 @@ QWidget* FfmpegPanel::BuildCommandArea() {
     // QLineEdit 自己不处理 ↑ / ↓，装上过滤器才能翻历史
     command_edit_->installEventFilter(this);
     layout->addWidget(command_edit_);
+
+    // 实时解释 + 候选补全：紧贴输入框的一行，说明的是"光标处这个词"。
+    // 它自己会装事件过滤器（↑↓ 选候选 / Tab 接受 / Esc 关闭），页面只需把这一行放进布局。
+    input_assist_ = new FfmpegCommandInputAssist(command_edit_, box);
+    layout->addWidget(input_assist_->HintWidget());
 
     QHBoxLayout* button_row = new QHBoxLayout();
     button_row->setSpacing(6);
@@ -255,6 +261,18 @@ void FfmpegPanel::RefreshToolInfo() {
                         .arg(ffmpeg::FfmpegCapabilityCache::Instance().encoder_count())
                         .arg(ffmpeg::FfmpegCapabilityCache::Instance().filter_count());
         }
+        // ffprobe / ffplay 是跟着 ffmpeg 一起发布的，通常就在同一个目录。
+        // 顺手报一下它们能不能用 —— 否则用户写完一条 ffprobe 命令点运行，
+        // 才会撞上"找不到程序"，而这时已经白写了一遍。
+        const ffmpeg::FfmpegToolInfo probe =
+            ffmpeg::FfmpegToolLocator::Resolve(QString(), ffmpeg::FfmpegToolKind::Ffprobe);
+        const ffmpeg::FfmpegToolInfo play =
+            ffmpeg::FfmpegToolLocator::Resolve(QString(), ffmpeg::FfmpegToolKind::Ffplay);
+        auto availability = [](const ffmpeg::FfmpegToolInfo& info, const QString& name) {
+            return info.exists ? tr("%1 ✓").arg(name) : tr("%1 ✗（%2）").arg(name, tr("未找到该程序"));
+        };
+        text += tr("\n同目录工具: %1 · %2")
+                    .arg(availability(probe, QStringLiteral("ffprobe")), availability(play, QStringLiteral("ffplay")));
         color = QLatin1String(theme::color::kSuccess);
     }
     tool_status_label_->setText(text);
@@ -268,8 +286,9 @@ void FfmpegPanel::RefreshToolInfo() {
     const QString run_tip = usable ? QString() : tr("先安装 ffmpeg 或在上方指定可执行程序路径，才能运行命令");
     run_button_->setEnabled(usable && !runner_->IsRunning());
     run_button_->setToolTip(run_tip);
-    command_edit_->setToolTip(usable ? tr("只支持单独一条 ffmpeg 命令：不支持 | 、&& 、> 等 shell 操作符；"
-                                          "含空格的路径请用引号包起来。↑ / ↓ 可翻最近跑过的命令")
+    command_edit_->setToolTip(usable ? tr("支持 ffmpeg / ffprobe / ffplay 三种命令，每次只能写单独一条："
+                                          "不支持 | 、&& 、> 等 shell 操作符；含空格的路径请用引号包起来。"
+                                          "↑ / ↓ 可翻最近跑过的命令")
                                      : run_tip);
 }
 
@@ -556,6 +575,12 @@ void FfmpegPanel::RememberCommand(const QString& command) {
 }
 
 bool FfmpegPanel::eventFilter(QObject* watched, QEvent* event) {
+    // 候选下拉开着时方向键归它用（选候选），这里别顺手把历史也翻了。
+    // 正常情况下 InputAssist 的过滤器先装后调、已经把这两个键吃掉；这条判断是
+    // 给安装顺序留的保险 —— 两处一旦顺序变了，翻历史与选候选会同时发生。
+    if (input_assist_ != nullptr && input_assist_->PopupVisible()) {
+        return QWidget::eventFilter(watched, event);
+    }
     if (watched == command_edit_ && event->type() == QEvent::KeyPress && !history_.Entries().isEmpty()) {
         auto* key_event = static_cast<QKeyEvent*>(event);
         const bool up = key_event->key() == Qt::Key_Up;
@@ -780,32 +805,50 @@ void FfmpegPanel::OnRun() {
         QMessageBox::warning(this, tr("无法运行"), parsed.message);
         return;
     }
+    // 省略程序名时按 ffmpeg 处理 —— 这是历史上唯一支持的写法，不能因为新增了
+    // ffprobe / ffplay 就把老命令的意思改掉。
+    const ffmpeg::FfmpegToolKind tool =
+        parsed.tool_kind == ffmpeg::FfmpegToolKind::Unknown ? ffmpeg::FfmpegToolKind::Ffmpeg : parsed.tool_kind;
+    const QString program_label = ffmpeg::ToolProgramName(tool);
+    const bool writes_files = ffmpeg::ToolProducesOutputFile(tool);
+
     if (parsed.arguments.isEmpty()) {
+        // 三种工具对"什么算完整命令"的要求不同：ffmpeg 要输入 + 输出，
+        // ffprobe / ffplay 只要一个输入文件（它们不产出文件）。
         QMessageBox::warning(this, tr("无法运行"),
-                             tr("命令里没有任何参数。至少要给出输入与输出，比如:\n"
-                                "ffmpeg -i \"输入.mp4\" \"输出.mp4\""));
+                             writes_files ? tr("命令里没有任何参数。至少要给出输入与输出，比如:\n"
+                                               "ffmpeg -i \"输入.mp4\" \"输出.mp4\"")
+                                          : tr("命令里没有任何参数。至少要给出要读的文件，比如:\n"
+                                               "%1 \"输入.mp4\"")
+                                                .arg(program_label));
         return;
     }
 
-    const QString pipe = ffmpeg::DetectStdoutMediaOutput(parsed.arguments);
-    if (!pipe.isEmpty()) {
-        QMessageBox::warning(this, tr("无法运行"),
-                             tr("参数「%1」会把媒体数据写到标准输出（管道）。\n"
-                                "本页的日志区只接收文本，二进制流灌进去只会把界面卡死。\n"
-                                "请把结果改成输出到文件（例如 out.mp4）。")
-                                 .arg(pipe));
-        return;
+    // 管道检测只对 ffmpeg 有意义：它防的是"把媒体二进制灌进日志区"。
+    // ffprobe 输出的是文本（-of json 之类），ffplay 根本不往 stdout 写东西。
+    if (writes_files) {
+        const QString pipe = ffmpeg::DetectStdoutMediaOutput(parsed.arguments);
+        if (!pipe.isEmpty()) {
+            QMessageBox::warning(this, tr("无法运行"),
+                                 tr("参数「%1」会把媒体数据写到标准输出（管道）。\n"
+                                    "本页的日志区只接收文本，二进制流灌进去只会把界面卡死。\n"
+                                    "请把结果改成输出到文件（例如 out.mp4）。")
+                                     .arg(pipe));
+            return;
+        }
     }
 
-    tool_info_ = ffmpeg::FfmpegToolLocator::Resolve(CurrentToolPath());
+    tool_info_ = ffmpeg::FfmpegToolLocator::Resolve(CurrentToolPath(), tool);
     if (tool_info_.path.isEmpty() || !tool_info_.exists) {
         QMessageBox warning_box(this);
         warning_box.setWindowTitle(tr("无法运行"));
         warning_box.setIcon(QMessageBox::Warning);
-        warning_box.setText(tr("找不到可执行的 ffmpeg 程序%1。")
-                                .arg(tool_info_.path.isEmpty() ? QString() : tr("（%1）").arg(tool_info_.path)));
-        warning_box.setInformativeText(tr("本页是把命令交给原生 ffmpeg 程序执行，所以必须先有这个程序。\n"
-                                          "指令字典和命令解释不需要它，可以继续使用。"));
+        warning_box.setText(
+            tr("找不到可执行的 %1 程序%2。")
+                .arg(program_label, tool_info_.path.isEmpty() ? QString() : tr("（%1）").arg(tool_info_.path)));
+        warning_box.setInformativeText(tr("本页是把命令交给原生 %1 程序执行，所以必须先有这个程序。\n"
+                                          "指令字典和命令解释不需要它，可以继续使用。")
+                                           .arg(program_label));
         QPushButton* guide_btn = warning_box.addButton(tr("安装指引…"), QMessageBox::ActionRole);
         warning_box.addButton(tr("选择程序…"), QMessageBox::ActionRole);
         warning_box.addButton(QMessageBox::Cancel);
@@ -818,17 +861,17 @@ void FfmpegPanel::OnRun() {
         return;
     }
 
-    // 命令里写了完整路径 → **用它**。这是原生 ffmpeg 命令行的直觉：
+    // 命令里写了完整路径 → **用它**。这是原生命令行的直觉：
     // 用户把 C:\tools\ffmpeg.exe 写在命令头上，就是要跑那一个程序。
-    // 只写裸的 "ffmpeg"（或省略程序名）才用本页设置里的那个。
+    // 只写裸的程序名（或省略程序名）才用本页设置里的那个。
     QString program = tool_info_.path;
     if (parsed.program_is_path) {
         if (!ffmpeg::FfmpegToolLocator::IsExecutable(parsed.program_token)) {
             QMessageBox::warning(this, tr("无法运行"),
-                                 tr("命令里的 ffmpeg 路径「%1」不存在或不可执行。\n\n"
-                                    "请改成一个真实存在的 ffmpeg；或者把命令开头写成不带路径的 "
-                                    "ffmpeg —— 那样会使用本页设置的「%2」。")
-                                     .arg(parsed.program_token, tool_info_.path));
+                                 tr("命令里的 %1 路径「%2」不存在或不可执行。\n\n"
+                                    "请改成一个真实存在的 %1；或者把命令开头写成不带路径的 "
+                                    "%1 —— 那样会使用本页设置的「%3」。")
+                                     .arg(program_label, parsed.program_token, tool_info_.path));
             return;
         }
         program = parsed.program_token;
@@ -891,7 +934,9 @@ void FfmpegPanel::OnRun() {
         return true;
     };
 
-    if (!confirm_preflight(parsed.arguments)) {
+    // 预检只对"会写文件"的工具成立：它查的是输入是否存在、输出目录在不在、
+    // 输出是不是写成了输入。ffprobe / ffplay 不产出文件，这套规则对它们全是误报。
+    if (writes_files && !confirm_preflight(parsed.arguments)) {
         return; // 命令原样留着，用户自己去改路径
     }
 
@@ -903,7 +948,9 @@ void FfmpegPanel::OnRun() {
     // "已停止（正常收尾）"，其实一个字节都没写。所以必须在这里先问清楚。
     QStringList exec_arguments = parsed.arguments;
     bool overwrite_appended = false;
-    if (!exec_arguments.contains(QStringLiteral("-y")) && !exec_arguments.contains(QStringLiteral("-n"))) {
+    // 覆盖确认只对会写文件的工具成立；ffprobe / ffplay 没有"输出文件已存在"这回事。
+    if (writes_files && !exec_arguments.contains(QStringLiteral("-y")) &&
+        !exec_arguments.contains(QStringLiteral("-n"))) {
         const QStringList existing = ffmpeg::ExistingOutputTargets(exec_arguments);
         if (!existing.isEmpty()) {
             const QString detail =
@@ -953,16 +1000,20 @@ void FfmpegPanel::OnRun() {
 
     // 改名之后输出路径变了，得再查一遍：用户可能在保存对话框里又选回输入文件本身。
     // 已经点过"仍然运行"的问题不会重复弹（acknowledged）。
-    if (!confirm_preflight(exec_arguments)) {
+    if (writes_files && !confirm_preflight(exec_arguments)) {
         return;
     }
 
     current_arguments_ = exec_arguments;
+    current_tool_ = tool;
     progress_.Reset();
     output_widget_->PrepareForRun();
     // 排在 PrepareForRun 之后：它会清空图谱（新一轮不能留着上一轮的结果），
     // 先排队的话，万一探测比清空先回来，那张刚画好的"工序预览"就被抹掉了。
-    BeginMediaProbeForRun(program);
+    // 探测跑的是 `ffmpeg -i`，只有 ffmpeg 命令才有"转码前后对比"这件事。
+    if (writes_files) {
+        BeginMediaProbeForRun(program);
+    }
     output_widget_->AppendLog(
         QStringLiteral("$ %1").arg(ffmpeg::FfmpegProcessRunner::BuildDisplayCommand(program, exec_arguments)), false);
     if (overwrite_appended) {
@@ -981,22 +1032,32 @@ void FfmpegPanel::OnRun() {
         RememberCommand(command_edit_->text());
     }
     // 启动失败时不能再说"已启动" —— 否则状态栏会前后矛盾
-    emit StatusMessage(started ? tr("已启动 ffmpeg") : tr("ffmpeg 启动失败"));
+    emit StatusMessage(started ? tr("已启动 %1").arg(program_label) : tr("%1 启动失败").arg(program_label));
 }
 
 void FfmpegPanel::OnStop() {
     if (!runner_->IsRunning()) {
         return;
     }
-    if (ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(current_arguments_)) {
-        output_widget_->AppendLog(tr("(用户请求停止: 已向 ffmpeg 发送 q，等它正常收尾；超时后会强制终止)"), false);
+    if (current_tool_ == ffmpeg::FfmpegToolKind::Ffmpeg) {
+        if (ffmpeg::FfmpegProcessRunner::CanQuitViaStdin(current_arguments_)) {
+            output_widget_->AppendLog(tr("(用户请求停止: 已向 ffmpeg 发送 q，等它正常收尾；超时后会强制终止)"), false);
+        } else {
+            output_widget_->AppendLog(tr("(用户请求停止: 命令里有 -nostdin，ffmpeg 不读标准输入，"
+                                         "无法优雅收尾，只能直接终止 —— 输出文件可能不完整)"),
+                                      true);
+        }
+        runner_->Stop();
     } else {
-        output_widget_->AppendLog(tr("(用户请求停止: 命令里有 -nostdin，ffmpeg 不读标准输入，"
-                                     "无法优雅收尾，只能直接终止 —— 输出文件可能不完整)"),
-                                  true);
+        // ffprobe / ffplay 不读标准输入，写 q 只是白等一段宽限期。
+        // 它们也不产出文件，所以没有"收尾不干净"的顾虑 —— 直接终止。
+        output_widget_->AppendLog(tr("(用户请求停止: %1 不读标准输入，直接终止进程；它不产出文件，"
+                                     "没有要收尾的内容)")
+                                      .arg(ffmpeg::ToolProgramName(current_tool_)),
+                                  false);
+        runner_->Stop(0, 3000);
     }
-    runner_->Stop();
-    emit StatusMessage(tr("正在停止 ffmpeg"));
+    emit StatusMessage(tr("正在停止 %1").arg(ffmpeg::ToolProgramName(current_tool_)));
 }
 
 bool FfmpegPanel::ConfirmShutdown() {

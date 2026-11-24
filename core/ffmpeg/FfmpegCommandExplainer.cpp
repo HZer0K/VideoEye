@@ -2,6 +2,7 @@
 
 #include "core/ffmpeg/FfmpegCommandCatalog.h"
 #include "core/ffmpeg/FfmpegCommandParser.h"
+#include "core/ffmpeg/FfmpegCommandText.h"
 #include "core/ffmpeg/FfmpegFilterGraph.h"
 
 namespace videoeye {
@@ -179,9 +180,55 @@ QStringList HitAudioReencodeOptions(const QStringList& arguments) {
     return hit;
 }
 
+/// ffprobe / ffplay 的命令行只有一段：`[选项 [值]] … 输入`。
+///
+/// 它们没有输入组 / 输出组之分（不产出文件），也不接受 -i 之外的多输入写法。
+/// 这里仍然返回 FfmpegCommandStructure —— 用同一个类型表达，是为了让下面那段
+/// 解释循环不用分叉成两套：角色判对了，循环本身对两种语法都成立。
+FfmpegCommandStructure AnalyzeSingleInputStructure(const QStringList& arguments, FfmpegToolKind kind) {
+    FfmpegCommandStructure out;
+    const int n = arguments.size();
+    out.args.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        out.args[static_cast<size_t>(i)].index = i;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        const QString& token = arguments.at(i);
+        FfmpegArgPlacement& place = out.args[static_cast<size_t>(i)];
+
+        if (IsOptionWord(token)) {
+            place.role = FfmpegArgRole::Option;
+            const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(OptionNameOf(token), kind);
+            // 只有字典明确标了 takes_value 的选项才吞下一个词。`-show_streams` 这类开关
+            // 如果也吞，后面的输入文件就会被当成它的值，整条命令一个输入都没有了。
+            if (entry != nullptr && entry->takes_value && !token.contains(QLatin1Char('=')) && i + 1 < n) {
+                const QString& next = arguments.at(i + 1);
+                const bool starts_with_dash = next.startsWith(QLatin1Char('-')) && next != QLatin1String("-");
+                if (!starts_with_dash || entry->value_may_start_with_dash) {
+                    place.value_index = i + 1;
+                    out.args[static_cast<size_t>(i + 1)].role = FfmpegArgRole::OptionValue;
+                }
+            }
+            continue;
+        }
+
+        // 裸词：这三个工具里只有它可能是输入媒体（ffprobe / ffplay 都不写输出文件）。
+        place.role = FfmpegArgRole::InputUrl;
+        place.output_side = out.has_input; // 写在输入之后的选项位置不对，但不是"输出侧"
+        ++out.input_count;
+        out.has_input = true;
+    }
+    return out;
+}
+
 } // namespace
 
 FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& arguments) {
+    return Explain(arguments, FfmpegToolKind::Ffmpeg);
+}
+
+FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& arguments, FfmpegToolKind kind) {
     FfmpegCommandExplanation out;
     out.arguments = arguments;
 
@@ -190,9 +237,13 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
         return out;
     }
 
-    // 先按 ffmpeg 真正的语法把输入组 / 输出组分出来 —— 多输出命令与"最后一个参数
-    // 就是输出文件"的旧假设在这里一次性解决。
-    const FfmpegCommandStructure structure = AnalyzeCommandStructure(arguments);
+    const bool is_ffmpeg = kind == FfmpegToolKind::Ffmpeg;
+    const QString program = ToolProgramName(kind);
+
+    // 先按该工具真正的语法把 token 的角色分出来。ffmpeg 走输入组/输出组那一套，
+    // ffprobe / ffplay 走"选项 + 一个输入"。
+    const FfmpegCommandStructure structure =
+        is_ffmpeg ? AnalyzeCommandStructure(arguments) : AnalyzeSingleInputStructure(arguments, kind);
     out.input_count = structure.input_count;
     out.output_count = structure.output_count;
     out.has_input = structure.has_input;
@@ -202,6 +253,24 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
     while (i < arguments.size()) {
         const FfmpegArgPlacement& place = structure.args.at(static_cast<size_t>(i));
         const QString token = arguments.at(i);
+
+        // ---- 输入文件（ffprobe / ffplay 的裸参数）----
+        if (place.role == FfmpegArgRole::InputUrl) {
+            FfmpegTokenExplanation item;
+            item.token = token;
+            item.role = FfmpegTokenRole::InputFile;
+            item.role_label = QStringLiteral("输入文件");
+            item.known = true;
+            item.description =
+                kind == FfmpegToolKind::Ffplay
+                    ? QStringLiteral("ffplay 播放这个媒体。它不需要 -i，也不会产出文件。")
+                    : QStringLiteral("ffprobe 读取这个媒体并把信息打印出来。它不需要 -i，也不会产出文件。");
+            item.position = QStringLiteral("所有选项之后");
+            out.tokens.push_back(item);
+            out.has_input = true;
+            ++i;
+            continue;
+        }
 
         // ---- 输出目标 ----
         if (place.role == FfmpegArgRole::OutputUrl) {
@@ -246,7 +315,10 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
         FfmpegTokenExplanation item;
         item.token = token;
 
-        const FfmpegCatalogEntry* entry = FfmpegCommandCatalog::Find(token);
+        // ffmpeg 走全字典（保持历史行为）；另两个工具按自己的词条集查 ——
+        // 否则 ffplay 的 -y 会被解释成 ffmpeg 的"覆盖输出"。
+        const FfmpegCatalogEntry* entry =
+            is_ffmpeg ? FfmpegCommandCatalog::Find(token) : FfmpegCommandCatalog::Find(OptionNameOf(token), kind);
         if (entry != nullptr) {
             item.known = true;
             item.role = FfmpegTokenRole::KnownOption;
@@ -334,7 +406,9 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                 }
             }
 
-            if (structure.has_input && !place.output_side && !IsInputSideOption(token)) {
+            // "输出侧选项写在了 -i 之前"只对 ffmpeg 成立：ffprobe / ffplay 的选项
+            // 本来就全部写在输入之前，按这条去警告会满屏误报。
+            if (is_ffmpeg && structure.has_input && !place.output_side && !IsInputSideOption(token)) {
                 item.warning = QStringLiteral("它出现在第一个 -i 之前。ffmpeg 的输出侧选项要写在"
                                               "输入之后、输出文件之前，放错位置不会报错但**不会生效**。");
             }
@@ -384,22 +458,33 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
             }
         }
         out.notes.push_back(
-            QStringLiteral("这是一条**查询命令**，不需要输入文件也不需要输出文件：ffmpeg 只把结果打印出来就退出。\n%1")
-                .arg(queried.isEmpty() ? QStringLiteral("· 运行后结果会输出在下面。")
-                                       : queried.join(QStringLiteral("\n"))));
-        out.flow = QStringLiteral("查询 ffmpeg 自身的能力/版本信息");
+            QStringLiteral("这是一条**查询命令**，不需要输入文件也不需要输出文件：%1 只把结果打印出来就退出。\n%2")
+                .arg(program, queried.isEmpty() ? QStringLiteral("· 运行后结果会输出在下面。")
+                                                : queried.join(QStringLiteral("\n"))));
+        out.flow = QStringLiteral("查询 %1 自身的能力/版本信息").arg(program);
         return out;
     }
 
     if (!out.has_input) {
-        // 结构不明时不能说"没有 -i"：那个归属不明的 token 可能正是 -i 的值，
-        // 断言得越肯定，用户越容易被引到错误的方向上。
-        out.notes.push_back(out.structure_known
-                                ? QStringLiteral("没有 -i，ffmpeg 拿不到输入（除非用的是 -f lavfi 之类的虚拟输入）。")
-                                : QStringLiteral("按目前的解析结果没有输入。命令里有归属不明的参数，"
-                                                 "不排除其中有输入 —— 请对照 ffmpeg 的实际输出确认。"));
+        if (is_ffmpeg) {
+            // 结构不明时不能说"没有 -i"：那个归属不明的 token 可能正是 -i 的值，
+            // 断言得越肯定，用户越容易被引到错误的方向上。
+            out.notes.push_back(
+                out.structure_known
+                    ? QStringLiteral("没有 -i，ffmpeg 拿不到输入（除非用的是 -f lavfi 之类的虚拟输入）。")
+                    : QStringLiteral("按目前的解析结果没有输入。命令里有归属不明的参数，"
+                                     "不排除其中有输入 —— 请对照 ffmpeg 的实际输出确认。"));
+        } else {
+            out.notes.push_back(
+                out.structure_known
+                    ? QStringLiteral("没写输入文件。%1 需要且只需要一个媒体文件，"
+                                     "否则它会打印用法说明后退出。")
+                          .arg(program)
+                    : QStringLiteral("按目前的解析结果没有输入文件 —— 请对照 %1 的实际输出确认。").arg(program));
+        }
     }
-    if (!out.has_output) {
+    // "没有输出文件"只对 ffmpeg 成立：ffprobe / ffplay 本来就不产出文件。
+    if (is_ffmpeg && !out.has_output) {
         out.notes.push_back(out.structure_known
                                 ? QStringLiteral("没有输出文件。ffmpeg 至少要有一个输出目标，"
                                                  "否则它只会报错退出（或把数据写到 stdout，而本页不支持那样做）。")
@@ -407,12 +492,12 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
                                                  "（列表中标为「未解析」的项），其中之一可能就是输出文件 —— "
                                                  "运行前请确认，否则 ffmpeg 会直接报错退出。"));
     }
-    if (arguments.contains(QStringLiteral("-nostdin"))) {
+    if (is_ffmpeg && arguments.contains(QStringLiteral("-nostdin"))) {
         out.notes.push_back(QStringLiteral("命令里有 -nostdin: ffmpeg 不会读标准输入，"
                                            "所以点击「停止」时无法用 q 让它优雅收尾，只能直接终止进程 —— "
                                            "mp4 这类需要收尾写索引的输出**可能被截断**。"));
     }
-    if (out.output_count > 1) {
+    if (is_ffmpeg && out.output_count > 1) {
         out.notes.push_back(QStringLiteral("这条命令有 %1 个输出目标。ffmpeg 会把写在两个输出之间的选项"
                                            "归属于后一个输出 —— 想给某个输出单独配参数，就把参数紧挨着"
                                            "写在它的文件名前面。")
@@ -437,7 +522,9 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
     //
     // copy 只作用于它自己那条流: `-c:v libx264 -c:a copy` 里 -crf 仍然生效，
     // 不能因为命令里出现了 copy 就一概而论。
-    const CopyState copy = ResolveCopyState(arguments, structure);
+    // 流拷贝 / 编码参数这些概念只属于 ffmpeg：ffprobe / ffplay 没有"输出编码方式"。
+    // 用一个空的 CopyState 让下面所有分支自然跳过，比给每处都加 if 更好读。
+    const CopyState copy = is_ffmpeg ? ResolveCopyState(arguments, structure) : CopyState{};
     bool stream_param_ignored = false; // 有编码参数被 copy 吞掉 —— 此时别再说"这是一次纯流拷贝"
     if (copy.video_copy) {
         QStringList hit = HitVideoReencodeOptions(arguments);
@@ -475,12 +562,12 @@ FfmpegCommandExplanation FfmpegCommandExplainer::Explain(const QStringList& argu
             QStringLiteral("这是一次纯流拷贝：只换封装、不解码不重编码，速度最快且不损失画质。"
                            "代价是分辨率/码率/帧率/滤镜都无法改变 —— 需要改动就得让对应的流重新编码。"));
     }
-    if (arguments.contains(QStringLiteral("-crf")) && arguments.contains(QStringLiteral("-b:v"))) {
+    if (is_ffmpeg && arguments.contains(QStringLiteral("-crf")) && arguments.contains(QStringLiteral("-b:v"))) {
         out.notes.push_back(QStringLiteral("-crf（质量优先）与 -b:v（码率优先）是两种互斥的码率控制方式，"
                                            "同时写时后者会被忽略或产生非预期结果。"));
     }
 
-    const QString pipe_target = DetectStdoutMediaOutput(arguments);
+    const QString pipe_target = is_ffmpeg ? DetectStdoutMediaOutput(arguments) : QString();
     if (!pipe_target.isEmpty()) {
         out.notes.push_back(QStringLiteral("参数「%1」会把媒体数据写进标准输出/标准错误这样的进程通道"
                                            "（ffmpeg 的 pipe:N，N=1 是 stdout、N=2 是 stderr）。"

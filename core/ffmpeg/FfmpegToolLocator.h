@@ -31,6 +31,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "core/ffmpeg/FfmpegToolKind.h"
 #include "videoeye/FfmpegToolConfig.h"
 
 namespace videoeye {
@@ -57,12 +58,22 @@ struct FfmpegInstallGuide {
 class FfmpegToolLocator {
 public:
     /// 按优先级解析一个可用路径。configured_path 为空表示"用户没指定"。
+    /// 等价于 Resolve(configured_path, FfmpegToolKind::Ffmpeg)。
     static FfmpegToolInfo Resolve(const QString& configured_path = QString());
+
+    /// 解析指定的 FFmpeg 工具（ffmpeg / ffprobe / ffplay）。
+    ///
+    /// ffprobe 与 ffplay 是**和 ffmpeg 一起发布**的：官方压缩包里三个 exe 并排在 bin/ 下，
+    /// 包管理器装的也在同一目录。所以除了常规的 PATH / 常见目录之外，这里会先看
+    /// "已经找到的那个 ffmpeg 的同目录" —— 那是命中率最高的一条。
+    ///
+    /// kind == Unknown 时返回一个 exists=false 的空结果（没有"未知工具"可找）。
+    static FfmpegToolInfo Resolve(const QString& configured_path, FfmpegToolKind kind);
 
     /// 是否可执行（存在 + 是可执行文件）。Linux/macOS 会顺带看可执行位。
     static bool IsExecutable(const QString& path);
 
-    /// 从 `ffmpeg -version` 的输出里摘出版本号；失败返回空串。
+    /// 从 `<tool> -version` 的输出里摘出版本号；失败返回空串。
     static QString ParseVersionLine(const QString& version_output);
 
     /// 当前平台的安装指引（离线内置，不联网）。
@@ -76,6 +87,9 @@ public:
 
     /// 在给定目录里找 ffmpeg（按平台候选文件名逐个试），找不到返回空串。
     static QString FindInDirectory(const QString& dir);
+
+    /// 同上，但找指定工具。
+    static QString FindInDirectory(const QString& dir, FfmpegToolKind kind);
 };
 
 } // namespace ffmpeg

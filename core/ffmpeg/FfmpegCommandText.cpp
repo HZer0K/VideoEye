@@ -8,27 +8,6 @@ namespace videoeye {
 namespace ffmpeg {
 namespace {
 
-bool IsOptionWord(const QString& word) {
-    // 单个 "-" 是"输出到 stdout"的写法，不是选项。
-    // 以数字开头也不是选项：ffmpeg 的选项名从来不以数字开头，`-0:d` 是流说明符
-    // （配合 -map 用），`-1` 是 -map_metadata 的"清掉元数据"。把它们当成选项，
-    // 后面那个真正的路径就会被并到它们名下，看起来像"这个参数吃掉了输出文件"。
-    return word.size() > 1 && word.startsWith(QLatin1Char('-')) && !word.at(1).isDigit();
-}
-
-/// 词里的选项名（去掉引号与 =值 之后）。用于查字典与判断"值能不能以 - 开头"。
-QString OptionNameOf(const QString& word) {
-    QString name = word;
-    if (name.startsWith(QLatin1Char('"')) || name.startsWith(QLatin1Char('\''))) {
-        return QString(); // 引号包起来的一定是路径，不会是选项名
-    }
-    const int eq = name.indexOf(QLatin1Char('='));
-    if (eq > 0) {
-        name.truncate(eq);
-    }
-    return name;
-}
-
 /// `-map -0:d`：值以 '-' 开头但其实是值。判据是字典里标了 value_may_start_with_dash，
 /// 且这个负号词本身不是字典认识的选项 —— 两个条件都满足才当值，不猜。
 bool IsNegativeValueFor(const QString& option_word, const QString& candidate) {
@@ -43,6 +22,26 @@ bool IsNegativeValueFor(const QString& option_word, const QString& candidate) {
 }
 
 } // namespace
+
+bool IsOptionWord(const QString& word) {
+    // 单个 "-" 是"输出到 stdout"的写法，不是选项。
+    // 以数字开头也不是选项：ffmpeg 的选项名从来不以数字开头，`-0:d` 是流说明符
+    // （配合 -map 用），`-1` 是 -map_metadata 的"清掉元数据"。把它们当成选项，
+    // 后面那个真正的路径就会被并到它们名下，看起来像"这个参数吃掉了输出文件"。
+    return word.size() > 1 && word.startsWith(QLatin1Char('-')) && !word.at(1).isDigit();
+}
+
+QString OptionNameOf(const QString& word) {
+    QString name = word;
+    if (name.startsWith(QLatin1Char('"')) || name.startsWith(QLatin1Char('\''))) {
+        return QString(); // 引号包起来的一定是路径，不会是选项名
+    }
+    const int eq = name.indexOf(QLatin1Char('='));
+    if (eq > 0) {
+        name.truncate(eq);
+    }
+    return name;
+}
 
 std::vector<FfmpegCommandWord> SplitCommandWords(const QString& text) {
     std::vector<FfmpegCommandWord> words;

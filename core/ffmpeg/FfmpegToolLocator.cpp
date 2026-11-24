@@ -41,11 +41,15 @@ bool PreferBuildTimePath() {
 #endif
 }
 
-QStringList CandidateNames() {
+QStringList CandidateNames(FfmpegToolKind kind) {
+    const QString base = ToolProgramName(kind);
+    if (base.isEmpty()) {
+        return {};
+    }
 #ifdef Q_OS_WIN
-    return {QStringLiteral("ffmpeg.exe"), QStringLiteral("ffmpeg")};
+    return {base + QStringLiteral(".exe"), base};
 #else
-    return {QStringLiteral("ffmpeg")};
+    return {base};
 #endif
 }
 
@@ -94,6 +98,10 @@ bool FfmpegToolLocator::IsExecutable(const QString& path) {
 }
 
 QString FfmpegToolLocator::FindInDirectory(const QString& dir) {
+    return FindInDirectory(dir, FfmpegToolKind::Ffmpeg);
+}
+
+QString FfmpegToolLocator::FindInDirectory(const QString& dir, FfmpegToolKind kind) {
     if (dir.isEmpty()) {
         return QString();
     }
@@ -101,7 +109,7 @@ QString FfmpegToolLocator::FindInDirectory(const QString& dir) {
     if (!base.exists()) {
         return QString();
     }
-    for (const QString& name : CandidateNames()) {
+    for (const QString& name : CandidateNames(kind)) {
         const QString candidate = base.filePath(name);
         if (IsExecutable(candidate)) {
             return QDir::toNativeSeparators(candidate);
@@ -138,9 +146,20 @@ QStringList FfmpegToolLocator::CommonSearchDirs() {
 }
 
 FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
+    return Resolve(configured_path, FfmpegToolKind::Ffmpeg);
+}
+
+FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path, FfmpegToolKind kind) {
     FfmpegToolInfo info;
-    info.bundled = VIDEOEYE_FFMPEG_TOOL_BUNDLED != 0;
-    info.bundled_name = BundleName();
+    if (kind == FfmpegToolKind::Unknown) {
+        // 没有"未知工具"可找：给一个明确的空结果，别让它落到"找 ffmpeg"上。
+        info.origin = QStringLiteral("未找到");
+        return info;
+    }
+    info.bundled_name = CandidateNames(kind).value(0);
+    // 随包分发的历史上只有 ffmpeg.exe；ffprobe / ffplay 靠下面"与 ffmpeg 同目录"那条找到，
+    // 所以这两个工具的 bundled 一律为 false —— 不能对用户说"随包分发了 ffprobe"。
+    info.bundled = kind == FfmpegToolKind::Ffmpeg && VIDEOEYE_FFMPEG_TOOL_BUNDLED != 0;
 
     // 1) 用户设置: 即使文件不存在也要返回它 —— 界面要能显示"你填的路径不存在"
     if (!configured_path.trimmed().isEmpty()) {
@@ -150,26 +169,44 @@ FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
         return info;
     }
 
-    // 2) 随包分发
-    const QString bundled = BundledPath();
-    if (!bundled.isEmpty() && IsExecutable(bundled)) {
-        info.path = bundled;
-        info.exists = true;
-        info.origin = QStringLiteral("随包分发");
-        return info;
+    // 2) 随包分发（只有 ffmpeg）
+    if (kind == FfmpegToolKind::Ffmpeg) {
+        const QString bundled = BundledPath();
+        if (!bundled.isEmpty() && IsExecutable(bundled)) {
+            info.path = bundled;
+            info.exists = true;
+            info.origin = QStringLiteral("随包分发");
+            return info;
+        }
     }
 
-    // 3) 构建期探测到的绝对路径 —— 只在 Debug 构建（或显式开关）下插队到 PATH 前面
+    // 3) 与已找到的 ffmpeg 同目录 —— 三个程序是一起发布的，这条命中率最高。
+    //    放在 PATH 之前：用户把整个 bin 目录拷到本地用时，PATH 里可能还躺着一个旧版本。
+    if (kind != FfmpegToolKind::Ffmpeg) {
+        const FfmpegToolInfo sibling = Resolve(QString(), FfmpegToolKind::Ffmpeg);
+        if (sibling.exists) {
+            const QString same_dir = QFileInfo(sibling.path).absolutePath();
+            const QString found = FindInDirectory(same_dir, kind);
+            if (!found.isEmpty()) {
+                info.path = found;
+                info.exists = true;
+                info.origin = QStringLiteral("与 ffmpeg 同目录");
+                return info;
+            }
+        }
+    }
+
+    // 4) 构建期探测到的绝对路径 —— 只在 Debug 构建（或显式开关）下插队到 PATH 前面
     const QString buildtime = ConfiguredAtBuildTime();
-    if (PreferBuildTimePath() && !buildtime.isEmpty() && IsExecutable(buildtime)) {
+    if (kind == FfmpegToolKind::Ffmpeg && PreferBuildTimePath() && !buildtime.isEmpty() && IsExecutable(buildtime)) {
         info.path = buildtime;
         info.exists = true;
         info.origin = QStringLiteral("构建期探测");
         return info;
     }
 
-    // 4) PATH
-    for (const QString& name : CandidateNames()) {
+    // 5) PATH
+    for (const QString& name : CandidateNames(kind)) {
         const QString from_path = QStandardPaths::findExecutable(name);
         if (!from_path.isEmpty()) {
             info.path = from_path;
@@ -179,9 +216,9 @@ FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
         }
     }
 
-    // 5) 常见安装位置（装了但没进 PATH 的情况，Windows 上很常见）
+    // 6) 常见安装位置（装了但没进 PATH 的情况，Windows 上很常见）
     for (const QString& dir : CommonSearchDirs()) {
-        const QString found = FindInDirectory(dir);
+        const QString found = FindInDirectory(dir, kind);
         if (!found.isEmpty()) {
             info.path = found;
             info.exists = true;
@@ -190,18 +227,19 @@ FfmpegToolInfo FfmpegToolLocator::Resolve(const QString& configured_path) {
         }
     }
 
-    // 6) 构建期路径兜底：这台机器上 PATH 里没有、常见目录里也没有，
+    // 7) 构建期路径兜底：这台机器上 PATH 里没有、常见目录里也没有，
     //    但构建时确实见过一份 —— 开发机上总比直接说"没找到"强。
     //    （安装版走到这里说明用户环境里真没有 ffmpeg，页面会给安装指引。）
-    if (!buildtime.isEmpty() && IsExecutable(buildtime)) {
+    if (kind == FfmpegToolKind::Ffmpeg && !buildtime.isEmpty() && IsExecutable(buildtime)) {
         info.path = buildtime;
         info.exists = true;
         info.origin = QStringLiteral("构建期探测");
         return info;
     }
 
-    // 都没找到: 至少把"随包那份本来应该在哪"告诉用户，比空着好排查
-    info.path = bundled.isEmpty() ? QString() : bundled;
+    // 都没找到: 至少把"顺包那份本来应该在哪"告诉用户，比空着好排查。
+    // 非 ffmpeg 工具没有随包路径，只能空着 —— 由界面提示"它通常和 ffmpeg 在同一个目录"。
+    info.path = (kind == FfmpegToolKind::Ffmpeg && !BundledPath().isEmpty()) ? BundledPath() : QString();
     info.exists = false;
     info.origin = QStringLiteral("未找到");
     return info;
@@ -277,7 +315,8 @@ QString FfmpegToolLocator::ParseVersionLine(const QString& version_output) {
         return QString();
     }
     // 形如: ffmpeg version 8.1.2-full_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers
-    static const QRegularExpression re(QStringLiteral(R"(ffmpeg\s+version\s+(\S+))"));
+    // ffprobe / ffplay 打头的是同一套格式（它们共用 libavutil 的版本串），一起认。
+    static const QRegularExpression re(QStringLiteral(R"((?:ffmpeg|ffprobe|ffplay)\s+version\s+(\S+))"));
     const auto match = re.match(version_output);
     if (match.hasMatch()) {
         return match.captured(1);

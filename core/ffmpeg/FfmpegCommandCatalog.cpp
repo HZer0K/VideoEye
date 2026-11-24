@@ -1150,8 +1150,547 @@ const std::vector<FfmpegCatalogEntry>& EntryTable() {
          QStringLiteral("volume=1.5"),
          {},
          {QStringLiteral("loudnorm"), QStringLiteral("-vol")}},
+
+        // ===================== ffprobe：信息输出 =====================
+        //
+        // ffprobe 的选项几乎都写在**输入文件之前**。它没有输出文件，所以也没有
+        // "输出侧选项"这一说 —— 位置判断与 ffmpeg 完全不同。
+        {QStringLiteral("-show_streams"),
+         QStringLiteral("显示流信息"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("逐条打印每条流（视频/音频/字幕/数据）的参数。"),
+         QStringLiteral("最好用的一个：编码、分辨率、帧率、像素格式、声道数、采样率、时长都在里面。"
+                        "和 -show_format 一起用，基本能看清一个文件的全部构成。"
+                        "代价是它要把每个流的头部信息读完，大文件比只看 -show_format 慢。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -show_streams in.mp4"),
+         QStringLiteral("-show_streams "),
+         {},
+         {QStringLiteral("-show_format"), QStringLiteral("-select_streams"), QStringLiteral("-of")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-show_format"),
+         QStringLiteral("显示容器信息"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("打印容器层面的信息：格式名、总时长、总码率、元数据。"),
+         QStringLiteral("回答\"这是什么格式、多长、多大码率\"。它不展开每条流，所以比 -show_streams 快得多。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -show_format in.mp4"),
+         QStringLiteral("-show_format "),
+         {},
+         {QStringLiteral("-show_streams")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-show_packets"),
+         QStringLiteral("显示数据包"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("逐个打印数据包（pts / dts / size / flags / duration）。"),
+         QStringLiteral("查时间戳问题、丢包、关键帧间隔时用。一个几分钟的片子就是几万个包，"
+                        "务必配 -read_intervals 或 -select_streams 收窄范围，否则输出会刷屏。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -select_streams v:0 -read_intervals %+5 -show_packets in.mp4"),
+         QStringLiteral("-show_packets "),
+         {},
+         {QStringLiteral("-read_intervals"), QStringLiteral("-select_streams")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-show_frames"),
+         QStringLiteral("显示解码帧"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("解码每一帧并打印帧级信息（pict_type / key_frame / pkt_pts …）。"),
+         QStringLiteral("**要真的解码**，所以是最慢的模式。要帧级画面统计或查 VFR 时用它，"
+                        "并且一定配 -read_intervals 限定范围。查帧类型分布时用 -show_entries frame=pict_type 更省。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -select_streams v:0 -read_intervals %+2 -show_frames in.mp4"),
+         QStringLiteral("-show_frames "),
+         {},
+         {QStringLiteral("-show_entries"), QStringLiteral("-read_intervals")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-show_entries"),
+         QStringLiteral("只输出指定字段"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("从探针结果里只挑出需要的字段，其余不打印。"),
+         QStringLiteral("写法是「段=字段,字段」：stream=width,height 只看宽高，format=duration 只看时长。"
+                        "配 -of csv=p=0 可以只留值，方便脚本直接吃。不加它就是把能打的都打出来。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 in.mp4"),
+         QStringLiteral("-show_entries "),
+         {QStringLiteral("stream=width,height"), QStringLiteral("format=duration"),
+          QStringLiteral("stream=codec_name")},
+         {QStringLiteral("-of"), QStringLiteral("-select_streams")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-select_streams"),
+         QStringLiteral("只处理指定流"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("把探针范围收窄到某一类或某一条流。"),
+         QStringLiteral("写法与 ffmpeg 的 -map 同源：v:0 是第一条视频流，a 是所有音频流，0 是全部流。"
+                        "配合 -show_packets / -show_frames 能把输出量降一个数量级。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -select_streams v:0 -show_streams in.mp4"),
+         QStringLiteral("-select_streams v:0 "),
+         {QStringLiteral("v:0"), QStringLiteral("a:0"), QStringLiteral("s:0"), QStringLiteral("0")},
+         {QStringLiteral("-show_streams"), QStringLiteral("-show_frames")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-of"),
+         QStringLiteral("输出格式"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("探针结果按什么格式打印（json / csv / flat …）。"),
+         QStringLiteral("默认是人读的 ini 风格。要喂给程序就 json（结构清晰）或 csv=p=0（只有值）。"
+                        "完整名字是 -print_format，两者等价。"),
+         QStringLiteral("输入文件之前，或紧跟在 -show_* 之后（顺序无关）"),
+         QStringLiteral("ffprobe -v error -show_streams -of json in.mp4"),
+         QStringLiteral("-of json "),
+         {QStringLiteral("json"), QStringLiteral("csv"), QStringLiteral("flat"), QStringLiteral("ini"),
+          QStringLiteral("compact"), QStringLiteral("default")},
+         {QStringLiteral("-show_entries")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-print_format"),
+         QStringLiteral("输出格式（全名）"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("与 -of 完全等价，只是名字更长。"),
+         QStringLiteral("脚本里两种写法都常见，认哪个都行 —— 字典把它们当同一条。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -print_format json -show_format in.mp4"),
+         QStringLiteral("-print_format json "),
+         {QStringLiteral("json"), QStringLiteral("csv"), QStringLiteral("flat")},
+         {QStringLiteral("-of")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-v"),
+         QStringLiteral("日志级别"),
+         Cat::Global,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("ffprobe 版本的 -loglevel，quiet 只留结果。"),
+         QStringLiteral("探针结果里混着 ffmpeg 自己的日志，脚本解析 json 时会直接解析失败。"
+                        "固定加 -v error 是标准做法；要连错误都吞掉用 -v quiet。"),
+         QStringLiteral("最前面"),
+         QStringLiteral("ffprobe -v error -show_streams -of json in.mp4"),
+         QStringLiteral("-v error "),
+         {QStringLiteral("error"), QStringLiteral("warning"), QStringLiteral("info"), QStringLiteral("quiet")},
+         {QStringLiteral("-loglevel")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-count_frames"),
+         QStringLiteral("精确统计帧数"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("把每个视频流完整解码一遍，给出精确的帧数。"),
+         QStringLiteral("不加它时 nb_frames 来自容器头，可能缺失或不准（尤其是 TS / 直播录像）。"
+                        "加了就要付出\"完整解码一遍\"的时间 —— 分不清帧数对不对时再用。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames in.mp4"),
+         QStringLiteral("-count_frames "),
+         {},
+         {QStringLiteral("-show_entries")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-count_packets"),
+         QStringLiteral("精确统计包数"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("读出每个流的所有包，给出精确的包数。"),
+         QStringLiteral("比 -count_frames 便宜（不解码），但要读完整个文件。结果在 nb_read_packets。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -count_packets -show_streams in.mp4"),
+         QStringLiteral("-count_packets "),
+         {},
+         {QStringLiteral("-count_frames")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-read_intervals"),
+         QStringLiteral("只读指定区间"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("限制探针读取的时间范围，避免把整个文件扫一遍。"),
+         QStringLiteral(
+             "写法：10%20 是第 10 秒到第 20 秒；%+5 是从当前位置往后 5 秒；#0%+100 是从第 0 个包起 100 个包。"
+             "配 -show_packets / -show_frames 几乎是必须的。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -read_intervals %+5 -show_packets in.mp4"),
+         QStringLiteral("-read_intervals %+5 "),
+         {QStringLiteral("%+5"), QStringLiteral("10%20")},
+         {QStringLiteral("-show_packets"), QStringLiteral("-show_frames")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-show_error"),
+         QStringLiteral("只显示探测错误"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("文件打不开或没有可识别的流时，只把错误信息打出来。"),
+         QStringLiteral("排查\"为什么这个文件 ffprobe 什么都不报\"时用。正常情况下它没有任何输出 —— "
+                        "空输出就代表没发现错误。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -show_error broken.mp4"),
+         QStringLiteral("-show_error "),
+         {},
+         {QStringLiteral("-show_streams")},
+         false,
+         kToolFfprobe},
+
+        {QStringLiteral("-sexagesimal"),
+         QStringLiteral("时间用时分秒"),
+         Cat::ProbeOutput,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("把时间戳从秒数（12.345）改成 0:00:12.345 的写法。"),
+         QStringLiteral("人看方便，程序解析反而麻烦 —— 脚本里别加。"),
+         QStringLiteral("输入文件之前"),
+         QStringLiteral("ffprobe -sexagesimal -show_format in.mp4"),
+         QStringLiteral("-sexagesimal "),
+         {},
+         {QStringLiteral("-of")},
+         false,
+         kToolFfprobe},
+
+        // ===================== ffplay：播放控制 =====================
+        {QStringLiteral("-autoexit"),
+         QStringLiteral("播完自动退出"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("播放结束后自己关窗退出，而不是停在最后一帧等人关。"),
+         QStringLiteral("在本页跑 ffplay 时**强烈建议加上**：本页等的是\"命令结束\"，"
+                        "不加它，窗口会一直开着，任务看起来永远在运行，只能按停止强杀。"
+                        "配合 -t 限时、或本来就短的片段，加它是唯一能让任务自然收尾的写法。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -autoexit -t 10 in.mp4"),
+         QStringLiteral("-autoexit "),
+         {},
+         {QStringLiteral("-t"), QStringLiteral("-loop")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-x"),
+         QStringLiteral("窗口宽度"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("指定播放窗口的宽度（像素）。"),
+         QStringLiteral("只写 -x 时高度按画面比例自动算；同时写 -y 才会强行拉伸到指定尺寸。"
+                        "窗口尺寸不影响解码分辨率。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -x 1280 -y 720 in.mp4"),
+         QStringLiteral("-x 1280 "),
+         {QStringLiteral("640"), QStringLiteral("1280"), QStringLiteral("1920")},
+         {QStringLiteral("-y"), QStringLiteral("-fs")},
+         false,
+         kToolFfplay},
+
+        // 与 ffmpeg 的 -y（覆盖输出）**同名不同义**：ffplay 的 -y 是窗口高度。
+        // 字典允许同名多条，靠 tools 掩码区分 —— Find(name) 取第一条（ffmpeg 那条），
+        // Find(name, Ffplay) 才会命中这一条。
+        {QStringLiteral("-y"),
+         QStringLiteral("窗口高度（ffplay）"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("指定播放窗口的高度（像素）。"),
+         QStringLiteral("**注意与 ffmpeg 的 -y 完全不是一回事**：ffmpeg 的 -y 是\"覆盖已有输出文件\"，"
+                        "ffplay 的 -y 是窗口高度。ffplay 没有覆盖确认这回事，因为它不写文件。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -x 1280 -y 720 in.mp4"),
+         QStringLiteral("-y 720 "),
+         {QStringLiteral("480"), QStringLiteral("720"), QStringLiteral("1080")},
+         {QStringLiteral("-x")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-nodisp"),
+         QStringLiteral("不开视频窗口"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("禁用图像显示，只播声音。"),
+         QStringLiteral("纯听音频时用，也适合在没有图形界面的环境里跑。和 -vn 的区别：-nodisp 是\"不建窗口\"，"
+                        "-vn 是\"不解视频流\"。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -nodisp -autoexit a.mp4"),
+         QStringLiteral("-nodisp "),
+         {},
+         {QStringLiteral("-vn"), QStringLiteral("-autoexit")},
+         false,
+         kToolFfplay},
+
+        // 与 ffmpeg 的 -loop（image2 循环读图）同名不同义。
+        {QStringLiteral("-loop"),
+         QStringLiteral("循环播放次数（ffplay）"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("把输入循环播放指定次数，0 表示一直循环。"),
+         QStringLiteral("**注意与 ffmpeg 的 -loop 不是一回事**：ffmpeg 的 -loop 1 是\"把这张图当静态画面循环读\"，"
+                        "ffplay 的 -loop 0 是\"无限循环播放\"。在 ffplay 里配 -autoexit 时，"
+                        "只有限了次数才会退出；-loop 0 永远不会自己结束。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -loop 2 -autoexit in.mp4"),
+         QStringLiteral("-loop 2 "),
+         {QStringLiteral("0"), QStringLiteral("1"), QStringLiteral("2")},
+         {QStringLiteral("-autoexit")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-fs"),
+         QStringLiteral("全屏（ffplay）"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("以全屏方式启动。"),
+         QStringLiteral("**与 ffmpeg 的 -fs 不是一回事**：ffmpeg 的 -fs 是\"输出文件大小上限\"。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -fs -autoexit in.mp4"),
+         QStringLiteral("-fs "),
+         {},
+         {QStringLiteral("-x"), QStringLiteral("-y")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-left"),
+         QStringLiteral("窗口左边距"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("窗口左上角距屏幕左侧的像素数。"),
+         QStringLiteral("多屏或分屏展示时用它把窗口摆到指定位置，配 -top 一起用。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -left 100 -top 100 in.mp4"),
+         QStringLiteral("-left 0 "),
+         {QStringLiteral("0"), QStringLiteral("100")},
+         {QStringLiteral("-top")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-top"),
+         QStringLiteral("窗口上边距"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("窗口左上角距屏幕顶部的像素数。"),
+         QStringLiteral("与 -left 配对使用。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -left 100 -top 100 in.mp4"),
+         QStringLiteral("-top 0 "),
+         {QStringLiteral("0"), QStringLiteral("100")},
+         {QStringLiteral("-left")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-stats"),
+         QStringLiteral("打印播放统计"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("在控制台持续打印位置、码率、丢帧等统计。"),
+         QStringLiteral("默认就开着。只在想 \"安静播放\" 时用 -nostats 关掉；本页关了反而看不到进度。"),
+         QStringLiteral("播放选项"),
+         QStringLiteral("ffplay -stats in.mp4"),
+         QStringLiteral("-stats "),
+         {},
+         {QStringLiteral("-autoexit")},
+         false,
+         kToolFfmpeg | kToolFfplay},
+
+        {QStringLiteral("-pixel_format"),
+         QStringLiteral("强制像素格式"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("指定解码后送显示的像素格式。"),
+         QStringLiteral("播放 rawvideo / yuv 这类没有容器头的裸数据时必须给，否则 ffplay 猜不出来。"
+                        "跟 ffmpeg 的 -pix_fmt 不是同一个选项名。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -pixel_format yuv420p -video_size 1280x720 raw.yuv"),
+         QStringLiteral("-pixel_format yuv420p "),
+         {QStringLiteral("yuv420p"), QStringLiteral("nv12"), QStringLiteral("rgb24")},
+         {QStringLiteral("-framerate")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-framerate"),
+         QStringLiteral("输入帧率（ffplay）"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("给没有时间戳的裸输入指定帧率。"),
+         QStringLiteral("只对 rawvideo / image2 这类裸数据有意义；正常容器里的帧率由容器决定，写了会被忽略。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -framerate 30 -pixel_format yuv420p raw.yuv"),
+         QStringLiteral("-framerate 30 "),
+         {QStringLiteral("24"), QStringLiteral("25"), QStringLiteral("30"), QStringLiteral("60")},
+         {QStringLiteral("-pixel_format")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-seek_interval"),
+         QStringLiteral("方向键跳转秒数"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("按左右方向键时前后跳多少秒。"),
+         QStringLiteral("默认 10 秒。看长片想细调时改成 1 或 5。"),
+         QStringLiteral("播放选项"),
+         QStringLiteral("ffplay -seek_interval 5 in.mp4"),
+         QStringLiteral("-seek_interval 5 "),
+         {QStringLiteral("1"), QStringLiteral("5"), QStringLiteral("10")},
+         {},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-exitonmousedown"),
+         QStringLiteral("点鼠标退出"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("在窗口里点一下鼠标就退出播放。"),
+         QStringLiteral("想\"随手点掉\"时用。注意它和 -autoexit 不冲突，两个都能开。"),
+         QStringLiteral("播放选项"),
+         QStringLiteral("ffplay -exitonmousedown in.mp4"),
+         QStringLiteral("-exitonmousedown "),
+         {},
+         {QStringLiteral("-autoexit")},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-alwaysontop"),
+         QStringLiteral("窗口置顶"),
+         Cat::Playback,
+         Kind::Option,
+         false,
+         Val::None,
+         QStringLiteral("播放窗口始终显示在其他窗口之上。"),
+         QStringLiteral("盯画面细节时用。"),
+         QStringLiteral("播放选项"),
+         QStringLiteral("ffplay -alwaysontop in.mp4"),
+         QStringLiteral("-alwaysontop "),
+         {},
+         {},
+         false,
+         kToolFfplay},
+
+        {QStringLiteral("-video_size"),
+         QStringLiteral("裸输入分辨率"),
+         Cat::Playback,
+         Kind::Option,
+         true,
+         Val::None,
+         QStringLiteral("给没有容器头的裸视频指定分辨率（宽x高）。"),
+         QStringLiteral("播 raw.yuv / .rgb 这类文件必须给，否则 ffplay 无法知道一帧有多大。"),
+         QStringLiteral("播放选项，放在输入文件之前"),
+         QStringLiteral("ffplay -pixel_format yuv420p -video_size 1280x720 raw.yuv"),
+         QStringLiteral("-video_size 1280x720 "),
+         {QStringLiteral("1280x720"), QStringLiteral("1920x1080")},
+         {QStringLiteral("-pixel_format")},
+         false,
+         kToolFfplay},
     };
     return table;
+}
+
+// ===================== 工具归属 =====================
+//
+// 没显式标注的词条一律按"只属于 ffmpeg"处理 —— 字典里绝大多数条目（-c:v / -crf /
+// -map / hls_* / -movflags）本来就只在 ffmpeg 里成立。三个工具通用的那几条在下面这张
+// 小表里放宽。
+//
+// 依据是三个程序各自的 `-h` 输出，不是"语义上差不多"：
+//   * `-i` 只有 ffmpeg 与 ffprobe 有 —— ffplay 把文件直接写在参数位，没有 -i；
+//   * `-nostdin` / `-vf` / `-af` 只有 ffmpeg 与 ffplay 有（ffprobe 不输出媒体）；
+//   * `-to` 只有 ffmpeg 有（ffprobe / ffplay 用 -ss 配 -t）；
+//   * `-volume` 三个都有（ffmpeg 是音量快捷项，ffplay 是 0..100 的音量）。
+struct ToolScope {
+    const char* name;
+    unsigned tools;
+};
+
+unsigned ToolsOf(const FfmpegCatalogEntry& entry) {
+    if (entry.tools != kToolNone) {
+        return entry.tools;
+    }
+    static const ToolScope kScopes[] = {
+        {"-hide_banner", kToolAll},
+        {"-loglevel", kToolAll},
+        {"-threads", kToolAll},
+        {"-f", kToolAll},
+        {"-ss", kToolAll},
+        {"-t", kToolAll},
+        {"-volume", kToolAll},
+        {"-i", kToolFfmpeg | kToolFfprobe},
+        {"-nostdin", kToolFfmpeg | kToolFfplay},
+        {"-vf", kToolFfmpeg | kToolFfplay},
+        {"-af", kToolFfmpeg | kToolFfplay},
+        {"-an", kToolFfmpeg | kToolFfplay},
+        {"-vn", kToolFfmpeg | kToolFfplay},
+        {"-sn", kToolFfmpeg | kToolFfplay},
+    };
+    for (const ToolScope& scope : kScopes) {
+        if (entry.name.compare(QLatin1String(scope.name), Qt::CaseInsensitive) == 0) {
+            return scope.tools;
+        }
+    }
+    return kToolFfmpeg;
 }
 
 QStringList ParseNameColumn(const QString& output, int column) {
@@ -1277,15 +1816,20 @@ QString FfmpegCommandCatalog::CategoryName(FfmpegEntryCategory category) {
         return QStringLiteral("音频");
     case FfmpegEntryCategory::Muxing:
         return QStringLiteral("封装");
+    case FfmpegEntryCategory::ProbeOutput:
+        return QStringLiteral("信息输出");
+    case FfmpegEntryCategory::Playback:
+        return QStringLiteral("播放控制");
     }
     return QStringLiteral("其他");
 }
 
 QStringList FfmpegCommandCatalog::CategoryNames() {
-    return {CategoryName(FfmpegEntryCategory::Global),   CategoryName(FfmpegEntryCategory::InputOutput),
-            CategoryName(FfmpegEntryCategory::Time),     CategoryName(FfmpegEntryCategory::StreamSelection),
-            CategoryName(FfmpegEntryCategory::Encoding), CategoryName(FfmpegEntryCategory::Video),
-            CategoryName(FfmpegEntryCategory::Audio),    CategoryName(FfmpegEntryCategory::Muxing)};
+    return {CategoryName(FfmpegEntryCategory::Global),      CategoryName(FfmpegEntryCategory::InputOutput),
+            CategoryName(FfmpegEntryCategory::Time),        CategoryName(FfmpegEntryCategory::StreamSelection),
+            CategoryName(FfmpegEntryCategory::Encoding),    CategoryName(FfmpegEntryCategory::Video),
+            CategoryName(FfmpegEntryCategory::Audio),       CategoryName(FfmpegEntryCategory::Muxing),
+            CategoryName(FfmpegEntryCategory::ProbeOutput), CategoryName(FfmpegEntryCategory::Playback)};
 }
 
 const FfmpegCatalogEntry* FfmpegCommandCatalog::Find(const QString& name) {
@@ -1294,6 +1838,47 @@ const FfmpegCatalogEntry* FfmpegCommandCatalog::Find(const QString& name) {
     }
     for (const auto& entry : EntryTable()) {
         if (entry.name.compare(name, Qt::CaseInsensitive) == 0) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
+bool FfmpegCommandCatalog::IsAvailableTo(const FfmpegCatalogEntry& entry, FfmpegToolKind kind) {
+    if (kind == FfmpegToolKind::Unknown) {
+        return true; // 工具还没定下来时不做筛选
+    }
+    return (ToolsOf(entry) & ToolMaskOf(kind)) != 0u;
+}
+
+std::vector<const FfmpegCatalogEntry*> FfmpegCommandCatalog::EntriesFor(FfmpegToolKind kind) {
+    std::vector<const FfmpegCatalogEntry*> hits;
+    if (kind == FfmpegToolKind::Unknown) {
+        hits.reserve(EntryTable().size());
+    }
+    for (const auto& entry : EntryTable()) {
+        if (IsAvailableTo(entry, kind)) {
+            hits.push_back(&entry);
+        }
+    }
+    return hits;
+}
+
+const FfmpegCatalogEntry* FfmpegCommandCatalog::Find(const QString& name, FfmpegToolKind kind) {
+    if (name.isEmpty()) {
+        return nullptr;
+    }
+    if (kind == FfmpegToolKind::Unknown) {
+        return Find(name);
+    }
+    // 同名多条是真实存在的：-y / -loop / -fs 在 ffmpeg 与 ffplay 里意思完全不同。
+    // 所以这里必须遍历到底 —— 先 Find(name) 拿第一条再判归属，ffplay 的 -y 会被
+    // ffmpeg 那条"覆盖输出"挡住，用户就永远看不到"窗口高度"。
+    for (const auto& entry : EntryTable()) {
+        if (entry.name.compare(name, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        if (IsAvailableTo(entry, kind)) {
             return &entry;
         }
     }

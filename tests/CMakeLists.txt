@@ -284,7 +284,9 @@ set(VIDEOEYE_TESTS_NEEDING_AUTOMOC
     test_cancel_and_robustness
     test_control_bar_widget
     test_export_coordinator
+    test_ffmpeg_change_graph_view
     test_ffmpeg_command_editor
+    test_ffmpeg_command_input_assist
     test_ffmpeg_dictionary_widget
     test_ffmpeg_output_widget
     test_format_support
@@ -1771,6 +1773,32 @@ set_tests_properties(FfmpegCommandEditorDialogTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 命令框的实时解释与补全
+#
+# 说明: 边打命令边解释"光标处这个词是干什么的"，并给下一个词的可选补全。位置判断
+#       全在 core/ffmpeg/FfmpegCommandInputHint（纯逻辑，不依赖 Widget）；UI 组件只
+#       负责提示行、下拉与键盘。两层各测一份：判错位置会让补全把用户写的值换成
+#       一条路径，而提示行写错则是纯粹的误导。
+# =================================================
+videoeye_add_test(test_ffmpeg_command_input_hint
+    unit/test_ffmpeg_command_input_hint.cpp
+)
+target_link_libraries(test_ffmpeg_command_input_hint PRIVATE VideoEyeFfmpegTools Qt6::Core)
+add_test(NAME FfmpegCommandInputHintTests COMMAND test_ffmpeg_command_input_hint)
+
+videoeye_add_test(test_ffmpeg_command_input_assist
+    unit/test_ffmpeg_command_input_assist.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/ffmpeg_panel/FfmpegCommandInputAssist.cpp
+)
+target_link_libraries(test_ffmpeg_command_input_assist PRIVATE
+    VideoEyeUiTheme
+    VideoEyeFfmpegTools
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME FfmpegCommandInputAssistTests COMMAND test_ffmpeg_command_input_assist)
+set_tests_properties(FfmpegCommandInputAssistTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
 # 测试 78：FFmpeg 媒体探测（`ffmpeg -i` 的 stderr → 流参数快照）
 #
 # 说明: 纯文本解析，不启动子进程。样本全是真实 ffmpeg 输出的原文，覆盖三层坑：
@@ -1816,6 +1844,40 @@ target_link_libraries(test_ffmpeg_change_graph_view PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME FfmpegChangeGraphViewTests COMMAND test_ffmpeg_change_graph_view)
 set_tests_properties(FfmpegChangeGraphViewTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 81：音视频格式转换的计划拼装（容器/编码/质量 → argv）
+#
+# 说明: 纯逻辑，不启动 ffmpeg、不建临时媒体。用例盯着三件事：
+#       每个容器的默认编码与 faststart/滤镜该不该出现；不该成立的组合（webm+H.264、
+#       输入输出同一路径、流复制配缩放）必须被拒且不留半条命令；
+#       以及能力表与校验的一致性 —— 下拉里列出来的都能跑，没列出来的都跑不了。
+# =================================================
+videoeye_add_test(test_format_conversion
+    unit/test_format_conversion.cpp
+)
+target_link_libraries(test_format_conversion PRIVATE VideoEyeFfmpegTools)
+target_link_libraries(test_format_conversion PRIVATE Qt6::Core)
+add_test(NAME FormatConversionTests COMMAND test_format_conversion)
+
+# =================================================
+# 测试 82：格式转换页的参数联动
+#
+# 说明: offscreen 构造页面，只断言控件状态与命令预览，不启动 ffmpeg（源探测在
+#       editingFinished 才触发，setText 不会起进程）。盯的是"联动错了也看不出来"
+#       的那几处：换容器要换扩展名、WebM 里不该有 H.264、纯音频容器锁视频、
+#       流复制时缩放/帧率必须归位（-vf 与 -c:v copy 互斥）。
+# =================================================
+videoeye_add_test(test_conversion_panel
+    unit/test_conversion_panel.cpp
+)
+target_link_libraries(test_conversion_panel PRIVATE
+    VideoEyeUi
+    VideoEyeFfmpegTools
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ConversionPanelTests COMMAND test_conversion_panel)
+set_tests_properties(ConversionPanelTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================

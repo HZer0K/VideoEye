@@ -2,6 +2,7 @@
 
 #include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
+#include "ui/conversion_panel/ConversionPanel.h"
 #include "ui/ffmpeg_panel/FfmpegPanel.h"
 #include "ui/main_window/MediaInfoCoordinator.h"
 #include "ui/main_window/OverviewPage.h"
@@ -76,6 +77,8 @@ bool OpenSessionController::OpenRawImage(const QString& source, bool autoplay) {
         deps_.analysis_panel->SetCurrentVideoPath(QString());
     if (deps_.ffmpeg_panel)
         deps_.ffmpeg_panel->SetCurrentFile(QString());
+    if (deps_.conversion_panel)
+        deps_.conversion_panel->SetCurrentFile(QString());
 
     if (!deps_.player_panel->LoadRawImageFile(source)) {
         // 裸图像按像素序列加载失败：最常见的两类原因是文件本身不是像素数据，
@@ -122,6 +125,9 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
     if (deps_.ffmpeg_panel) {
         deps_.ffmpeg_panel->SetCurrentFile(source);
     }
+    if (deps_.conversion_panel) {
+        deps_.conversion_panel->SetCurrentFile(source);
+    }
 
     // 裸 PCM 的打开/探测同样要读文件（时长按文件大小估算），以前在 UI 线程同步做，
     // 大文件上整窗会卡住。这里复用与通用媒体相同的事务式异步打开，收尾见
@@ -147,6 +153,9 @@ bool OpenSessionController::OpenMediaAsync(const QString& source, bool autoplay)
     deps_.analysis_panel->SetCurrentVideoPath(source);
     if (deps_.ffmpeg_panel) {
         deps_.ffmpeg_panel->SetCurrentFile(source);
+    }
+    if (deps_.conversion_panel) {
+        deps_.conversion_panel->SetCurrentFile(source);
     }
 
     // 事务式异步打开：UI 线程只做"换媒体复位"并登记收尾信息，耗时的
@@ -267,6 +276,8 @@ void OpenSessionController::OnPcmOpenFinished(const OpenTicket& ticket, bool ok)
         deps_.analysis_panel->SetCurrentVideoPath(QString());
     if (deps_.ffmpeg_panel)
         deps_.ffmpeg_panel->SetCurrentFile(QString());
+    if (deps_.conversion_panel)
+        deps_.conversion_panel->SetCurrentFile(QString());
     if (deps_.overview_page) {
         deps_.overview_page->ClearFileSummary();
         deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
