@@ -24,12 +24,15 @@ using videoeye::ffmpeg::BuildConversionPlan;
 using videoeye::ffmpeg::ConversionAudioCodec;
 using videoeye::ffmpeg::ConversionContainer;
 using videoeye::ffmpeg::ConversionFrameRate;
+using videoeye::ffmpeg::ConversionPixelFormat;
 using videoeye::ffmpeg::ConversionPlan;
+using videoeye::ffmpeg::ConversionPreset;
 using videoeye::ffmpeg::ConversionProfile;
 using videoeye::ffmpeg::ConversionQuality;
 using videoeye::ffmpeg::ConversionScale;
 using videoeye::ffmpeg::ConversionSourceFacts;
 using videoeye::ffmpeg::ConversionVideoCodec;
+using videoeye::ffmpeg::ConversionVideoRateMode;
 using videoeye::ffmpeg::ResolveAudioCodec;
 using videoeye::ffmpeg::ResolveVideoCodec;
 
@@ -191,6 +194,172 @@ TEST_F(FormatConversionPlanTest, CustomCrfIsClampedToCodecRange) {
     ASSERT_TRUE(vp9.ok) << S(vp9.error);
     // VP9 的上限是 63，不能被 h264 的 51 夹住。
     EXPECT_EQ(S(ValueAfter(vp9.arguments, QStringLiteral("-crf"))), "63");
+}
+
+TEST_F(FormatConversionPlanTest, BitrateModeUsesBvAndDropsCrf) {
+    ConversionProfile profile;
+    profile.video_rate_mode = ConversionVideoRateMode::Bitrate;
+    profile.video_bitrate_kbps = 5000;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-b:v"))), "5000k");
+    EXPECT_FALSE(plan.arguments.contains(QStringLiteral("-crf")));
+    // 预设仍然对 H.264 生效：码率模式只替换码率控制方式。
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-preset"))), "medium");
+}
+
+TEST_F(FormatConversionPlanTest, BitrateModeRequiresPositiveBitrate) {
+    ConversionProfile profile;
+    profile.video_rate_mode = ConversionVideoRateMode::Bitrate; // video_bitrate_kbps 默认 0
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    EXPECT_FALSE(plan.ok);
+    EXPECT_TRUE(plan.error.contains(QStringLiteral("码率"))) << S(plan.error);
+    EXPECT_TRUE(plan.arguments.isEmpty());
+}
+
+TEST_F(FormatConversionPlanTest, BitrateModeDoesNotWriteZeroBufferForVp9) {
+    ConversionProfile profile;
+    profile.container = ConversionContainer::Webm;
+    profile.video_rate_mode = ConversionVideoRateMode::Bitrate;
+    profile.video_bitrate_kbps = 2000;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.webm")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-b:v"))), "2000k");
+    EXPECT_FALSE(plan.arguments.contains(QStringLiteral("-crf")));
+}
+
+TEST_F(FormatConversionPlanTest, PresetIsHonoredForH264AndH265) {
+    ConversionProfile h264;
+    h264.preset = ConversionPreset::VerySlow;
+    const ConversionPlan h264_plan = BuildConversionPlan(h264, input_, Output(QStringLiteral("a.mp4")));
+    ASSERT_TRUE(h264_plan.ok) << S(h264_plan.error);
+    EXPECT_EQ(S(ValueAfter(h264_plan.arguments, QStringLiteral("-preset"))), "veryslow");
+
+    ConversionProfile h265;
+    h265.container = ConversionContainer::Mkv;
+    h265.video = ConversionVideoCodec::H265;
+    h265.preset = ConversionPreset::Faster;
+    const ConversionPlan h265_plan = BuildConversionPlan(h265, input_, Output(QStringLiteral("a.mkv")));
+    ASSERT_TRUE(h265_plan.ok) << S(h265_plan.error);
+    EXPECT_EQ(S(ValueAfter(h265_plan.arguments, QStringLiteral("-preset"))), "faster");
+}
+
+TEST_F(FormatConversionPlanTest, PresetIsIgnoredForCodecsWithoutPreset) {
+    ConversionProfile profile;
+    profile.container = ConversionContainer::Webm; // 自动 → VP9
+    profile.preset = ConversionPreset::VerySlow;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.webm")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_FALSE(plan.arguments.contains(QStringLiteral("-preset")));
+}
+
+TEST_F(FormatConversionPlanTest, TenBitPixelFormatAppliedForSupportedCodecs) {
+    ConversionProfile profile;
+    profile.pixel_format = ConversionPixelFormat::Yuv420p10;
+    const ConversionPlan h264 = BuildConversionPlan(profile, input_, Output(QStringLiteral("a.mp4")));
+    ASSERT_TRUE(h264.ok) << S(h264.error);
+    EXPECT_EQ(S(ValueAfter(h264.arguments, QStringLiteral("-pix_fmt"))), "yuv420p10le");
+
+    ConversionProfile av1;
+    av1.container = ConversionContainer::Mkv;
+    av1.video = ConversionVideoCodec::Av1;
+    av1.pixel_format = ConversionPixelFormat::Yuv420p10;
+    const ConversionPlan av1_plan = BuildConversionPlan(av1, input_, Output(QStringLiteral("a.mkv")));
+    ASSERT_TRUE(av1_plan.ok) << S(av1_plan.error);
+    EXPECT_EQ(S(ValueAfter(av1_plan.arguments, QStringLiteral("-pix_fmt"))), "yuv420p10le");
+}
+
+TEST_F(FormatConversionPlanTest, TenBitIsRejectedForMpeg4) {
+    ConversionProfile profile;
+    profile.container = ConversionContainer::Avi;
+    profile.video = ConversionVideoCodec::Mpeg4;
+    profile.pixel_format = ConversionPixelFormat::Yuv420p10;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.avi")));
+
+    EXPECT_FALSE(plan.ok);
+    EXPECT_TRUE(plan.error.contains(QStringLiteral("10-bit"))) << S(plan.error);
+    EXPECT_TRUE(plan.arguments.isEmpty());
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsAreAppendedBeforeOutput) {
+    ConversionProfile profile;
+    profile.extra_arguments = QStringLiteral("-metadata title=\"hello world\" -map 0:s?");
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_TRUE(plan.arguments.contains(QStringLiteral("-metadata")));
+    EXPECT_TRUE(plan.arguments.contains(QStringLiteral("title=hello world")));
+    EXPECT_TRUE(plan.arguments.contains(QStringLiteral("-map")));
+    EXPECT_TRUE(plan.arguments.contains(QStringLiteral("0:s?")));
+    // 输出必须仍然是最后一个 token，否则 ffmpeg 会把附加参数当成第二个输出。
+    EXPECT_EQ(S(plan.arguments.back()), S(Output(QStringLiteral("out.mp4"))));
+    EXPECT_LT(plan.arguments.indexOf(QStringLiteral("-metadata")), plan.arguments.size() - 1);
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsAreRejectedWhenDangerous) {
+    const QStringList cases = {QStringLiteral("-i other.mp4"), QStringLiteral("-y"), QStringLiteral("-n"),
+                               QStringLiteral("-nostdin")};
+    for (const QString& extra : cases) {
+        ConversionProfile profile;
+        profile.extra_arguments = extra;
+        const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+        EXPECT_FALSE(plan.ok) << S(extra);
+        EXPECT_TRUE(plan.arguments.isEmpty()) << S(extra);
+    }
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsMustStartWithAnOption) {
+    ConversionProfile profile;
+    profile.extra_arguments = QStringLiteral("out2.mp4");
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    EXPECT_FALSE(plan.ok);
+    EXPECT_TRUE(plan.error.contains(QStringLiteral("以 - 开头"))) << S(plan.error);
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsCannotContainInputOrOutputPath) {
+    ConversionProfile profile;
+    profile.extra_arguments = QStringLiteral("-metadata ") + input_;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    EXPECT_FALSE(plan.ok);
+    EXPECT_TRUE(plan.error.contains(QStringLiteral("路径"))) << S(plan.error);
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsWithUnclosedQuoteAreRejected) {
+    ConversionProfile profile;
+    profile.extra_arguments = QStringLiteral("-metadata title=\"oops");
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    EXPECT_FALSE(plan.ok);
+    EXPECT_TRUE(plan.error.contains(QStringLiteral("引号"))) << S(plan.error);
+}
+
+TEST_F(FormatConversionPlanTest, ExtraArgumentsOverrideManagedOptionWarns) {
+    ConversionProfile profile;
+    profile.extra_arguments = QStringLiteral("-crf 18");
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_TRUE(HasWarning(plan.warnings, QStringLiteral("-crf")));
+    // 用户写的 -crf 18 在页面生成的 -crf 23 之后，ffmpeg 以最后一个为准。
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-crf"))), "23");
+    EXPECT_EQ(plan.arguments.lastIndexOf(QStringLiteral("-crf")), plan.arguments.size() - 3);
+}
+
+TEST_F(FormatConversionPlanTest, GifKeepsOutputLastWithExtraArguments) {
+    ConversionProfile profile;
+    profile.container = ConversionContainer::Gif;
+    profile.extra_arguments = QStringLiteral("-metadata title=demo");
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.gif")));
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_TRUE(plan.arguments.contains(QStringLiteral("-metadata")));
+    EXPECT_EQ(S(plan.arguments.back()), S(Output(QStringLiteral("out.gif"))));
 }
 
 TEST_F(FormatConversionPlanTest, GifUsesPaletteGraphAndIgnoresCodecChoices) {

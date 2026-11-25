@@ -94,6 +94,8 @@ private:
     ffmpeg::ConversionProfile CurrentProfile() const;
     /// 把缩放 / 帧率归位到"保持原样"（流复制时 -vf 不被允许）。
     void ResetTransformChoices();
+    /// 把只对特定编码有意义的选项归位：预设只留给 H.264/H.265，10-bit 只留给支持的编码。
+    void NormalizeCodecOptions(ffmpeg::ConversionVideoCodec video);
     /// 读当前输入 / 输出 / 参数，刷新命令预览、提示行与「开始转换」可用性。
     void RebuildPlan();
 
@@ -127,9 +129,14 @@ private:
     QComboBox* audio_combo_ = nullptr;
     QComboBox* quality_combo_ = nullptr;
     QSpinBox* crf_spin_ = nullptr;
+    QComboBox* rate_mode_combo_ = nullptr;
+    QSpinBox* video_bitrate_spin_ = nullptr;
+    QComboBox* preset_combo_ = nullptr;
+    QComboBox* pixel_combo_ = nullptr;
     QComboBox* bitrate_combo_ = nullptr;
     QComboBox* scale_combo_ = nullptr;
     QComboBox* fps_combo_ = nullptr;
+    QLineEdit* extra_edit_ = nullptr;
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_output_button_ = nullptr;
     /// 输出路径是否由程序自动生成（用户一改就置 false，此后不再被覆盖）

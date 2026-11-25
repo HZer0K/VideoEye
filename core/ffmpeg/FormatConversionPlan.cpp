@@ -339,6 +339,126 @@ bool LooksLikeLocalPath(const QString& path) {
     return true;
 }
 
+/// 附加参数的分词结果。`ok=false` 时 error 是可以直接显示给人看的原因。
+struct ParsedExtraArguments {
+    bool ok = true;
+    QString error;
+    QStringList tokens;
+    /// 是否出现了页面已经生成的同名选项（ffmpeg 以最后一个为准，页面设置会被覆盖）。
+    QStringList overridden_options;
+};
+
+/// 按 shell 习惯分词：空白分隔，单/双引号可包住带空格的整段。**不把反斜杠当转义**
+/// —— 用户可能写 Windows 路径，把 `\` 吃掉会得到一条完全不同的命令。
+bool TokenizeExtraArguments(const QString& text, QStringList* tokens, QString* error) {
+    QString current;
+    bool in_token = false;
+    QChar quote;
+    for (const QChar ch : text) {
+        if (!quote.isNull()) {
+            if (ch == quote) {
+                quote = QChar();
+            } else {
+                current += ch;
+            }
+            continue;
+        }
+        if (ch == QLatin1Char('"') || ch == QLatin1Char('\'')) {
+            quote = ch;
+            in_token = true;
+            continue;
+        }
+        if (ch.isSpace()) {
+            if (in_token) {
+                tokens->append(current);
+                current.clear();
+                in_token = false;
+            }
+            continue;
+        }
+        current += ch;
+        in_token = true;
+    }
+    if (!quote.isNull()) {
+        *error = QStringLiteral("附加参数里的引号没有闭合");
+        return false;
+    }
+    if (in_token) {
+        tokens->append(current);
+    }
+    return true;
+}
+
+/// 页面自己也会生成的选项。附加参数里重复出现时给一条警告（不是错误）：
+/// 高级用户可能就是想覆盖页面设置，但得知道"最后一个才生效"。
+const QStringList& ManagedOptions() {
+    static const QStringList options = {
+        QStringLiteral("-c:v"),
+        QStringLiteral("-c:a"),
+        QStringLiteral("-crf"),
+        QStringLiteral("-b:v"),
+        QStringLiteral("-b:a"),
+        QStringLiteral("-vf"),
+        QStringLiteral("-pix_fmt"),
+        QStringLiteral("-preset"),
+        QStringLiteral("-movflags"),
+        QStringLiteral("-r"),
+        QStringLiteral("-s"),
+        QStringLiteral("-q:v"),
+        QStringLiteral("-filter_complex"),
+        QStringLiteral("-loop"),
+    };
+    return options;
+}
+
+ParsedExtraArguments ParseExtraArguments(const QString& text, const QString& input, const QString& output) {
+    ParsedExtraArguments result;
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty()) {
+        return result;
+    }
+    if (!TokenizeExtraArguments(trimmed, &result.tokens, &result.error)) {
+        result.ok = false;
+        return result;
+    }
+    if (result.tokens.isEmpty()) {
+        return result;
+    }
+    // 第一个 token 必须是选项：否则会变成一个裸输出路径，把转换写成第二个文件。
+    if (!result.tokens.front().startsWith(QLatin1Char('-'))) {
+        result.ok = false;
+        result.error = QStringLiteral("附加参数必须从以 - 开头的选项开始，例如 -metadata title=片名");
+        return result;
+    }
+    for (const QString& token : result.tokens) {
+        const QString lower = token.toLower();
+        if (lower == QLatin1String("-i")) {
+            result.ok = false;
+            result.error = QStringLiteral("附加参数里不能再次出现 -i：一次转换只处理一个输入文件");
+            return result;
+        }
+        if (lower == QLatin1String("-y") || lower == QLatin1String("-n")) {
+            result.ok = false;
+            result.error = QStringLiteral("附加参数里不要写 -y / -n：覆盖策略由页面统一控制");
+            return result;
+        }
+        if (lower == QLatin1String("-nostdin")) {
+            result.ok = false;
+            result.error = QStringLiteral("附加参数里不能写 -nostdin：停止功能依赖 stdin 让 ffmpeg 收尾");
+            return result;
+        }
+        if (LooksLikeLocalPath(token) && (IsSameLocalFile(token, input) || IsSameLocalFile(token, output))) {
+            result.ok = false;
+            result.error = QStringLiteral("附加参数里不能包含输入或输出文件路径");
+            return result;
+        }
+        if (ManagedOptions().contains(lower) && !result.overridden_options.contains(lower)) {
+            result.overridden_options << lower;
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 // ===================== 能力表 =====================
@@ -413,6 +533,99 @@ QString AudioCodecLabel(ConversionAudioCodec codec) {
         return QStringLiteral("不要音频");
     }
     return QString();
+}
+
+std::vector<ConversionPreset> AllConversionPresets() {
+    using P = ConversionPreset;
+    return {P::UltraFast, P::SuperFast, P::VeryFast, P::Faster, P::Fast, P::Medium, P::Slow, P::Slower, P::VerySlow};
+}
+
+QString PresetLabel(ConversionPreset preset) {
+    switch (preset) {
+    case ConversionPreset::UltraFast:
+        return QStringLiteral("ultrafast（最快）");
+    case ConversionPreset::SuperFast:
+        return QStringLiteral("superfast");
+    case ConversionPreset::VeryFast:
+        return QStringLiteral("veryfast（快）");
+    case ConversionPreset::Faster:
+        return QStringLiteral("faster");
+    case ConversionPreset::Fast:
+        return QStringLiteral("fast");
+    case ConversionPreset::Medium:
+        return QStringLiteral("medium（默认）");
+    case ConversionPreset::Slow:
+        return QStringLiteral("slow（较慢 / 更小）");
+    case ConversionPreset::Slower:
+        return QStringLiteral("slower");
+    case ConversionPreset::VerySlow:
+        return QStringLiteral("veryslow（最慢 / 最小）");
+    }
+    return QStringLiteral("medium");
+}
+
+QString PresetName(ConversionPreset preset) {
+    switch (preset) {
+    case ConversionPreset::UltraFast:
+        return QStringLiteral("ultrafast");
+    case ConversionPreset::SuperFast:
+        return QStringLiteral("superfast");
+    case ConversionPreset::VeryFast:
+        return QStringLiteral("veryfast");
+    case ConversionPreset::Faster:
+        return QStringLiteral("faster");
+    case ConversionPreset::Fast:
+        return QStringLiteral("fast");
+    case ConversionPreset::Medium:
+        return QStringLiteral("medium");
+    case ConversionPreset::Slow:
+        return QStringLiteral("slow");
+    case ConversionPreset::Slower:
+        return QStringLiteral("slower");
+    case ConversionPreset::VerySlow:
+        return QStringLiteral("veryslow");
+    }
+    return QStringLiteral("medium");
+}
+
+bool CodecUsesPreset(ConversionVideoCodec codec) {
+    return codec == ConversionVideoCodec::H264 || codec == ConversionVideoCodec::H265;
+}
+
+std::vector<ConversionPixelFormat> AllConversionPixelFormats() {
+    return {ConversionPixelFormat::Yuv420p, ConversionPixelFormat::Yuv420p10};
+}
+
+QString PixelFormatLabel(ConversionPixelFormat format) {
+    switch (format) {
+    case ConversionPixelFormat::Yuv420p:
+        return QStringLiteral("8-bit（兼容性最好）");
+    case ConversionPixelFormat::Yuv420p10:
+        return QStringLiteral("10-bit（减少色带）");
+    }
+    return QStringLiteral("8-bit（兼容性最好）");
+}
+
+QString PixelFormatName(ConversionPixelFormat format) {
+    switch (format) {
+    case ConversionPixelFormat::Yuv420p:
+        return QStringLiteral("yuv420p");
+    case ConversionPixelFormat::Yuv420p10:
+        return QStringLiteral("yuv420p10le");
+    }
+    return QStringLiteral("yuv420p");
+}
+
+bool CodecSupportsTenBit(ConversionVideoCodec codec) {
+    switch (codec) {
+    case ConversionVideoCodec::H264:
+    case ConversionVideoCodec::H265:
+    case ConversionVideoCodec::Vp9:
+    case ConversionVideoCodec::Av1:
+        return true;
+    default:
+        return false;
+    }
 }
 
 QString VideoEncoderName(ConversionVideoCodec codec) {
@@ -542,6 +755,18 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         return plan;
     }
 
+    // 附加参数先分词并校验：错的话在拼任何命令之前返回，绝不留下半条 argv。
+    const ParsedExtraArguments extra = ParseExtraArguments(profile.extra_arguments, input, output);
+    if (!extra.ok) {
+        plan.error = extra.error;
+        return plan;
+    }
+    if (!extra.overridden_options.isEmpty()) {
+        plan.warnings << QStringLiteral(
+                             "附加参数与页面生成的选项重名（%1）：ffmpeg 以最后一个为准，页面上的对应设置可能被覆盖")
+                             .arg(extra.overridden_options.join(QStringLiteral("、")));
+    }
+
     // ---- GIF：唯一的参数是调色板，其余选项都不适用 ----
     if (profile.container == ConversionContainer::Gif) {
         const int fps = FrameRateValue(profile.fps) > 0 ? FrameRateValue(profile.fps) : 15;
@@ -557,7 +782,9 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
                              .arg(height);
         plan.arguments << QStringLiteral("-hide_banner") << QStringLiteral("-y") << QStringLiteral("-i") << input
                        << QStringLiteral("-filter_complex") << filter << QStringLiteral("-an")
-                       << QStringLiteral("-loop") << QStringLiteral("0") << output;
+                       << QStringLiteral("-loop") << QStringLiteral("0");
+        plan.arguments << extra.tokens;
+        plan.arguments << output;
         plan.ok = true;
         return plan;
     }
@@ -580,10 +807,22 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         return plan;
     }
 
+    // ---- 重编码视频的额外参数 ----
+    const bool reencode_video = video != ConversionVideoCodec::Copy && video != ConversionVideoCodec::None;
+    if (reencode_video && profile.pixel_format == ConversionPixelFormat::Yuv420p10 && !CodecSupportsTenBit(video)) {
+        plan.error = QStringLiteral("「%1」不支持 10-bit 输出，请把像素格式改回 8-bit").arg(VideoCodecLabel(video));
+        return plan;
+    }
+    if (reencode_video && profile.video_rate_mode == ConversionVideoRateMode::Bitrate &&
+        profile.video_bitrate_kbps <= 0) {
+        plan.error = QStringLiteral("按码率模式需要填写大于 0 的视频码率（kbps）");
+        return plan;
+    }
+
     // ---- 流复制的兼容性 ----
     // 源信息已知时才敢断言"必然失败"；未知时只提示，不然会把本来能跑的组合拦下来。
     if (video == ConversionVideoCodec::Copy) {
-        plan.warnings << QStringLiteral("流复制不重新编码：质量档位、CRF、缩放与帧率都不生效");
+        plan.warnings << QStringLiteral("流复制不重新编码：质量档位、码率模式、编码预设、像素格式、缩放与帧率都不生效");
         if (source.known) {
             if (!source.has_video) {
                 plan.warnings << QStringLiteral("源文件没有视频轨，-c:v copy 会被 ffmpeg 忽略");
@@ -630,7 +869,11 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         args << QStringLiteral("-vn");
     } else {
         args << QStringLiteral("-c:v") << VideoEncoderName(video);
-        if (video == ConversionVideoCodec::Mpeg4) {
+        if (profile.video_rate_mode == ConversionVideoRateMode::Bitrate) {
+            // 码率优先：体积可预估。上面已确保 kbps > 0；夹一个上界防止手滑。
+            args << QStringLiteral("-b:v")
+                 << QString::number(qBound(1, profile.video_bitrate_kbps, 200000)) + QStringLiteral("k");
+        } else if (video == ConversionVideoCodec::Mpeg4) {
             args << QStringLiteral("-q:v") << QString::number(QScaleFor(profile.quality, profile.crf));
         } else {
             args << QStringLiteral("-crf") << QString::number(CrfFor(video, profile.quality, profile.crf));
@@ -639,13 +882,13 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
                 // 默认的目标码率仍然生效，出来的文件会跟设定的质量对不上。
                 args << QStringLiteral("-b:v") << QStringLiteral("0");
             }
-            if (video == ConversionVideoCodec::H264 || video == ConversionVideoCodec::H265) {
-                args << QStringLiteral("-preset") << QStringLiteral("medium");
-            }
         }
-        // yuv420p 是"什么播放器都能放"的像素格式；HDR / 10bit 源会因此降到 8bit ——
-        // 这一页的定位是交付兼容性，不是保留母版，所以这里固定下来。
-        args << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
+        // -preset 只有 x264/x265 认；其它编码即使选了也不写进命令，避免 ffmpeg 报错。
+        if (CodecUsesPreset(video)) {
+            args << QStringLiteral("-preset") << PresetName(profile.preset);
+        }
+        // 8-bit 兼容性最好；10-bit 只允许在支持的编码上（上面已校验）。
+        args << QStringLiteral("-pix_fmt") << PixelFormatName(profile.pixel_format);
     }
 
     // ---- 音频 ----
@@ -681,6 +924,9 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         // 把 moov 前置，边下边播。只对 mp4 家族有效；加到 .ts / .flv 上会被拒绝。
         args << QStringLiteral("-movflags") << QStringLiteral("+faststart");
     }
+    // 附加参数放在所有自动生成的选项之后、输出路径之前：同名选项以用户写的为准，
+    // 同时保证输出路径永远是最后一个 token。
+    args << extra.tokens;
     args << output;
 
     plan.ok = true;

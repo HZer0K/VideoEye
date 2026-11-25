@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QStringList>
 #include <QTemporaryDir>
 
@@ -25,8 +26,10 @@ namespace {
 
 using videoeye::ffmpeg::ConversionAudioCodec;
 using videoeye::ffmpeg::ConversionContainer;
+using videoeye::ffmpeg::ConversionPixelFormat;
 using videoeye::ffmpeg::ConversionScale;
 using videoeye::ffmpeg::ConversionVideoCodec;
+using videoeye::ffmpeg::ConversionVideoRateMode;
 using videoeye::ui::ConversionPanel;
 
 QApplication* EnsureApp() {
@@ -50,6 +53,12 @@ protected:
         video_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionVideoCodec"));
         audio_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionAudioCodec"));
         scale_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionScale"));
+        quality_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionQuality"));
+        rate_mode_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionRateMode"));
+        video_bitrate_ = panel_->findChild<QSpinBox*>(QStringLiteral("ConversionVideoBitrate"));
+        preset_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionPreset"));
+        pixel_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionPixelFormat"));
+        extra_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionExtraArgs"));
         input_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionInputPath"));
         output_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionOutputPath"));
         command_ = panel_->findChild<QPlainTextEdit*>(QStringLiteral("ConversionCommand"));
@@ -58,6 +67,12 @@ protected:
         ASSERT_NE(video_, nullptr);
         ASSERT_NE(audio_, nullptr);
         ASSERT_NE(scale_, nullptr);
+        ASSERT_NE(quality_, nullptr);
+        ASSERT_NE(rate_mode_, nullptr);
+        ASSERT_NE(video_bitrate_, nullptr);
+        ASSERT_NE(preset_, nullptr);
+        ASSERT_NE(pixel_, nullptr);
+        ASSERT_NE(extra_, nullptr);
         ASSERT_NE(input_, nullptr);
         ASSERT_NE(output_, nullptr);
         ASSERT_NE(command_, nullptr);
@@ -100,6 +115,12 @@ protected:
     QComboBox* video_ = nullptr;
     QComboBox* audio_ = nullptr;
     QComboBox* scale_ = nullptr;
+    QComboBox* quality_ = nullptr;
+    QComboBox* rate_mode_ = nullptr;
+    QSpinBox* video_bitrate_ = nullptr;
+    QComboBox* preset_ = nullptr;
+    QComboBox* pixel_ = nullptr;
+    QLineEdit* extra_ = nullptr;
     QLineEdit* input_ = nullptr;
     QLineEdit* output_ = nullptr;
     QPlainTextEdit* command_ = nullptr;
@@ -164,6 +185,68 @@ TEST_F(ConversionPanelTest, CopyVideoDisablesScaleAndDropsFilter) {
     EXPECT_TRUE(CommandText().contains(QStringLiteral("copy"))) << CommandText().toStdString();
     // 缩放下拉被锁住时，值也必须回到"保持原样"，否则界面显示与实际命令不一致。
     EXPECT_EQ(scale_->currentData().toInt(), static_cast<int>(ConversionScale::Keep));
+}
+
+TEST_F(ConversionPanelTest, BitrateModeSwitchesControlAndCommand) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    ASSERT_TRUE(quality_->isEnabled());
+    ASSERT_FALSE(video_bitrate_->isEnabled());
+
+    const int index = rate_mode_->findData(static_cast<int>(ConversionVideoRateMode::Bitrate));
+    ASSERT_GE(index, 0);
+    rate_mode_->setCurrentIndex(index);
+
+    // 按码率模式下 CRF 不再是旋钮，命令里也必须只有 -b:v。
+    EXPECT_FALSE(quality_->isEnabled());
+    EXPECT_TRUE(video_bitrate_->isEnabled());
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("-b:v"))) << CommandText().toStdString();
+    EXPECT_FALSE(CommandText().contains(QStringLiteral("-crf"))) << CommandText().toStdString();
+}
+
+TEST_F(ConversionPanelTest, PresetIsOnlyEnabledForH264AndH265) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+
+    SelectContainer(ConversionContainer::Webm); // Auto → VP9
+    EXPECT_FALSE(preset_->isEnabled());
+    EXPECT_FALSE(CommandText().contains(QStringLiteral("-preset"))) << CommandText().toStdString();
+
+    SelectContainer(ConversionContainer::Mkv);
+    SelectVideo(ConversionVideoCodec::H264);
+    EXPECT_TRUE(preset_->isEnabled());
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("-preset"))) << CommandText().toStdString();
+}
+
+TEST_F(ConversionPanelTest, TenBitIsAppliedForH264AndRefusedForMpeg4) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    const int ten = pixel_->findData(static_cast<int>(ConversionPixelFormat::Yuv420p10));
+    ASSERT_GE(ten, 0);
+
+    // 默认 MP4 + Auto(H.264)：10-bit 可用，命令里是 yuv420p10le。
+    pixel_->setCurrentIndex(ten);
+    EXPECT_EQ(pixel_->currentData().toInt(), static_cast<int>(ConversionPixelFormat::Yuv420p10));
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("yuv420p10le"))) << CommandText().toStdString();
+
+    // AVI + MPEG-4 只有 8-bit：选了也要被页面拉回 8-bit，不能生成必然失败的命令。
+    SelectContainer(ConversionContainer::Avi);
+    SelectVideo(ConversionVideoCodec::Mpeg4);
+    pixel_->setCurrentIndex(ten);
+    EXPECT_EQ(pixel_->currentData().toInt(), static_cast<int>(ConversionPixelFormat::Yuv420p));
+    EXPECT_FALSE(CommandText().contains(QStringLiteral("yuv420p10le"))) << CommandText().toStdString();
+}
+
+TEST_F(ConversionPanelTest, ExtraArgumentsArePreviewedAndDangerousOnesAreRejected) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+
+    extra_->setText(QStringLiteral("-metadata title=\"demo\""));
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("title=demo"))) << CommandText().toStdString();
+
+    // -y 会绕过页面的覆盖确认：预览里必须直接显示原因，而不是拼出一条能跑的命令。
+    extra_->setText(QStringLiteral("-y"));
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("覆盖策略"))) << CommandText().toStdString();
+    EXPECT_FALSE(start_->isEnabled());
+
+    extra_->setText(QStringLiteral("not-an-option"));
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("以 - 开头"))) << CommandText().toStdString();
 }
 
 TEST_F(ConversionPanelTest, InputWithGeneratedOutputAllowsStart) {

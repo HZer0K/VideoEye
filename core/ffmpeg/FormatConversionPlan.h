@@ -74,6 +74,32 @@ enum class ConversionQuality {
     Custom, // 用 profile.crf
 };
 
+/// 视频码率控制方式。两者是 ffmpeg 里的互斥项（-crf vs -b:v）：
+/// 质量优先时体积随内容浮动；码率优先时体积可预估，适合有上传/带宽上限的交付。
+enum class ConversionVideoRateMode {
+    Quality, // -crf（MPEG-4 走 -q:v）
+    Bitrate, // -b:v，用 profile.video_bitrate_kbps
+};
+
+/// x264/x265 的速度 / 压缩率取舍。只有 H.264/H.265 认 -preset，其它编码忽略。
+enum class ConversionPreset {
+    UltraFast,
+    SuperFast,
+    VeryFast,
+    Faster,
+    Fast,
+    Medium,
+    Slow,
+    Slower,
+    VerySlow,
+};
+
+/// 输出像素格式。8-bit 兼容性最好；10-bit 能减少暗部色带，但要求编码器支持。
+enum class ConversionPixelFormat {
+    Yuv420p,   // -pix_fmt yuv420p
+    Yuv420p10, // -pix_fmt yuv420p10le
+};
+
 enum class ConversionScale {
     Keep,
     P1080, // 1920×1080（只缩不放：短边按 -2 自动算，保持偶数）
@@ -105,10 +131,20 @@ struct ConversionProfile {
     ConversionQuality quality = ConversionQuality::Balanced;
     /// 仅 ConversionQuality::Custom 时生效；其它档位由 CrfFor 决定。
     int crf = 23;
+    /// 视频码率控制方式。仅重编码视频时生效；流复制 / 不要视频时忽略。
+    ConversionVideoRateMode video_rate_mode = ConversionVideoRateMode::Quality;
+    /// 仅 Bitrate 模式生效；<=0 时判 error（不替用户猜一个码率）。
+    int video_bitrate_kbps = 0;
+    /// 仅 H.264/H.265 重编码时生效。
+    ConversionPreset preset = ConversionPreset::Medium;
+    ConversionPixelFormat pixel_format = ConversionPixelFormat::Yuv420p;
     /// 0 = 自动（交给编码器）。流复制时忽略。
     int audio_bitrate_kbps = 0;
     ConversionScale scale = ConversionScale::Keep;
     ConversionFrameRate fps = ConversionFrameRate::Keep;
+    /// 追加到输出文件之前的原始 ffmpeg 参数（原样文本）。由 BuildConversionPlan
+    /// 分词并校验：不允许 -i / -y / -n / -nostdin，也不允许出现输入/输出路径。
+    QString extra_arguments;
 };
 
 struct ConversionPlan {
@@ -145,6 +181,19 @@ QString ContainerExtension(ConversionContainer container); // "mp4"
 QString ContainerLabel(ConversionContainer container);     // "MP4（最通用）"
 QString VideoCodecLabel(ConversionVideoCodec codec);       // "H.264（兼容性最好）"
 QString AudioCodecLabel(ConversionAudioCodec codec);       // "AAC"
+
+/// 编码预设：下拉顺序即由快到慢。
+std::vector<ConversionPreset> AllConversionPresets();
+QString PresetLabel(ConversionPreset preset); // "slow（较慢/更小）"
+QString PresetName(ConversionPreset preset);  // "slow"
+/// 只有 x264/x265 认 -preset；其它编码即使设置了也不会出现在命令里。
+bool CodecUsesPreset(ConversionVideoCodec codec);
+
+std::vector<ConversionPixelFormat> AllConversionPixelFormats();
+QString PixelFormatLabel(ConversionPixelFormat format); // "8-bit（兼容性最好）"
+QString PixelFormatName(ConversionPixelFormat format);  // "yuv420p10le"
+/// 10-bit 只对 H.264/H.265/VP9/AV1 有意义（MPEG-4 Part 2 只有 8-bit）。
+bool CodecSupportsTenBit(ConversionVideoCodec codec);
 /// 实际传给 ffmpeg 的编码器名；Copy / None 返回空。
 QString VideoEncoderName(ConversionVideoCodec codec); // "libx264"
 QString AudioEncoderName(ConversionAudioCodec codec); // "aac"
