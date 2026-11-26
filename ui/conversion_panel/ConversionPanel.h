@@ -84,6 +84,14 @@ private slots:
     void OnProbeFinished(const ffmpeg::FfmpegRunResult& result);
     void OnProbeTimeout();
 
+    void OnEncoderListOutput(const QString& text, bool is_error);
+    void OnEncoderListFinished(const ffmpeg::FfmpegRunResult& result);
+    void OnEncoderListTimeout();
+
+    void OnVerifyOutput(const QString& text, bool is_error);
+    void OnVerifyFinished(const ffmpeg::FfmpegRunResult& result);
+    void OnVerifyTimeout();
+
 private:
     void BuildUi();
     QWidget* BuildHeader();
@@ -108,6 +116,16 @@ private:
     void SetRunning(bool running);
     void StartProbe(const QString& path);
     void CancelProbe();
+
+    /// 查一次 `ffmpeg -encoders` 填进 FfmpegCapabilityCache：预览阶段就能发现
+    /// 这份 ffmpeg 没编进 libx265 / libvpx / libaom 之类的编码器。
+    void StartEncoderListProbe(const QString& program);
+    void CancelEncoderListProbe();
+
+    /// 转换成功后回读产物，核对"到底转成了什么"（编码 / 分辨率 / 音轨 / 时长）。
+    void StartVerify(const QString& path);
+    void CancelVerify();
+    void ApplyVerification(const ffmpeg::MediaProbeSnapshot& snapshot);
 
     void AppendLog(const QString& line, bool is_error);
     void ShowProgressLine();
@@ -176,6 +194,26 @@ private:
     quint64 probe_generation_ = 0;
     quint64 probe_launch_generation_ = 0;
     ffmpeg::MediaProbeSnapshot source_probe_;
+
+    // ---- 编码器清单（`ffmpeg -encoders`，结果写进全局能力缓存）----
+    ffmpeg::FfmpegProcessRunner* encoder_runner_ = nullptr;
+    QTimer* encoder_timer_ = nullptr;
+    QString encoder_buffer_;
+    QString encoder_program_;
+    quint64 encoder_generation_ = 0;
+    quint64 encoder_launch_generation_ = 0;
+
+    // ---- 产物核对（转换成功后回读输出文件）----
+    ffmpeg::FfmpegProcessRunner* verify_runner_ = nullptr;
+    QTimer* verify_timer_ = nullptr;
+    QString verify_buffer_;
+    QString verify_path_;
+    quint64 verify_generation_ = 0;
+    quint64 verify_launch_generation_ = 0;
+    /// 本次转换是按什么目标跑的：核对必须以"开始那一刻"的设置为准，
+    /// 不能被转换结束后用户又改过的下拉值带偏。
+    ffmpeg::ConversionProfile verify_profile_;
+    ffmpeg::ConversionSourceFacts verify_source_;
 
     QString current_media_path_;
 };

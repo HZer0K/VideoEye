@@ -24,6 +24,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "core/ffmpeg/FfmpegCommandCatalog.h"
 #include "core/ffmpeg/FfmpegCommandPreflight.h"
 #include "core/ffmpeg/FfmpegFailureDiagnostics.h"
 #include "core/ffmpeg/FfmpegToolLocator.h"
@@ -99,6 +100,22 @@ ConversionPanel::ConversionPanel(QWidget* parent) : QWidget(parent) {
     probe_timer_->setSingleShot(true);
     connect(probe_timer_, &QTimer::timeout, this, &ConversionPanel::OnProbeTimeout);
 
+    // 编码器清单也用独立 runner：它只打印 `-encoders`，和源探测 / 转换互不干扰。
+    encoder_runner_ = new ffmpeg::FfmpegProcessRunner(this);
+    connect(encoder_runner_, &ffmpeg::FfmpegProcessRunner::OutputLine, this, &ConversionPanel::OnEncoderListOutput);
+    connect(encoder_runner_, &ffmpeg::FfmpegProcessRunner::Finished, this, &ConversionPanel::OnEncoderListFinished);
+    encoder_timer_ = new QTimer(this);
+    encoder_timer_->setSingleShot(true);
+    connect(encoder_timer_, &QTimer::timeout, this, &ConversionPanel::OnEncoderListTimeout);
+
+    // 产物核对：转换成功后再跑一次 `ffmpeg -i <输出>`，读出来的才是真结果。
+    verify_runner_ = new ffmpeg::FfmpegProcessRunner(this);
+    connect(verify_runner_, &ffmpeg::FfmpegProcessRunner::OutputLine, this, &ConversionPanel::OnVerifyOutput);
+    connect(verify_runner_, &ffmpeg::FfmpegProcessRunner::Finished, this, &ConversionPanel::OnVerifyFinished);
+    verify_timer_ = new QTimer(this);
+    verify_timer_->setSingleShot(true);
+    connect(verify_timer_, &QTimer::timeout, this, &ConversionPanel::OnVerifyTimeout);
+
     RefreshToolState();
     RefreshCodecChoices();
     RebuildPlan();
@@ -106,6 +123,8 @@ ConversionPanel::ConversionPanel(QWidget* parent) : QWidget(parent) {
 
 ConversionPanel::~ConversionPanel() {
     CancelProbe();
+    CancelEncoderListProbe();
+    CancelVerify();
 }
 
 // ===================== UI =====================
@@ -468,6 +487,20 @@ void ConversionPanel::RebuildPlan() {
         command_view_->setPlainText(plan.error);
     }
 
+    // 编码器是否真的在这份 ffmpeg 里：清单没查过时 HasEncoder 一律返回 true（不下结论），
+    // 查到缺失就在预览阶段拦住，不必等它跑到一半才报 "Unknown encoder"。
+    QStringList missing_encoders;
+    if (plan.ok) {
+        auto& caps = ffmpeg::FfmpegCapabilityCache::Instance();
+        if (caps.encoders_known()) {
+            for (const QString& encoder : ffmpeg::RequiredEncoders(profile)) {
+                if (!caps.HasEncoder(encoder)) {
+                    missing_encoders << encoder;
+                }
+            }
+        }
+    }
+
     // 提示行：先报"实际会用什么"，再报能跑但有坑的地方
     QStringList notes;
     if (plan.ok) {
@@ -490,8 +523,16 @@ void ConversionPanel::RebuildPlan() {
         }
         notes << actual.join(QStringLiteral(" · "));
         notes << plan.warnings;
-        hint_label_->setStyleSheet(
-            ColorStyle(plan.warnings.isEmpty() ? theme::color::kTextSecondary : theme::color::kWarning));
+        if (!missing_encoders.isEmpty()) {
+            notes << tr("本机 ffmpeg 缺少编码器：%1 —— 请改选编码，或换一份包含它们的 ffmpeg 构建")
+                         .arg(missing_encoders.join(QStringLiteral("、")));
+        }
+        if (!missing_encoders.isEmpty()) {
+            hint_label_->setStyleSheet(ColorStyle(theme::color::kDanger));
+        } else {
+            hint_label_->setStyleSheet(
+                ColorStyle(plan.warnings.isEmpty() ? theme::color::kTextSecondary : theme::color::kWarning));
+        }
     } else {
         notes << plan.error;
         hint_label_->setStyleSheet(ColorStyle(theme::color::kDanger));
@@ -500,7 +541,7 @@ void ConversionPanel::RebuildPlan() {
 
     const bool running = runner_ != nullptr && runner_->IsRunning();
     const bool tool_ready = !CurrentProgram().isEmpty();
-    start_button_->setEnabled(plan.ok && tool_ready && !running);
+    start_button_->setEnabled(plan.ok && tool_ready && !running && missing_encoders.isEmpty());
     stop_button_->setEnabled(running);
     // 流复制 / 不要视频时这些参数不会进命令，这里顺手置灰，
     // 比让用户点完再看到红字提示更省事。
@@ -588,6 +629,9 @@ ffmpeg::ConversionSourceFacts ConversionPanel::CurrentSourceFacts() const {
     facts.has_audio = source_probe_.CountPlayableStreams(ffmpeg::MediaStreamKind::Audio) > 0;
     facts.video_codec = video != nullptr ? video->codec : QString();
     facts.audio_codec = audio != nullptr ? audio->codec : QString();
+    facts.audio_track_count = source_probe_.CountPlayableStreams(ffmpeg::MediaStreamKind::Audio);
+    facts.subtitle_track_count = source_probe_.CountStreams(ffmpeg::MediaStreamKind::Subtitle);
+    facts.duration_seconds = source_probe_.duration_seconds;
     return facts;
 }
 
@@ -698,6 +742,194 @@ void ConversionPanel::OnProbeTimeout() {
     RebuildPlan();
 }
 
+// ===================== 编码器清单 =====================
+
+void ConversionPanel::StartEncoderListProbe(const QString& program) {
+    if (program.isEmpty()) {
+        return;
+    }
+    auto& caps = ffmpeg::FfmpegCapabilityCache::Instance();
+    if (caps.encoders_known()) {
+        return; // 已经查过（可能是「FFmpeg 命令」页查的），不再起进程
+    }
+    if (encoder_runner_->IsRunning()) {
+        if (encoder_program_ == program) {
+            return; // 同一份程序的清单正在查
+        }
+        // 程序换过：这一轮结果作废，等旧进程退出后在 Finished 回调里按新路径重来。
+        ++encoder_generation_;
+        encoder_buffer_.clear();
+        encoder_program_ = program;
+        encoder_runner_->Stop(0, 0);
+        return;
+    }
+    encoder_program_ = program;
+    encoder_buffer_.clear();
+    const quint64 generation = ++encoder_generation_;
+    encoder_launch_generation_ = generation;
+    encoder_timer_->start(10000);
+    if (!encoder_runner_->Start(program, {QStringLiteral("-hide_banner"), QStringLiteral("-encoders")})) {
+        encoder_timer_->stop();
+        encoder_buffer_.clear();
+    }
+}
+
+void ConversionPanel::CancelEncoderListProbe() {
+    if (encoder_timer_ != nullptr) {
+        encoder_timer_->stop();
+    }
+    ++encoder_generation_;
+    encoder_buffer_.clear();
+    if (encoder_runner_ != nullptr && encoder_runner_->IsRunning()) {
+        // 只是打印清单，没有输出文件要收尾 —— 直接终止，不用给优雅退出的时间。
+        encoder_runner_->Stop(0, 0);
+    }
+}
+
+void ConversionPanel::OnEncoderListOutput(const QString& text, bool) {
+    if (encoder_launch_generation_ != encoder_generation_) {
+        return;
+    }
+    encoder_buffer_ += text;
+    encoder_buffer_ += QLatin1Char('\n');
+}
+
+void ConversionPanel::OnEncoderListFinished(const ffmpeg::FfmpegRunResult& result) {
+    if (encoder_launch_generation_ != encoder_generation_) {
+        // 被"换程序"作废的一轮：它的清单一个字都不能用，按当前程序重查。
+        encoder_buffer_.clear();
+        StartEncoderListProbe(CurrentProgram());
+        return;
+    }
+    encoder_timer_->stop();
+    if (result.status == ffmpeg::FfmpegRunStatus::Failed || result.status == ffmpeg::FfmpegRunStatus::StartError ||
+        result.status == ffmpeg::FfmpegRunStatus::Stopped) {
+        // 查不到就当"未知"：HasEncoder 在未知时一律返回 true，绝不因为查不到而误拦。
+        encoder_buffer_.clear();
+        RebuildPlan();
+        return;
+    }
+    ffmpeg::FfmpegCapabilityCache::Instance().SetEncoders(
+        ffmpeg::FfmpegCommandCatalog::ParseEncoderNames(encoder_buffer_));
+    encoder_buffer_.clear();
+    RebuildPlan();
+}
+
+void ConversionPanel::OnEncoderListTimeout() {
+    ++encoder_generation_;
+    encoder_buffer_.clear();
+    if (encoder_runner_ != nullptr) {
+        encoder_runner_->Stop(0, 0);
+    }
+    RebuildPlan();
+}
+
+// ===================== 产物核对 =====================
+
+void ConversionPanel::StartVerify(const QString& path) {
+    CancelVerify();
+    if (path.isEmpty()) {
+        return;
+    }
+    const QString program = CurrentProgram();
+    if (program.isEmpty() || !QFileInfo(path).isFile()) {
+        return;
+    }
+    verify_path_ = path;
+    verify_buffer_.clear();
+    const quint64 generation = ++verify_generation_;
+    verify_launch_generation_ = generation;
+    verify_timer_->start(10000);
+    if (!verify_runner_->Start(program, ffmpeg::BuildMediaProbeArguments(path))) {
+        verify_timer_->stop();
+        verify_path_.clear();
+    }
+}
+
+void ConversionPanel::CancelVerify() {
+    if (verify_timer_ != nullptr) {
+        verify_timer_->stop();
+    }
+    ++verify_generation_;
+    verify_buffer_.clear();
+    verify_path_.clear();
+    if (verify_runner_ != nullptr && verify_runner_->IsRunning()) {
+        verify_runner_->Stop(0, 0);
+    }
+}
+
+void ConversionPanel::OnVerifyOutput(const QString& text, bool) {
+    if (verify_launch_generation_ != verify_generation_) {
+        return;
+    }
+    verify_buffer_ += text;
+    verify_buffer_ += QLatin1Char('\n');
+}
+
+void ConversionPanel::OnVerifyFinished(const ffmpeg::FfmpegRunResult&) {
+    // 与源探测同一口径：`ffmpeg -i` 一定以退出码 1 结束（"At least one output file
+    // must be specified"），这里只看解析结果，不看 status。
+    if (verify_launch_generation_ != verify_generation_ || verify_path_.isEmpty()) {
+        return;
+    }
+    verify_timer_->stop();
+    const ffmpeg::MediaProbeSnapshot snapshot = ffmpeg::ParseMediaProbe(verify_buffer_, verify_path_);
+    verify_buffer_.clear();
+    ApplyVerification(snapshot);
+}
+
+void ConversionPanel::OnVerifyTimeout() {
+    if (verify_path_.isEmpty()) {
+        return;
+    }
+    ++verify_generation_;
+    verify_buffer_.clear();
+    if (verify_runner_ != nullptr) {
+        verify_runner_->Stop(0, 0);
+    }
+    AppendLog(tr("核对：输出文件读不出流信息（可能仍在写入或格式不被支持），已跳过核对"), false);
+}
+
+void ConversionPanel::ApplyVerification(const ffmpeg::MediaProbeSnapshot& snapshot) {
+    if (!snapshot.parsed) {
+        AppendLog(tr("核对：读不出输出文件的流信息，无法确认转换结果"), false);
+        return;
+    }
+
+    // 先摆事实：盘上到底是一个什么文件。
+    QStringList parts;
+    if (!snapshot.container.isEmpty()) {
+        parts << snapshot.container;
+    }
+    parts << ffmpeg::FormatDurationHuman(snapshot.duration_seconds);
+    if (const auto* video = snapshot.FirstStream(ffmpeg::MediaStreamKind::Video)) {
+        QString video_text = video->codec;
+        if (video->has_size()) {
+            video_text += QLatin1Char(' ') + ffmpeg::FormatResolutionHuman(video->width, video->height);
+        }
+        parts << video_text.trimmed();
+    }
+    if (const auto* audio = snapshot.FirstStream(ffmpeg::MediaStreamKind::Audio)) {
+        parts << audio->codec;
+    }
+    AppendLog(tr("实测输出：%1").arg(parts.join(QStringLiteral(" · "))), false);
+
+    const ffmpeg::ConversionVerification verification =
+        ffmpeg::VerifyConversionOutput(verify_profile_, verify_source_, snapshot);
+    if (!verification.mismatch) {
+        status_label_->setText(status_label_->text() + tr(" · 已核对"));
+        AppendLog(tr("核对通过：输出编码与分辨率符合目标"), false);
+        return;
+    }
+
+    for (const QString& note : verification.notes) {
+        AppendLog(tr("核对：%1").arg(note), true);
+    }
+    status_label_->setText(status_label_->text() + tr(" · 发现 %1 处差异").arg(verification.notes.size()));
+    status_label_->setStyleSheet(ColorStyle(theme::color::kWarning));
+    emit StatusMessage(tr("格式转换完成，但实测结果与目标有差异"));
+}
+
 // ===================== 工具 =====================
 
 QString ConversionPanel::CurrentProgram() const {
@@ -718,6 +950,11 @@ void ConversionPanel::RefreshToolState() {
         tool_label_->setStyleSheet(ColorStyle(theme::color::kTextSecondary));
         tool_label_->setToolTip(cached_program_ + QStringLiteral("\n") + info.origin);
     }
+
+    // 编码器清单只需要查一次：缓存里已有就不再起进程（在「FFmpeg 命令」页查过会直接复用）。
+    if (!cached_program_.isEmpty()) {
+        StartEncoderListProbe(cached_program_);
+    }
 }
 
 // ===================== 运行 =====================
@@ -726,14 +963,18 @@ void ConversionPanel::OnStart() {
     if (runner_->IsRunning()) {
         return;
     }
+    // 上一次转换的产物的核对可能还在飞：结果属于旧文件，直接作废。
+    CancelVerify();
     const QString program = CurrentProgram();
     if (program.isEmpty()) {
         AppendLog(tr("找不到 ffmpeg 程序，无法转换。"), true);
         return;
     }
 
-    const auto plan = ffmpeg::BuildConversionPlan(CurrentProfile(), input_edit_->text().trimmed(),
-                                                  output_edit_->text().trimmed(), CurrentSourceFacts());
+    const ffmpeg::ConversionProfile profile = CurrentProfile();
+    const ffmpeg::ConversionSourceFacts source = CurrentSourceFacts();
+    const auto plan =
+        ffmpeg::BuildConversionPlan(profile, input_edit_->text().trimmed(), output_edit_->text().trimmed(), source);
     if (!plan.ok) {
         AppendLog(plan.error, true);
         return;
@@ -767,6 +1008,9 @@ void ConversionPanel::OnStart() {
 
     current_arguments_ = plan.arguments;
     last_output_path_ = output;
+    // 核对以"点开始那一刻"的设置为准：转换结束后用户再改下拉，不该影响对旧产物的判断。
+    verify_profile_ = profile;
+    verify_source_ = source;
     run_stderr_.clear();
     last_run_ok_ = false;
     log_view_->clear();
@@ -920,6 +1164,12 @@ void ConversionPanel::OnRunFinished(const ffmpeg::FfmpegRunResult& result) {
     // 只有真产出才给"去结果"的入口：失败/停止时这两个按钮只会把人带到空目录。
     result_row_->setVisible(produced);
     open_media_button_->setEnabled(produced);
+
+    // 「退出码 0 + 文件存在」不等于"转对了"：回读一遍产物，把实测编码 / 分辨率 /
+    // 时长摆出来；与目标不符时明确提示，而不是让用户自己打开才发现。
+    if (last_run_ok_) {
+        StartVerify(last_output_path_);
+    }
 }
 
 void ConversionPanel::AppendLog(const QString& line, bool is_error) {

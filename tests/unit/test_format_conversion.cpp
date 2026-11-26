@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "core/ffmpeg/FfmpegMediaProbe.h"
 #include "core/ffmpeg/FormatConversionPlan.h"
 
 namespace {
@@ -31,10 +32,16 @@ using videoeye::ffmpeg::ConversionProfile;
 using videoeye::ffmpeg::ConversionQuality;
 using videoeye::ffmpeg::ConversionScale;
 using videoeye::ffmpeg::ConversionSourceFacts;
+using videoeye::ffmpeg::ConversionVerification;
 using videoeye::ffmpeg::ConversionVideoCodec;
 using videoeye::ffmpeg::ConversionVideoRateMode;
+using videoeye::ffmpeg::MediaProbeSnapshot;
+using videoeye::ffmpeg::MediaStreamKind;
+using videoeye::ffmpeg::MediaStreamSnapshot;
+using videoeye::ffmpeg::RequiredEncoders;
 using videoeye::ffmpeg::ResolveAudioCodec;
 using videoeye::ffmpeg::ResolveVideoCodec;
+using videoeye::ffmpeg::VerifyConversionOutput;
 
 std::string S(const QString& text) {
     return text.toUtf8().toStdString();
@@ -469,7 +476,7 @@ TEST_F(FormatConversionPlanTest, SourceWithoutAudioWarnsOnAudioCopy) {
     ConversionProfile profile;
     profile.video = ConversionVideoCodec::Copy;
     profile.audio = ConversionAudioCodec::Copy;
-    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mkv")),
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")),
                                                     KnownSource(QStringLiteral("h264"), QString()));
 
     ASSERT_TRUE(plan.ok) << S(plan.error);
@@ -546,6 +553,231 @@ TEST_F(FormatConversionPlanTest, CodecNotInAdvertisedListIsRejected) {
     mp3_flac.container = ConversionContainer::Mp3;
     mp3_flac.audio = ConversionAudioCodec::Flac;
     EXPECT_FALSE(BuildConversionPlan(mp3_flac, input_, dir_.filePath(QStringLiteral("out.mp3"))).ok);
+}
+
+TEST_F(FormatConversionPlanTest, OutputExtensionMustMatchContainer) {
+    // ffmpeg 按扩展名选 muxer：容器选 MP4、名字写 .mkv，盘上出来的就是 Matroska。
+    ConversionProfile mp4;
+    const ConversionPlan mismatch = BuildConversionPlan(mp4, input_, Output(QStringLiteral("out.mkv")));
+    EXPECT_FALSE(mismatch.ok);
+    EXPECT_TRUE(mismatch.error.contains(QStringLiteral("扩展名"))) << S(mismatch.error);
+    EXPECT_TRUE(mismatch.arguments.isEmpty());
+
+    const ConversionPlan missing = BuildConversionPlan(mp4, input_, Output(QStringLiteral("out")));
+    EXPECT_FALSE(missing.ok);
+    EXPECT_TRUE(missing.error.contains(QStringLiteral("扩展名"))) << S(missing.error);
+
+    // 等价别名照收：.m2ts 就是 TS。
+    ConversionProfile ts;
+    ts.container = ConversionContainer::Ts;
+    const ConversionPlan alias = BuildConversionPlan(ts, input_, Output(QStringLiteral("out.m2ts")));
+    EXPECT_TRUE(alias.ok) << S(alias.error);
+}
+
+TEST_F(FormatConversionPlanTest, StreamMappingExcludesCoverArtAndLimitsAudio) {
+    ConversionProfile mp4;
+    const ConversionPlan video_plan = BuildConversionPlan(mp4, input_, Output(QStringLiteral("out.mp4")));
+    ASSERT_TRUE(video_plan.ok) << S(video_plan.error);
+    // 大写 V 排除封面图（attached pic），小写 v 会把封面当第二路视频重编码。
+    EXPECT_TRUE(video_plan.arguments.contains(QStringLiteral("0:V?")));
+    EXPECT_FALSE(video_plan.arguments.contains(QStringLiteral("0:v?")));
+    EXPECT_TRUE(video_plan.arguments.contains(QStringLiteral("0:a?")));
+
+    // 纯音频容器的 muxer 收不下多条音轨：显式只映射第一条。
+    ConversionProfile mp3;
+    mp3.container = ConversionContainer::Mp3;
+    const ConversionPlan audio_plan = BuildConversionPlan(mp3, input_, Output(QStringLiteral("out.mp3")));
+    ASSERT_TRUE(audio_plan.ok) << S(audio_plan.error);
+    EXPECT_TRUE(audio_plan.arguments.contains(QStringLiteral("0:a:0?")));
+    EXPECT_FALSE(audio_plan.arguments.contains(QStringLiteral("0:a?")));
+}
+
+TEST_F(FormatConversionPlanTest, SourceSubtitlesWarnButDoNotBlock) {
+    ConversionSourceFacts source = KnownSource(QStringLiteral("h264"), QStringLiteral("aac"));
+    source.audio_track_count = 1;
+    source.subtitle_track_count = 2;
+    ConversionProfile profile;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp4")), source);
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_TRUE(HasWarning(plan.warnings, QStringLiteral("字幕"))) << S(plan.warnings.join(QLatin1Char('|')));
+
+    // 用户已经在附加参数里自己映射字幕时，不再重复提醒"字幕会丢"。
+    ConversionProfile mapped_profile;
+    mapped_profile.extra_arguments = QStringLiteral("-map 0:s?");
+    const ConversionPlan mapped =
+        BuildConversionPlan(mapped_profile, input_, Output(QStringLiteral("out.mp4")), source);
+    ASSERT_TRUE(mapped.ok) << S(mapped.error);
+    EXPECT_FALSE(HasWarning(mapped.warnings, QStringLiteral("字幕"))) << S(mapped.warnings.join(QLatin1Char('|')));
+}
+
+TEST_F(FormatConversionPlanTest, AudioOnlyContainerWarnsOnMultipleAudioTracks) {
+    ConversionSourceFacts source = KnownSource(QStringLiteral("h264"), QStringLiteral("aac"));
+    source.audio_track_count = 3;
+    ConversionProfile profile;
+    profile.container = ConversionContainer::Mp3;
+    const ConversionPlan plan = BuildConversionPlan(profile, input_, Output(QStringLiteral("out.mp3")), source);
+
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    EXPECT_TRUE(HasWarning(plan.warnings, QStringLiteral("第一条"))) << S(plan.warnings.join(QLatin1Char('|')));
+}
+
+TEST_F(FormatConversionPlanTest, Vp9AndAv1UseSpeedControlInsteadOfPreset) {
+    ConversionProfile webm;
+    webm.container = ConversionContainer::Webm; // Auto → VP9
+    webm.preset = ConversionPreset::VerySlow;
+    const ConversionPlan vp9 = BuildConversionPlan(webm, input_, Output(QStringLiteral("out.webm")));
+    ASSERT_TRUE(vp9.ok) << S(vp9.error);
+    EXPECT_FALSE(vp9.arguments.contains(QStringLiteral("-preset")));
+    EXPECT_EQ(S(ValueAfter(vp9.arguments, QStringLiteral("-row-mt"))), "1");
+    EXPECT_EQ(S(ValueAfter(vp9.arguments, QStringLiteral("-cpu-used"))), "0"); // veryslow → 0
+
+    ConversionProfile av1;
+    av1.container = ConversionContainer::Mkv;
+    av1.video = ConversionVideoCodec::Av1;
+    av1.preset = ConversionPreset::UltraFast;
+    const ConversionPlan av1_plan = BuildConversionPlan(av1, input_, Output(QStringLiteral("out.mkv")));
+    ASSERT_TRUE(av1_plan.ok) << S(av1_plan.error);
+    EXPECT_EQ(S(ValueAfter(av1_plan.arguments, QStringLiteral("-cpu-used"))), "8");
+}
+
+TEST_F(FormatConversionPlanTest, RequiredEncodersFollowResolvedTargets) {
+    const auto names = [](const QStringList& values) { return values.join(QLatin1Char(',')).toStdString(); };
+
+    ConversionProfile mp4;
+    EXPECT_EQ(names(RequiredEncoders(mp4)), "libx264,aac");
+
+    ConversionProfile webm;
+    webm.container = ConversionContainer::Webm;
+    EXPECT_EQ(names(RequiredEncoders(webm)), "libvpx-vp9,libopus");
+
+    ConversionProfile mp3;
+    mp3.container = ConversionContainer::Mp3;
+    EXPECT_EQ(names(RequiredEncoders(mp3)), "libmp3lame");
+
+    ConversionProfile wav;
+    wav.container = ConversionContainer::Wav;
+    EXPECT_EQ(names(RequiredEncoders(wav)), "pcm_s16le");
+
+    ConversionProfile gif;
+    gif.container = ConversionContainer::Gif;
+    EXPECT_EQ(names(RequiredEncoders(gif)), "gif");
+
+    // 流复制不产生编码器依赖；两端都复制时清单为空。
+    ConversionProfile copy;
+    copy.video = ConversionVideoCodec::Copy;
+    copy.audio = ConversionAudioCodec::Copy;
+    EXPECT_TRUE(RequiredEncoders(copy).isEmpty());
+}
+
+namespace {
+
+MediaStreamSnapshot MakeStream(MediaStreamKind kind, const QString& codec, int width = 0, int height = 0) {
+    MediaStreamSnapshot stream;
+    stream.kind = kind;
+    stream.codec = codec;
+    stream.width = width;
+    stream.height = height;
+    return stream;
+}
+
+MediaProbeSnapshot MakeOutput(const QString& container, double duration) {
+    MediaProbeSnapshot snapshot;
+    snapshot.parsed = true;
+    snapshot.container = container;
+    snapshot.duration_seconds = duration;
+    return snapshot;
+}
+
+} // namespace
+
+TEST_F(FormatConversionPlanTest, VerificationAcceptsMatchingOutput) {
+    ConversionProfile profile; // mp4 + Auto → h264 / aac
+    ConversionSourceFacts source = KnownSource(QStringLiteral("h264"), QStringLiteral("aac"));
+    source.duration_seconds = 10.0;
+
+    MediaProbeSnapshot output = MakeOutput(QStringLiteral("mov,mp4"), 10.05);
+    output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 1920, 1080));
+    output.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("aac")));
+
+    const ConversionVerification verification = VerifyConversionOutput(profile, source, output);
+    EXPECT_TRUE(verification.parsed);
+    EXPECT_FALSE(verification.mismatch) << S(verification.notes.join(QLatin1Char('|')));
+}
+
+TEST_F(FormatConversionPlanTest, VerificationFlagsCodecResolutionAudioAndDuration) {
+    ConversionSourceFacts source = KnownSource(QStringLiteral("h264"), QStringLiteral("aac"));
+    source.duration_seconds = 60.0;
+
+    // 编码不对：目标 h264，实际 hevc。
+    {
+        ConversionProfile profile;
+        MediaProbeSnapshot output = MakeOutput(QStringLiteral("matroska"), 60.0);
+        output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("hevc"), 1920, 1080));
+        output.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("aac")));
+        EXPECT_TRUE(VerifyConversionOutput(profile, source, output).mismatch);
+    }
+
+    // 缩放没生效：目标 720p，实际还是 1080p。
+    {
+        ConversionProfile profile;
+        profile.scale = ConversionScale::P720;
+        MediaProbeSnapshot output = MakeOutput(QStringLiteral("mp4"), 60.0);
+        output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 1920, 1080));
+        output.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("aac")));
+        const ConversionVerification verification = VerifyConversionOutput(profile, source, output);
+        EXPECT_TRUE(verification.mismatch);
+        EXPECT_TRUE(verification.notes.join(QString()).contains(QStringLiteral("分辨率")));
+    }
+
+    // 音轨丢了。
+    {
+        ConversionProfile profile;
+        MediaProbeSnapshot output = MakeOutput(QStringLiteral("mp4"), 60.0);
+        output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 1920, 1080));
+        const ConversionVerification verification = VerifyConversionOutput(profile, source, output);
+        EXPECT_TRUE(verification.mismatch);
+        EXPECT_TRUE(verification.notes.join(QString()).contains(QStringLiteral("音频")));
+    }
+
+    // 时长被截短：60s 只剩 30s。
+    {
+        ConversionProfile profile;
+        MediaProbeSnapshot output = MakeOutput(QStringLiteral("mp4"), 30.0);
+        output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 1920, 1080));
+        output.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("aac")));
+        const ConversionVerification verification = VerifyConversionOutput(profile, source, output);
+        EXPECT_TRUE(verification.mismatch);
+        EXPECT_TRUE(verification.notes.join(QString()).contains(QStringLiteral("时长")));
+    }
+
+    // 读不出流信息：直接判差异（不能把"没核对"说成通过）。
+    {
+        ConversionProfile profile;
+        MediaProbeSnapshot output;
+        const ConversionVerification verification = VerifyConversionOutput(profile, source, output);
+        EXPECT_FALSE(verification.parsed);
+        EXPECT_TRUE(verification.mismatch);
+    }
+}
+
+TEST_F(FormatConversionPlanTest, VerificationHandlesGifAndNoVideoTargets) {
+    ConversionSourceFacts source;
+    source.known = true;
+
+    ConversionProfile gif;
+    gif.container = ConversionContainer::Gif;
+    MediaProbeSnapshot gif_output = MakeOutput(QStringLiteral("gif"), 5.0);
+    gif_output.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("gif"), 320, 480));
+    EXPECT_FALSE(VerifyConversionOutput(gif, source, gif_output).mismatch);
+
+    // 目标是不要视频，输出却还有视频轨。
+    ConversionProfile audio_only;
+    audio_only.container = ConversionContainer::Mp3;
+    MediaProbeSnapshot wrong = MakeOutput(QStringLiteral("mp3"), 5.0);
+    wrong.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 320, 240));
+    wrong.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("mp3")));
+    EXPECT_TRUE(VerifyConversionOutput(audio_only, source, wrong).mismatch);
 }
 
 } // namespace

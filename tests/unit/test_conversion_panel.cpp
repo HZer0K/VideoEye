@@ -173,6 +173,19 @@ TEST_F(ConversionPanelTest, ContainerChangeRewritesOutputExtension) {
     EXPECT_TRUE(CommandText().contains(QStringLiteral("libx264"))) << CommandText().toStdString();
 }
 
+TEST_F(ConversionPanelTest, OutputExtensionMismatchBlocksStart) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    ASSERT_TRUE(output_->text().endsWith(QStringLiteral(".mp4")));
+
+    // 手改输出名、扩展名仍然是 .mp4 才合法；改成 .mkv 则命令预览直接报"扩展名不一致"。
+    output_->setText(dir_.filePath(QStringLiteral("clip.mkv")));
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("扩展名"))) << CommandText().toStdString();
+    EXPECT_FALSE(start_->isEnabled());
+
+    output_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    EXPECT_FALSE(CommandText().contains(QStringLiteral("扩展名"))) << CommandText().toStdString();
+}
+
 TEST_F(ConversionPanelTest, CopyVideoDisablesScaleAndDropsFilter) {
     const QString input = dir_.filePath(QStringLiteral("clip.mp4"));
     input_->setText(input);
@@ -203,17 +216,24 @@ TEST_F(ConversionPanelTest, BitrateModeSwitchesControlAndCommand) {
     EXPECT_FALSE(CommandText().contains(QStringLiteral("-crf"))) << CommandText().toStdString();
 }
 
-TEST_F(ConversionPanelTest, PresetIsOnlyEnabledForH264AndH265) {
+TEST_F(ConversionPanelTest, PresetControlCoversSoftwareVideoEncoders) {
     input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
 
     SelectContainer(ConversionContainer::Webm); // Auto → VP9
-    EXPECT_FALSE(preset_->isEnabled());
+    // VP9 / AV1 不认 -preset，但同样有"速度 / 压缩率"取舍：换算成 -cpu-used。
+    EXPECT_TRUE(preset_->isEnabled());
     EXPECT_FALSE(CommandText().contains(QStringLiteral("-preset"))) << CommandText().toStdString();
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("-cpu-used"))) << CommandText().toStdString();
 
     SelectContainer(ConversionContainer::Mkv);
     SelectVideo(ConversionVideoCodec::H264);
     EXPECT_TRUE(preset_->isEnabled());
     EXPECT_TRUE(CommandText().contains(QStringLiteral("-preset"))) << CommandText().toStdString();
+    EXPECT_FALSE(CommandText().contains(QStringLiteral("-cpu-used"))) << CommandText().toStdString();
+
+    SelectContainer(ConversionContainer::Avi);
+    SelectVideo(ConversionVideoCodec::Mpeg4);
+    EXPECT_FALSE(preset_->isEnabled());
 }
 
 TEST_F(ConversionPanelTest, TenBitIsAppliedForH264AndRefusedForMpeg4) {

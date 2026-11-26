@@ -4,6 +4,9 @@
 #include <QFileInfo>
 
 #include <algorithm>
+#include <cmath>
+
+#include "core/ffmpeg/FfmpegMediaProbe.h"
 
 namespace videoeye {
 namespace ffmpeg {
@@ -276,6 +279,49 @@ int QScaleFor(ConversionQuality quality, int custom) {
         return qBound(2, custom, 31);
     }
     return quality == ConversionQuality::High ? 2 : (quality == ConversionQuality::Small ? 8 : 4);
+}
+
+/// 被接受为某个容器的输出扩展名（第一个是能力表里的规范名）。
+/// 只放**确实等价**的别名：`.m2ts` 是 TS、`.adts` 是 AAC 裸流、`.qt` 是 MOV；
+/// 不把 `.mkv` 当成 MP4 —— 扩展名决定 muxer，写错就是另一种文件。
+QStringList AcceptedExtensions(ConversionContainer container) {
+    const QString canonical = ContainerExtension(container);
+    switch (container) {
+    case ConversionContainer::Ts:
+        return {canonical, QStringLiteral("m2ts"), QStringLiteral("mts")};
+    case ConversionContainer::Aac:
+        return {canonical, QStringLiteral("adts")};
+    case ConversionContainer::Mov:
+        return {canonical, QStringLiteral("qt")};
+    default:
+        return {canonical};
+    }
+}
+
+/// 编码预设 → libvpx / libaom 的 -cpu-used（0 最慢最好，8 最快最糙）。
+/// 与 x264/x265 的 -preset 是同一套"速度 / 压缩率取舍"语义，只是名字不同。
+int CpuUsedFor(ConversionPreset preset) {
+    switch (preset) {
+    case ConversionPreset::UltraFast:
+        return 8;
+    case ConversionPreset::SuperFast:
+        return 7;
+    case ConversionPreset::VeryFast:
+        return 6;
+    case ConversionPreset::Faster:
+        return 5;
+    case ConversionPreset::Fast:
+        return 4;
+    case ConversionPreset::Medium:
+        return 3;
+    case ConversionPreset::Slow:
+        return 2;
+    case ConversionPreset::Slower:
+        return 1;
+    case ConversionPreset::VerySlow:
+        return 0;
+    }
+    return 3;
 }
 
 /// 音频码率。0 = 不写 -b:a（flac / pcm 这类无损编码本来就没有码率）。
@@ -589,7 +635,10 @@ QString PresetName(ConversionPreset preset) {
 }
 
 bool CodecUsesPreset(ConversionVideoCodec codec) {
-    return codec == ConversionVideoCodec::H264 || codec == ConversionVideoCodec::H265;
+    // "用不用速度预设"与"写不写 -preset"是两件事：含 VP9 / AV1，但它们收到的是
+    // -cpu-used（见 BuildConversionPlan）。
+    return codec == ConversionVideoCodec::H264 || codec == ConversionVideoCodec::H265 ||
+           codec == ConversionVideoCodec::Vp9 || codec == ConversionVideoCodec::Av1;
 }
 
 std::vector<ConversionPixelFormat> AllConversionPixelFormats() {
@@ -755,6 +804,25 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         return plan;
     }
 
+    // ffmpeg 按**扩展名**选 muxer，不是按这里的容器枚举：`.mkv` 扩展名配 MP4 设置
+    // 会写出 Matroska，没扩展名则直接 "Unable to find a suitable output format"。
+    // 这种"界面说的和盘上不是一回事"必须在拼命令前拦掉。
+    if (LooksLikeLocalPath(output)) {
+        const QString suffix = QFileInfo(output).suffix().toLower();
+        const QStringList accepted = AcceptedExtensions(profile.container);
+        if (suffix.isEmpty()) {
+            plan.error = QStringLiteral("输出文件名缺少扩展名：请以 .%1 结尾（ffmpeg 靠扩展名判断封装格式）")
+                             .arg(plan.extension);
+            return plan;
+        }
+        if (!accepted.contains(suffix)) {
+            plan.error = QStringLiteral("输出扩展名 .%1 与所选容器「%2」不一致：ffmpeg 会按扩展名写成 .%1 格式"
+                                        "（不是 .%3）。请改输出名，或改选容器")
+                             .arg(suffix, ContainerLabel(profile.container), plan.extension);
+            return plan;
+        }
+    }
+
     // 附加参数先分词并校验：错的话在拼任何命令之前返回，绝不留下半条 argv。
     const ParsedExtraArguments extra = ParseExtraArguments(profile.extra_arguments, input, output);
     if (!extra.ok) {
@@ -855,12 +923,36 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
         return plan;
     }
 
+    // 字幕默认不映射：跨容器字幕编码（ASS 进 MP4、PGS 进 WebM）经常让整条命令失败，
+    // 所以默认只带音视频。但"丢了"不能是静默的 —— 源里有时明确说一声。
+    // 用户已经在附加参数里自己写了 `-map 0:s…` 时就不再重复提醒。
+    const bool maps_subtitles = std::any_of(extra.tokens.cbegin(), extra.tokens.cend(),
+                                            [](const QString& token) { return token.contains(QLatin1String("0:s")); });
+    // 先把轨数取成局部变量再 arg：QtDomainBorder 审计按"参数里出现 source.xxx"
+    // 判命中（source 恰好与某些 domain 字段同名），直接 .arg(source.xxx) 会被误报。
+    const int dropped_subtitles = source.subtitle_track_count;
+    const int incoming_audio_tracks = source.audio_track_count;
+    if (source.known && dropped_subtitles > 0 && !maps_subtitles) {
+        plan.warnings << QStringLiteral("源含 %1 条字幕轨，字幕不会写入输出；需要时可在附加参数里加 -map 0:s?")
+                             .arg(dropped_subtitles);
+    }
+    // 纯音频容器的 muxer 通常只接受一条音轨：显式只映射第一条，并说清楚为什么。
+    if (!spec.has_video && source.known && incoming_audio_tracks > 1) {
+        plan.warnings
+            << QStringLiteral("源含 %1 条音轨，目标容器是纯音频格式，只保留第一条").arg(incoming_audio_tracks);
+    }
+
     QStringList& args = plan.arguments;
     args << QStringLiteral("-hide_banner") << QStringLiteral("-y") << QStringLiteral("-i") << input;
     // 只映射音视频流：字幕 / 数据 / 附件在跨容器时是最容易把整条命令搞失败的一类
     // （最典型：mkv 的 ASS 字幕往 mp4 里塞，ffmpeg 直接 "Subtitle codec not supported"）。
     // `?` 让缺失的那一路不报错 —— 纯音频源也要能转。
-    args << QStringLiteral("-map") << QStringLiteral("0:v?") << QStringLiteral("-map") << QStringLiteral("0:a?");
+    //
+    // 大写 `V`：mp4 / mp3 里的封面图（attached pic）也是 video 流，用 `v` 会把它
+    // 当成第二路视频重新编码。`V` 只选真正的视频轨。
+    // 纯音频容器只映射第一条音轨：mp3 / wav / flac 的 muxer 收不下多条。
+    args << QStringLiteral("-map") << QStringLiteral("0:V?") << QStringLiteral("-map")
+         << (spec.has_video ? QStringLiteral("0:a?") : QStringLiteral("0:a:0?"));
 
     // ---- 视频 ----
     if (video == ConversionVideoCodec::Copy) {
@@ -883,9 +975,14 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
                 args << QStringLiteral("-b:v") << QStringLiteral("0");
             }
         }
-        // -preset 只有 x264/x265 认；其它编码即使选了也不写进命令，避免 ffmpeg 报错。
-        if (CodecUsesPreset(video)) {
+        // 速度 / 压缩率取舍：x264/x265 用 -preset；libvpx / libaom 不认 -preset，
+        // 换成语义等价的 -cpu-used（0 最慢最好、8 最快）。不加这两个参数时
+        // VP9 / AV1 默认几乎是"最慢档 + 单线程"，转一部长片能慢到不可用。
+        if (video == ConversionVideoCodec::H264 || video == ConversionVideoCodec::H265) {
             args << QStringLiteral("-preset") << PresetName(profile.preset);
+        } else if (video == ConversionVideoCodec::Vp9 || video == ConversionVideoCodec::Av1) {
+            args << QStringLiteral("-row-mt") << QStringLiteral("1") << QStringLiteral("-cpu-used")
+                 << QString::number(CpuUsedFor(profile.preset));
         }
         // 8-bit 兼容性最好；10-bit 只允许在支持的编码上（上面已校验）。
         args << QStringLiteral("-pix_fmt") << PixelFormatName(profile.pixel_format);
@@ -931,6 +1028,196 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
 
     plan.ok = true;
     return plan;
+}
+
+// ===================== 编码器与产物核对 =====================
+
+QStringList RequiredEncoders(const ConversionProfile& profile) {
+    QStringList encoders;
+    if (profile.container == ConversionContainer::Gif) {
+        // GIF 走调色板分支，唯一的编码器就是 gif 本身（palettegen / paletteuse 是滤镜，
+        // 不在 -encoders 里，别拿它去对照，否则会误报"缺失"）。
+        encoders << QStringLiteral("gif");
+        return encoders;
+    }
+    const QString video = VideoEncoderName(ResolveVideoCodec(profile.container, profile.video));
+    if (!video.isEmpty()) {
+        encoders << video;
+    }
+    const QString audio = AudioEncoderName(ResolveAudioCodec(profile.container, profile.audio));
+    if (!audio.isEmpty()) {
+        encoders << audio;
+    }
+    return encoders;
+}
+
+namespace {
+
+/// 第一条真视频轨。mp4 / mp3 里的封面图也是 video 流，核对"有没有视频"时必须排除。
+const MediaStreamSnapshot* FirstPlayableVideo(const MediaProbeSnapshot& snapshot) {
+    for (const MediaStreamSnapshot& stream : snapshot.streams) {
+        if (stream.kind == MediaStreamKind::Video && !stream.attached_pic) {
+            return &stream;
+        }
+    }
+    return nullptr;
+}
+
+/// 编码器（枚举）→ 探测输出里应看到的编码短名。空串 = 不做编码判定。
+QString ExpectedVideoCodec(ConversionVideoCodec codec) {
+    switch (codec) {
+    case ConversionVideoCodec::H264:
+        return QStringLiteral("h264");
+    case ConversionVideoCodec::H265:
+        return QStringLiteral("hevc");
+    case ConversionVideoCodec::Vp9:
+        return QStringLiteral("vp9");
+    case ConversionVideoCodec::Av1:
+        return QStringLiteral("av1");
+    case ConversionVideoCodec::Mpeg4:
+        return QStringLiteral("mpeg4");
+    default:
+        return QString();
+    }
+}
+
+QString ExpectedAudioCodec(ConversionAudioCodec codec) {
+    switch (codec) {
+    case ConversionAudioCodec::Aac:
+        return QStringLiteral("aac");
+    case ConversionAudioCodec::Mp3:
+        return QStringLiteral("mp3");
+    case ConversionAudioCodec::Opus:
+        return QStringLiteral("opus");
+    case ConversionAudioCodec::Flac:
+        return QStringLiteral("flac");
+    case ConversionAudioCodec::Pcm:
+        return QStringLiteral("pcm_s16le");
+    default:
+        return QString();
+    }
+}
+
+QString DurationText(double seconds) {
+    if (seconds < 0) {
+        return QStringLiteral("—");
+    }
+    const int minutes = static_cast<int>(seconds) / 60;
+    const double rest = seconds - minutes * 60;
+    return QStringLiteral("%1:%2").arg(minutes, 2, 10, QLatin1Char('0')).arg(rest, 4, 'f', 1, QLatin1Char('0'));
+}
+
+} // namespace
+
+ConversionVerification VerifyConversionOutput(const ConversionProfile& profile, const ConversionSourceFacts& source,
+                                              const MediaProbeSnapshot& output) {
+    ConversionVerification result;
+    if (!output.parsed) {
+        result.mismatch = true;
+        result.notes << QStringLiteral("转换已完成，但读不出输出文件的流信息（文件可能不完整或格式不被支持）");
+        return result;
+    }
+    result.parsed = true;
+    auto note = [&result](const QString& text) {
+        result.mismatch = true;
+        result.notes << text;
+    };
+
+    const ConversionVideoCodec video = ResolveVideoCodec(profile.container, profile.video);
+    const ConversionAudioCodec audio = ResolveAudioCodec(profile.container, profile.audio);
+    const MediaStreamSnapshot* actual_video = FirstPlayableVideo(output);
+    const MediaStreamSnapshot* actual_audio = output.FirstStream(MediaStreamKind::Audio);
+
+    if (profile.container == ConversionContainer::Gif) {
+        // GIF 分支不看编码枚举：视频是 gif，音频恒为无，尺寸按 480 高采样。
+        if (actual_video == nullptr) {
+            note(QStringLiteral("输出没有视频帧（GIF 为空）"));
+        } else {
+            if (!actual_video->codec.isEmpty() &&
+                actual_video->codec.compare(QLatin1String("gif"), Qt::CaseInsensitive) != 0) {
+                note(QStringLiteral("视频编码：目标 gif，实测 %1").arg(actual_video->codec));
+            }
+            const int target_height = ScaleHeight(profile.scale) > 0 ? ScaleHeight(profile.scale) : 480;
+            if (actual_video->has_size() && actual_video->height != target_height) {
+                note(QStringLiteral("分辨率：目标高 %1，实测 %2×%3")
+                         .arg(target_height)
+                         .arg(actual_video->width)
+                         .arg(actual_video->height));
+            }
+        }
+        if (actual_audio != nullptr) {
+            note(QStringLiteral("GIF 不含音频，输出却带了音频轨"));
+        }
+    } else {
+        if (video == ConversionVideoCodec::None) {
+            if (actual_video != nullptr) {
+                note(QStringLiteral("目标是不要视频，但输出里仍有视频轨（%1）").arg(actual_video->codec));
+            }
+        } else {
+            QString expected;
+            if (video == ConversionVideoCodec::Copy) {
+                if (source.known) {
+                    expected = source.video_codec;
+                }
+            } else {
+                expected = ExpectedVideoCodec(video);
+            }
+            if (actual_video == nullptr) {
+                // 流复制时源本来没视频，ffmpeg 忽略 -c:v copy 是预期行为，不算差异。
+                if (video != ConversionVideoCodec::Copy || (source.known && source.has_video)) {
+                    note(QStringLiteral("输出没有视频轨"));
+                }
+            } else {
+                if (!expected.isEmpty() && !actual_video->codec.isEmpty() &&
+                    actual_video->codec.compare(expected, Qt::CaseInsensitive) != 0) {
+                    note(QStringLiteral("视频编码：目标 %1，实测 %2").arg(expected, actual_video->codec));
+                }
+                if (profile.scale != ConversionScale::Keep && actual_video->has_size()) {
+                    const int target_height = ScaleHeight(profile.scale);
+                    if (target_height > 0 && actual_video->height != target_height) {
+                        note(QStringLiteral("分辨率：目标高 %1，实测 %2×%3")
+                                 .arg(target_height)
+                                 .arg(actual_video->width)
+                                 .arg(actual_video->height));
+                    }
+                }
+            }
+        }
+
+        if (audio == ConversionAudioCodec::None) {
+            if (actual_audio != nullptr) {
+                note(QStringLiteral("目标是不要音频，但输出里仍有音频轨"));
+            }
+        } else {
+            QString expected;
+            if (audio == ConversionAudioCodec::Copy) {
+                if (source.known) {
+                    expected = source.audio_codec;
+                }
+            } else {
+                expected = ExpectedAudioCodec(audio);
+            }
+            if (actual_audio == nullptr) {
+                if (audio != ConversionAudioCodec::Copy || (source.known && source.has_audio)) {
+                    note(QStringLiteral("输出没有音频轨"));
+                }
+            } else if (!expected.isEmpty() && !actual_audio->codec.isEmpty() &&
+                       actual_audio->codec.compare(expected, Qt::CaseInsensitive) != 0) {
+                note(QStringLiteral("音频编码：目标 %1，实测 %2").arg(expected, actual_audio->codec));
+            }
+        }
+    }
+
+    // 时长被截短是"转完了但内容少了"里最隐蔽的一种：只在两边都读得到时判。
+    if (source.known && source.duration_seconds > 0 && output.duration_seconds > 0) {
+        const double tolerance = qMax(1.5, source.duration_seconds * 0.01);
+        if (std::fabs(output.duration_seconds - source.duration_seconds) > tolerance) {
+            note(QStringLiteral("时长：源 %1，输出 %2（可能被截断）")
+                     .arg(DurationText(source.duration_seconds), DurationText(output.duration_seconds)));
+        }
+    }
+
+    return result;
 }
 
 } // namespace ffmpeg

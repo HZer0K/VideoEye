@@ -25,6 +25,9 @@
 namespace videoeye {
 namespace ffmpeg {
 
+// 只用到引用：把探测快照的完整定义留给 .cpp，页面不需要为了核对多 include 一层。
+struct MediaProbeSnapshot;
+
 /// 目标容器。顺序即界面下拉顺序：先视频容器（常用在前），后音频容器。
 enum class ConversionContainer {
     Mp4,
@@ -122,6 +125,14 @@ struct ConversionSourceFacts {
     bool has_audio = false;
     QString video_codec; // "h264" / "hevc" / "vp9" / "av1" …（ffmpeg 的短名）
     QString audio_codec; // "aac" / "mp3" / "opus" …
+    /// 可播放音频轨数（不含封面图，音频本来也没有）。纯音频容器只映射第一条。
+    /// 刻意与 domain 里同义的字段名错开：`core/domain` 的 ContainerDiagnosticsInfo
+    /// 也叫 audio_streams，静态审计按字段名比对时会把两者当成同一张表。
+    int audio_track_count = 0;
+    /// 字幕轨数。字幕默认不映射，源里有时给一条"会被丢弃"的提示。
+    int subtitle_track_count = 0;
+    /// 源时长（秒）。-1 = 未知；转换后用来判断输出是否被截短。
+    double duration_seconds = -1.0;
 };
 
 struct ConversionProfile {
@@ -167,6 +178,27 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
                                    const QString& output_path,
                                    const ConversionSourceFacts& source = ConversionSourceFacts());
 
+/// 这条配置实际会调用的编码器名（"libx264" / "aac" / "gif" …）。
+/// 页面拿它对照 FfmpegCapabilityCache：精简版 ffmpeg 可能没编进某个编码器，
+/// 与其跑起来才报错，不如在预览阶段就说清楚。流复制 / 不要视频 / 不要音频不产生项。
+QStringList RequiredEncoders(const ConversionProfile& profile);
+
+/// 转换完成后对产物的实测核对结果。
+struct ConversionVerification {
+    /// 输出探测是否读到了流信息。false 时其余字段没有意义。
+    bool parsed = false;
+    /// 实测与目标不一致（编码 / 分辨率 / 音轨 / 时长被截短…）。
+    bool mismatch = false;
+    /// 人话说明，可直接显示；mismatch=false 时通常为空。
+    QStringList notes;
+};
+
+/// 用输出文件的探测结果核对"到底转成了什么"。纯逻辑，不摸磁盘、不启进程。
+/// 只核对**能确定**的项目：目标编码已知才比编码，源时长已知才比时长；
+/// 拿不到的事实一律跳过，不编。
+ConversionVerification VerifyConversionOutput(const ConversionProfile& profile, const ConversionSourceFacts& source,
+                                              const MediaProbeSnapshot& output);
+
 // ---- 界面用的能力表 ----
 // 下拉框该列哪些项、某一项能不能选，全部以这里为准，避免 UI 另写一份规则。
 
@@ -186,7 +218,8 @@ QString AudioCodecLabel(ConversionAudioCodec codec);       // "AAC"
 std::vector<ConversionPreset> AllConversionPresets();
 QString PresetLabel(ConversionPreset preset); // "slow（较慢/更小）"
 QString PresetName(ConversionPreset preset);  // "slow"
-/// 只有 x264/x265 认 -preset；其它编码即使设置了也不会出现在命令里。
+/// 这个编码吃"速度 / 压缩率"预设：H.264/H.265 写 -preset，VP9/AV1 换算成 -cpu-used。
+/// 其它编码（MPEG-4 等）没有对应旋钮，即使设置了也不会出现在命令里。
 bool CodecUsesPreset(ConversionVideoCodec codec);
 
 std::vector<ConversionPixelFormat> AllConversionPixelFormats();
