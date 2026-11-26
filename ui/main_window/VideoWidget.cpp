@@ -445,11 +445,15 @@ void VideoWidget::keyPressEvent(QKeyEvent* event) {
 
 void VideoWidget::SetFrame(const QImage& image) {
     frame_ = image;
+    scaled_valid_ = false;
     update();
 }
 
 void VideoWidget::Clear() {
     frame_ = QImage();
+    scaled_frame_ = QImage();
+    scaled_rect_ = QRect();
+    scaled_valid_ = false;
     update();
 }
 
@@ -493,16 +497,38 @@ void VideoWidget::paintEvent(QPaintEvent* event) {
         return;
     }
 
-    // 缩放并居中显示
-    const QSize scaled = frame_.size().scaled(size(), Qt::KeepAspectRatio);
-    const int x = (width() - scaled.width()) / 2;
-    const int y = (height() - scaled.height()) / 2;
+    // 缩放并居中显示（缩放结果缓存在 scaled_frame_ 里，重复重绘不再重算）
+    EnsureScaledFrame();
     painter.fillRect(rect(), QColor("#01060E"));
-    painter.drawImage(QRect(x, y, scaled.width(), scaled.height()), frame_);
+    if (!scaled_frame_.isNull()) {
+        painter.drawImage(scaled_rect_.topLeft(), scaled_frame_);
+    }
+}
+
+void VideoWidget::EnsureScaledFrame() {
+    if (scaled_valid_) {
+        return;
+    }
+    scaled_valid_ = true;
+    scaled_frame_ = QImage();
+    scaled_rect_ = QRect();
+    if (frame_.isNull() || width() <= 0 || height() <= 0) {
+        return;
+    }
+    const QSize target = frame_.size().scaled(size(), Qt::KeepAspectRatio);
+    if (target.isEmpty()) {
+        return;
+    }
+    // 显示尺寸与帧尺寸一致时直接引用原帧（QImage 隐式共享，不复制像素）。
+    scaled_frame_ =
+        (target == frame_.size()) ? frame_ : frame_.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    scaled_rect_ =
+        QRect((width() - target.width()) / 2, (height() - target.height()) / 2, target.width(), target.height());
 }
 
 void VideoWidget::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
+    scaled_valid_ = false;
     if (overlay_)
         overlay_->setGeometry(0, 0, width(), height());
 }

@@ -23,6 +23,8 @@
 #include "core/player/MediaPlayerFwd.h"
 #include "ui/main_window/open_session.h"
 
+class QTimer;
+
 namespace videoeye {
 namespace ui {
 
@@ -93,6 +95,8 @@ private:
     QString current_media_url_;
     // 待收尾的异步打开登记（见 open_session.h 的口径说明）。
     OpenTicket ticket_;
+    // 自动分析的延迟启动器：播放开始后稍等再跑，避免扫描与首帧解码抢资源。
+    QTimer* auto_scan_timer_ = nullptr;
 };
 
 } // namespace ui

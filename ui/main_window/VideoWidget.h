@@ -106,7 +106,14 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
 
 private:
+    // 把当前帧按控件尺寸缩放一次并缓存：播放/切页/悬停都会触发重绘，
+    // 每次都在 paintEvent 里对原图做平滑缩放会让主线程反复付出同样的代价。
+    void EnsureScaledFrame();
+
     QImage frame_;
+    QImage scaled_frame_; // 已按控件尺寸缩放好的帧（1:1 绘制）
+    QRect scaled_rect_;   // scaled_frame_ 在控件中的居中矩形
+    bool scaled_valid_ = false;
     VideoOverlayWidget* overlay_ = nullptr;
 };
 

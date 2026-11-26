@@ -1,5 +1,6 @@
 #include "ui/main_window/MainWindow.h"
 #include "infrastructure/logging/Logger.h"
+#include "infrastructure/logging/ScopedTimer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/conversion_panel/ConversionPanel.h"
 #include "ui/dialogs/FormatSupportDialog.h"
@@ -433,6 +434,7 @@ void MainWindow::SetupContentArea() {
 }
 
 void MainWindow::OnSidebarChanged(int row) {
+    VE_PERF("MainWindow::OnSidebarChanged 切换页面");
     if (!content_stack_ || !sidebar_ || row < 0 || row >= sidebar_->count())
         return;
     // 页面项带 UserRole=stack 下标（行号因分组标题会错位，不能当下标用）；

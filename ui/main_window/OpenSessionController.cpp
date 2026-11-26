@@ -8,15 +8,35 @@
 #include "ui/main_window/OverviewPage.h"
 #include "ui/player/PlayerPanel.h"
 
+#include <QTimer>
+
 namespace videoeye {
 namespace ui {
 
+namespace {
+// 「打开即分析」的启动延迟：自动播放时先让首帧解码、音频设备初始化完成，
+// 再把全文件扫描放到后台，避免刚打开视频就与播放抢 CPU / 磁盘。
+constexpr int kAutoScanDelayMs = 1500;
+} // namespace
+
 OpenSessionController::OpenSessionController(const Deps& deps, QObject* parent) : QObject(parent), deps_(deps) {
+    auto_scan_timer_ = new QTimer(this);
+    auto_scan_timer_->setSingleShot(true);
+    connect(auto_scan_timer_, &QTimer::timeout, this, [this]() {
+        if (deps_.analysis_panel && !current_media_url_.isEmpty()) {
+            deps_.analysis_panel->StartDiagnosticsScanForCurrentFile();
+        }
+    });
 }
 
 bool OpenSessionController::Open(const QString& source, bool autoplay) {
     if (source.isEmpty() || !deps_.player) {
         return false;
+    }
+
+    // 新的打开会取代上一次的自动分析：先撤掉还没触发的延迟扫描。
+    if (auto_scan_timer_) {
+        auto_scan_timer_->stop();
     }
 
     // 任何一次新打开都先作废上一次异步打开的收尾回调：只有真正走异步的路径
@@ -229,11 +249,15 @@ void OpenSessionController::OnPlayerOpenFinished(bool ok) {
     if (ok) {
         if (autoplay) {
             deps_.player->Play();
+            // 打开即分析：后台自动跑一次全文件诊断扫描（扩展名 / 容器一致性、GOP、
+            // 时间戳、音频 QC 等规则在「诊断与报告」页直接给出原因与修复建议；
+            // 大文件可在该页取消）。有播放时延迟启动，让首帧与音频设备先就位。
+            if (auto_scan_timer_) {
+                auto_scan_timer_->start(kAutoScanDelayMs);
+            }
+        } else if (deps_.analysis_panel) {
+            deps_.analysis_panel->StartDiagnosticsScanForCurrentFile();
         }
-        // 打开即分析：后台自动跑一次全文件诊断扫描（扩展名 / 容器一致性、GOP、
-        // 时间戳、音频 QC 等规则在「诊断与报告」页直接给出原因与修复建议；
-        // 大文件可在该页取消）。
-        deps_.analysis_panel->StartDiagnosticsScanForCurrentFile();
     } else {
         // 分析模式：补跑文件结构分析与全文件诊断扫描，让「文件结构」
         // 「诊断与报告」「码率与 GOP」页展示该文件的具体错误。
