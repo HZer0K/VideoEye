@@ -10,6 +10,7 @@
 // 另外支持左右双 Y 轴、坐标轴标题/刻度格式/量程、图例与鼠标悬停命中。
 
 #include <QColor>
+#include <QPoint>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
@@ -26,31 +27,22 @@ enum class ChartSeriesKind { Line, Scatter, Bar };
 
 enum class ChartMarkerShape { Circle, Rectangle, Triangle };
 
+class MetricChartWidget;
+
 // 坐标轴。由 MetricChartWidget 持有，外部只改属性。
+//
+// 改属性要通知所属图表把布局缓存置脏（刻度文本宽度 → 左右边距）。
+// setter 实现在 .cpp：那里 MetricChartWidget 已是完整类型。
 class ChartAxis {
 public:
-    void SetRange(double min, double max) {
-        min_ = min;
-        max_ = max;
-        has_range_ = true;
-    }
-    void ResetRange() {
-        has_range_ = false;
-    }
+    void SetRange(double min, double max);
+    void ResetRange();
 
-    void SetLabelFormat(const QString& format) {
-        label_format_ = format;
-    }
-    void SetTitleText(const QString& title) {
-        title_ = title;
-    }
-    void SetTickCount(int count) {
-        tick_count_ = count < 2 ? 2 : count;
-    }
+    void SetLabelFormat(const QString& format);
+    void SetTitleText(const QString& title);
+    void SetTickCount(int count);
     // 柱状图用：设置后 X 轴按分类渲染，柱子分组并列
-    void SetCategories(const QStringList& categories) {
-        categories_ = categories;
-    }
+    void SetCategories(const QStringList& categories);
 
     double Min() const {
         return min_;
@@ -78,6 +70,12 @@ public:
     }
 
 private:
+    // 属性变化后通知所属图表：坐标轴量程 / 刻度格式都会改变绘图区边距。
+    void NotifyChanged();
+
+    MetricChartWidget* owner_ = nullptr;
+    friend class MetricChartWidget;
+
     double min_ = 0.0;
     double max_ = 1.0;
     bool has_range_ = false;
@@ -86,9 +84,6 @@ private:
     QString title_;
     QStringList categories_;
 };
-
-// 本类在文件末尾定义；ChartSeries 只持有它的裸指针，先前置声明一下
-class MetricChartWidget;
 
 // 数据系列。内存由 MetricChartWidget 独占，外部持有裸指针即可。
 //
@@ -164,23 +159,34 @@ public:
 
     void Clear() {
         points_.clear();
+        x_sorted_ = true;
         NotifyUpdate();
     }
     void Append(double x, double y) {
+        TrackOrder(x);
         points_.append(QPointF(x, y));
         NotifyUpdate();
     }
     void Append(const QPointF& point) {
+        TrackOrder(point.x());
         points_.append(point);
         NotifyUpdate();
     }
     ChartSeries& operator<<(const QPointF& point) {
+        TrackOrder(point.x());
         points_.append(point);
         NotifyUpdate();
         return *this;
     }
     void Replace(QVector<QPointF> points) {
         points_ = std::move(points);
+        x_sorted_ = true;
+        for (int i = 1; i < points_.size(); ++i) {
+            if (!(points_[i - 1].x() <= points_[i].x())) {
+                x_sorted_ = false;
+                break;
+            }
+        }
         NotifyUpdate();
     }
 
@@ -193,8 +199,17 @@ public:
     bool IsEmpty() const {
         return points_.isEmpty();
     }
+    // x 是否单调不减。命中测试据此用二分缩小搜索范围；
+    // 顺序被打乱过（含 NaN）就退回线性扫描，避免二分在错序数据上漏点。
+    bool XSorted() const {
+        return x_sorted_;
+    }
 
 private:
+    void TrackOrder(double x) {
+        if (!points_.isEmpty() && !(points_.last().x() <= x))
+            x_sorted_ = false;
+    }
     // 定义在 .cpp：那里 ChartSeries 与 MetricChartWidget 都已是完整类型
     void NotifyUpdate();
 
@@ -206,6 +221,7 @@ private:
     double marker_size_ = 6.0;
     ChartMarkerShape marker_shape_ = ChartMarkerShape::Circle;
     bool points_visible_ = false;
+    bool x_sorted_ = true;
     int value_axis_ = 0;
     QVector<QPointF> points_;
 };
@@ -253,17 +269,35 @@ public:
         axis_x_->SetCategories(categories);
     }
 
+    // 局部缩放：滚轮缩放时间轴、左键拖动平移、双击复位。
+    // ResetView() 在整份数据被替换时由调用方显式调用，避免旧视窗带到新数据上。
+    void ResetView();
+    bool HasActiveView() const {
+        return view_active_;
+    }
+
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
 signals:
-    // 鼠标悬停命中某个数据点时发出；移出时 state=false
+    // 鼠标悬停命中某个数据点时发出；移出时 state=false。
+    // 只在悬浮点真正变化时发出，鼠标在同一点上移动不会重复刷屏。
     void PointHovered(const QPointF& point, bool state);
+    // 单击绘图区（未拖动）时发出，参数是命中位置的 x 值（通常是时间，单位秒）。
+    void PlotClicked(double x_value);
+    // 局部缩放/平移后的可见 x 区间；复位时也会发一次完整区间。
+    void ViewChanged(double x_min, double x_max);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     // 绘图区左/右两侧留给刻度文本与轴标题的实际宽度（按当前字体与刻度值算出来）。
@@ -273,6 +307,8 @@ private:
         QRect plot;
         double x_min = 0.0;
         double x_max = 1.0;
+        double base_x_min = 0.0; // 未缩放时的完整 x 区间（缩放钳制边界）
+        double base_x_max = 1.0;
         double y_min = 0.0;
         double y_max = 1.0;
         double y2_min = 0.0;
@@ -284,6 +320,11 @@ private:
     };
 
     Geometry ComputeGeometry() const;
+    // 布局缓存：鼠标移动 / 重绘都复用同一份。数据、量程、尺寸、字体变化时置脏。
+    const Geometry& ChartGeometry() const;
+    void InvalidateGeometry();
+    double DataXAt(const QPoint& pos, const Geometry& geo) const;
+
     void DrawAxisAndGrid(QPainter& painter, const Geometry& geo);
     void DrawSeries(QPainter& painter, const Geometry& geo);
     void DrawLegend(QPainter& painter, const Geometry& geo);
@@ -304,6 +345,24 @@ private:
 
     int hover_series_ = -1;
     int hover_index_ = -1;
+
+    mutable Geometry cached_geometry_;
+    mutable bool geometry_dirty_ = true;
+
+    // 局部缩放（仅 x 轴）。y 轴保持全量程，缩放时曲线起伏不会被重新拉伸。
+    bool view_active_ = false;
+    double view_x_min_ = 0.0;
+    double view_x_max_ = 1.0;
+
+    // 左键拖动平移；拖动超过阈值后不再当作单击（避免"拖一下顺带跳播"）。
+    bool dragging_ = false;
+    bool drag_moved_ = false;
+    QPoint press_pos_;
+    double drag_view_min_ = 0.0;
+    double drag_view_max_ = 1.0;
+
+    friend class ChartSeries;
+    friend class ChartAxis;
 };
 
 } // namespace ui

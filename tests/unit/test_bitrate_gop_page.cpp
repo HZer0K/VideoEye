@@ -22,10 +22,12 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMetaObject>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableView>
 #include <QTableWidget>
 
 #include <memory>
@@ -47,6 +49,7 @@ using videoeye::model::BitrateGopAnalysis;
 using videoeye::model::GopInfo;
 using videoeye::model::SceneChangeResult;
 using videoeye::ui::BitrateGopPage;
+using videoeye::ui::MetricChartWidget;
 
 namespace {
 
@@ -74,6 +77,50 @@ QTableWidget* TableInTab(QWidget* root, int tab_index, const QString& first_head
         }
     }
     return nullptr;
+}
+
+// GOP 列表已迁移到 QTableView + RecordTableModel：按首列表头定位，单元格走模型取值。
+QTableView* GopTableInPage(QWidget* root) {
+    auto* tabs = root->findChild<QTabWidget*>();
+    if (tabs == nullptr)
+        return nullptr;
+    QWidget* page = tabs->widget(0);
+    if (page == nullptr)
+        return nullptr;
+    for (QTableView* table : page->findChildren<QTableView*>()) {
+        if (table->model() != nullptr &&
+            table->model()->headerData(0, Qt::Horizontal).toString() == QStringLiteral("序号")) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+int GopRowCount(const QTableView* table) {
+    return (table != nullptr && table->model() != nullptr) ? table->model()->rowCount() : 0;
+}
+
+int GopColumnCount(const QTableView* table) {
+    return (table != nullptr && table->model() != nullptr) ? table->model()->columnCount() : 0;
+}
+
+QString GopCell(const QTableView* table, int row, int column) {
+    if (table == nullptr || table->model() == nullptr)
+        return QString();
+    return table->model()->index(row, column).data(Qt::DisplayRole).toString();
+}
+
+QColor GopForeground(const QTableView* table, int row, int column) {
+    if (table == nullptr || table->model() == nullptr)
+        return QColor();
+    return table->model()->index(row, column).data(Qt::ForegroundRole).value<QColor>();
+}
+
+void ClickGopRow(QTableView* table, int row) {
+    if (table == nullptr || table->model() == nullptr)
+        return;
+    const QModelIndex index = table->model()->index(row, 0);
+    QMetaObject::invokeMethod(table, "clicked", Qt::DirectConnection, Q_ARG(QModelIndex, index));
 }
 
 QLabel* FindLabelContaining(QWidget* root, const QString& needle) {
@@ -208,12 +255,12 @@ TEST(BitrateGopPageTests, UnanalyzedShowsInitialSummaryAndEmptyTables) {
     EXPECT_EQ(tabs->tabText(1), QStringLiteral("异常"));
     EXPECT_EQ(tabs->tabText(2), QStringLiteral("优化建议"));
 
-    QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
+    QTableView* gop = GopTableInPage(&page);
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(gop, nullptr);
     ASSERT_NE(anomaly, nullptr);
-    EXPECT_EQ(gop->columnCount(), 11);
-    EXPECT_EQ(gop->rowCount(), 0);
+    EXPECT_EQ(GopColumnCount(gop), 11);
+    EXPECT_EQ(GopRowCount(gop), 0);
     EXPECT_EQ(anomaly->rowCount(), 0);
 
     auto* suggestions = tabs->widget(2)->findChild<QListWidget*>();
@@ -232,32 +279,32 @@ TEST(BitrateGopPageTests, ResultFillsGopTableAndHighlightsLongGop) {
     result.bitrate_gop = MakeBg();
     page.SetResult(std::make_shared<const AnalysisResult>(result));
 
-    QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
+    QTableView* gop = GopTableInPage(&page);
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(gop, nullptr);
     ASSERT_NE(anomaly, nullptr);
-    ASSERT_EQ(gop->rowCount(), 2);
+    ASSERT_EQ(GopRowCount(gop), 2);
 
     // 65 s -> 00:01:05；102400 B -> 100.0 KB；409.6 kbps -> 410
-    EXPECT_EQ(Cell(gop, 0, 0), QStringLiteral("0"));
-    EXPECT_EQ(Cell(gop, 0, 1), QStringLiteral("00:01:05"));
-    EXPECT_EQ(Cell(gop, 0, 2), QStringLiteral("00:01:07"));
-    EXPECT_EQ(Cell(gop, 0, 3), QStringLiteral("2.000"));
-    EXPECT_EQ(Cell(gop, 0, 4), QStringLiteral("50"));
-    EXPECT_EQ(Cell(gop, 0, 5), QStringLiteral("100.0"));
-    EXPECT_EQ(Cell(gop, 0, 6), QStringLiteral("410"));
-    EXPECT_EQ(Cell(gop, 0, 7), QStringLiteral("5I / 15P / 30B"));
-    EXPECT_EQ(Cell(gop, 0, 8), QStringLiteral("20.0"));
-    EXPECT_EQ(Cell(gop, 0, 9), QStringLiteral("closed"));
-    EXPECT_EQ(Cell(gop, 0, 10), QStringLiteral("已收尾"));
-    EXPECT_NE(gop->item(0, 3)->foreground().color(), QColor("#ef6c00"));
+    EXPECT_EQ(GopCell(gop, 0, 0), QStringLiteral("0"));
+    EXPECT_EQ(GopCell(gop, 0, 1), QStringLiteral("00:01:05"));
+    EXPECT_EQ(GopCell(gop, 0, 2), QStringLiteral("00:01:07"));
+    EXPECT_EQ(GopCell(gop, 0, 3), QStringLiteral("2.000"));
+    EXPECT_EQ(GopCell(gop, 0, 4), QStringLiteral("50"));
+    EXPECT_EQ(GopCell(gop, 0, 5), QStringLiteral("100.0"));
+    EXPECT_EQ(GopCell(gop, 0, 6), QStringLiteral("410"));
+    EXPECT_EQ(GopCell(gop, 0, 7), QStringLiteral("5I / 15P / 30B"));
+    EXPECT_EQ(GopCell(gop, 0, 8), QStringLiteral("20.0"));
+    EXPECT_EQ(GopCell(gop, 0, 9), QStringLiteral("closed"));
+    EXPECT_EQ(GopCell(gop, 0, 10), QStringLiteral("已收尾"));
+    EXPECT_NE(GopForeground(gop, 0, 3), QColor("#ef6c00"));
 
     // 12 s > 默认上限 10 s：只给时长列橙色，不改数值
-    EXPECT_EQ(Cell(gop, 1, 3), QStringLiteral("12.000"));
-    EXPECT_EQ(gop->item(1, 3)->foreground().color(), QColor("#ef6c00"));
-    EXPECT_EQ(Cell(gop, 1, 5), QStringLiteral("200.0"));
-    EXPECT_EQ(Cell(gop, 1, 9), QStringLiteral("open"));
-    EXPECT_EQ(Cell(gop, 1, 10), QStringLiteral("未收尾"));
+    EXPECT_EQ(GopCell(gop, 1, 3), QStringLiteral("12.000"));
+    EXPECT_EQ(GopForeground(gop, 1, 3), QColor("#ef6c00"));
+    EXPECT_EQ(GopCell(gop, 1, 5), QStringLiteral("200.0"));
+    EXPECT_EQ(GopCell(gop, 1, 9), QStringLiteral("open"));
+    EXPECT_EQ(GopCell(gop, 1, 10), QStringLiteral("未收尾"));
 
     // 异常表：类型文案 + 时间区间 + 单位化数值
     ASSERT_EQ(anomaly->rowCount(), 2);
@@ -297,16 +344,16 @@ TEST(BitrateGopPageTests, ClearResultRestoresUnanalyzedState) {
     result.bitrate_gop = MakeBg();
     page.SetResult(std::make_shared<const AnalysisResult>(result));
 
-    QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
+    QTableView* gop = GopTableInPage(&page);
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(gop, nullptr);
     ASSERT_NE(anomaly, nullptr);
-    ASSERT_EQ(gop->rowCount(), 2);
+    ASSERT_EQ(GopRowCount(gop), 2);
     ASSERT_EQ(page.IssueCount(), 2);
 
     page.ClearResult();
 
-    EXPECT_EQ(gop->rowCount(), 0);
+    EXPECT_EQ(GopRowCount(gop), 0);
     EXPECT_EQ(anomaly->rowCount(), 0);
     EXPECT_EQ(page.IssueCount(), 0);
     auto* suggestions = page.findChild<QTabWidget*>()->widget(2)->findChild<QListWidget*>();
@@ -469,12 +516,12 @@ TEST(BitrateGopPageTests, SeekRequestedOnGopAndAnomalyRowClick) {
     result.bitrate_gop = MakeBg();
     page.SetResult(std::make_shared<const AnalysisResult>(result));
 
-    QTableWidget* gop = TableInTab(&page, 0, QStringLiteral("序号"));
+    QTableView* gop = GopTableInPage(&page);
     QTableWidget* anomaly = TableInTab(&page, 1, QStringLiteral("类型"));
     ASSERT_NE(gop, nullptr);
     ASSERT_NE(anomaly, nullptr);
 
-    ClickCell(gop, 1, 0);
+    ClickGopRow(gop, 1);
     ASSERT_EQ(seeks.size(), 1u);
     EXPECT_DOUBLE_EQ(seeks[0], 67.0);
 
@@ -482,9 +529,43 @@ TEST(BitrateGopPageTests, SeekRequestedOnGopAndAnomalyRowClick) {
     ASSERT_EQ(seeks.size(), 2u);
     EXPECT_DOUBLE_EQ(seeks[1], 3.0);
 
-    ClickCell(gop, 9, 0);
+    ClickGopRow(gop, 9);
     ClickCell(anomaly, -1, 0);
     EXPECT_EQ(seeks.size(), 2u);
+}
+
+// 图表点击跳播：单击绘图区把 x（秒）转成 SeekRequested，
+// 与点 GOP / 异常行同一条出口。缩放/平移是控件内部状态，不该改变跳播语义。
+TEST(BitrateGopPageTests, ChartClickSeeksToTimestamp) {
+    EnsureApp();
+    BitrateGopPage page;
+    page.resize(1000, 900);
+    page.show();
+    QApplication::processEvents();
+
+    std::vector<double> seeks;
+    QObject::connect(&page, &BitrateGopPage::SeekRequested, [&seeks](double seconds) { seeks.push_back(seconds); });
+
+    AnalysisResult result;
+    result.bitrate_gop = MakeBg();
+    page.SetResult(std::make_shared<const AnalysisResult>(result));
+    QApplication::processEvents();
+
+    MetricChartWidget* chart = page.findChild<MetricChartWidget*>();
+    ASSERT_NE(chart, nullptr);
+    ASSERT_GT(chart->width(), 100);
+    ASSERT_GT(chart->height(), 100);
+
+    const QPoint center = chart->rect().center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(center), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(chart, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(center), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(chart, &release);
+
+    ASSERT_EQ(seeks.size(), 1u);
+    // 整段时长为 120 s，单击绘图区中部应落在片长范围内。
+    EXPECT_GT(seeks[0], 0.0);
+    EXPECT_LT(seeks[0], 120.0);
 }
 
 // 参数默认值 + FillScanOptions 往返 + 扫描态互斥 + 进度条

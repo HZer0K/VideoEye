@@ -33,6 +33,10 @@ void AudioVizRenderer::SetVideoWidget(VideoWidget* widget) {
 
 void AudioVizRenderer::SetAlbumCover(const QImage& cover) {
     album_cover_ = cover;
+    // 封面换了：缩放结果与倒影一起作废
+    scaled_cover_cache_ = QImage();
+    reflection_cache_ = QImage();
+    cover_cache_size_ = -1;
 }
 
 void AudioVizRenderer::Reset() {
@@ -99,7 +103,11 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
     const int w = std::max(1, video_widget_->width());
     const int h = std::max(1, video_widget_->height());
 
-    QImage img(w, h, QImage::Format_ARGB32);
+    // 复用它渲染缓冲：双缓冲轮换，避开与 VideoWidget 上一帧的隐式共享（详见头文件）。
+    QImage& img = render_buffers_[render_buffer_index_];
+    render_buffer_index_ = 1 - render_buffer_index_;
+    if (img.size() != QSize(w, h) || img.format() != QImage::Format_ARGB32)
+        img = QImage(w, h, QImage::Format_ARGB32);
 
     // --- Background: radial gradient pulsing with audio ---
     {
@@ -127,7 +135,18 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
     const int cover_y = cover_cy - cover_size / 2;
 
     if (!album_cover_.isNull()) {
-        QImage scaled = album_cover_.scaled(cover_size, cover_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        // 缩放与倒影只在封面或目标尺寸变化时重算：旧实现每帧都做
+        // SmoothTransformation + mirrored()，是纯音频模式下稳定的一笔开销。
+        if (cover_cache_size_ != cover_size || scaled_cover_cache_.isNull()) {
+            scaled_cover_cache_ =
+                album_cover_.scaled(cover_size, cover_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            const int refl_h = std::min(scaled_cover_cache_.height() / 4, 50);
+            reflection_cache_ =
+                (refl_h > 0) ? scaled_cover_cache_.mirrored(false, true).copy(0, 0, scaled_cover_cache_.width(), refl_h)
+                             : QImage();
+            cover_cache_size_ = cover_size;
+        }
+        const QImage& scaled = scaled_cover_cache_;
         const int sx = cover_x + (cover_size - scaled.width()) / 2;
         const int sy = cover_y + (cover_size - scaled.height()) / 2;
 
@@ -152,17 +171,16 @@ void AudioVizRenderer::RenderAudioVisualization(double timestamp_seconds) {
         painter.setBrush(Qt::NoBrush);
         painter.drawRoundedRect(sx, sy, scaled.width(), scaled.height(), 12, 12);
 
-        // Reflection
-        const int refl_h = std::min(scaled.height() / 4, 50);
+        // Reflection（使用缓存的倒影切片）
+        const int refl_h = reflection_cache_.isNull() ? 0 : reflection_cache_.height();
         if (refl_h > 0) {
-            QImage ref = scaled.mirrored(false, true).copy(0, 0, scaled.width(), refl_h);
             painter.setOpacity(0.12);
-            painter.drawImage(sx, sy + scaled.height() + 3, ref);
+            painter.drawImage(sx, sy + scaled.height() + 3, reflection_cache_);
             QLinearGradient fg(0, sy + scaled.height() + 3, 0, sy + scaled.height() + 3 + refl_h);
             fg.setColorAt(0.0, QColor(0, 0, 0, 0));
             fg.setColorAt(1.0, QColor(0, 0, 0, 255));
             painter.setOpacity(1.0);
-            painter.fillRect(sx, sy + scaled.height() + 3, ref.width(), refl_h, fg);
+            painter.fillRect(sx, sy + scaled.height() + 3, reflection_cache_.width(), refl_h, fg);
         }
     } else {
         // Placeholder

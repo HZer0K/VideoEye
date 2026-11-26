@@ -135,6 +135,8 @@ void SceneChangePage::SetupUi() {
     axis_y_->SetTitleText(tr("强度"));
     axis_y_->SetRange(0, 1);
     chart_->setMinimumHeight(180);
+    chart_->setToolTip(tr("滚轮缩放时间轴，左键拖动平移，双击复位；单击任意位置跳转到该时刻。"));
+    connect(chart_, &MetricChartWidget::PlotClicked, this, &SceneChangePage::SeekRequested);
     layout->addWidget(chart_);
 
     // 切换点列表
@@ -254,6 +256,9 @@ void SceneChangePage::Reset() {
     table_synced_count_ = 0;
     if (table_)
         table_->setRowCount(0);
+    // 换文件时清掉上一份数据的局部缩放，避免旧视窗残留在新曲线上。
+    if (chart_)
+        chart_->ResetView();
     UpdateChart();
     UpdateSummary();
 }

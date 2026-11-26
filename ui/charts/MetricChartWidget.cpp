@@ -5,6 +5,8 @@
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QResizeEvent>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -129,30 +131,97 @@ int TickLabelMaxWidth(const ChartAxis& axis, double lo, double hi, const QFontMe
 
 } // namespace
 
+// --- ChartAxis ---------------------------------------------------------------
+//
+// 属性变化必须让图表的布局缓存失效：左右边距是按刻度文本宽度实测出来的，
+// 量程 / 刻度数 / 格式 / 轴标题任一变化都会改变边距。setter 放 .cpp 是因为
+// 这里 MetricChartWidget 已是完整类型。
+void ChartAxis::SetRange(double min, double max) {
+    min_ = min;
+    max_ = max;
+    has_range_ = true;
+    NotifyChanged();
+}
+
+void ChartAxis::ResetRange() {
+    has_range_ = false;
+    NotifyChanged();
+}
+
+void ChartAxis::SetLabelFormat(const QString& format) {
+    label_format_ = format;
+    NotifyChanged();
+}
+
+void ChartAxis::SetTitleText(const QString& title) {
+    title_ = title;
+    NotifyChanged();
+}
+
+void ChartAxis::SetTickCount(int count) {
+    tick_count_ = count < 2 ? 2 : count;
+    NotifyChanged();
+}
+
+void ChartAxis::SetCategories(const QStringList& categories) {
+    categories_ = categories;
+    NotifyChanged();
+}
+
+void ChartAxis::NotifyChanged() {
+    if (owner_)
+        owner_->InvalidateGeometry();
+}
+
 void ChartSeries::NotifyUpdate() {
     // 数据或外观一变就排一次重绘，不等别的事件顺带刷出去 —— 以前改完数据
     // 界面停在旧曲线上，要等切页/缩放之类的随机事件才更新，用户看到的就是"没刷新"。
     // update() 是排期不是立即画，Qt 会把同一帧内的多次调用合并成一次 paint，
     // 所以批量 Append / Replace 不会退化成逐点重绘。
-    if (owner_)
+    if (owner_) {
+        // x/y 量程由数据决定：新点会改变范围，布局缓存必须一起失效。
+        owner_->InvalidateGeometry();
         owner_->update();
+    }
 }
 
 MetricChartWidget::MetricChartWidget(QWidget* parent)
     : QWidget(parent), axis_x_(std::make_unique<ChartAxis>()), axis_y_(std::make_unique<ChartAxis>()),
       axis_y2_(std::make_unique<ChartAxis>()) {
+    // 轴属性变化要回头把布局缓存置脏
+    axis_x_->owner_ = this;
+    axis_y_->owner_ = this;
+    axis_y2_->owner_ = this;
     setAttribute(Qt::WA_Hover, true);
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 }
 
+void MetricChartWidget::InvalidateGeometry() {
+    geometry_dirty_ = true;
+}
+
+const MetricChartWidget::Geometry& MetricChartWidget::ChartGeometry() const {
+    if (geometry_dirty_) {
+        cached_geometry_ = ComputeGeometry();
+        geometry_dirty_ = false;
+    }
+    return cached_geometry_;
+}
+
 void MetricChartWidget::SetTitle(const QString& title) {
+    if (title_ == title)
+        return;
     title_ = title;
+    InvalidateGeometry();
     update();
 }
 
 void MetricChartWidget::SetLegendVisible(bool visible) {
+    if (legend_visible_ == visible)
+        return;
     legend_visible_ = visible;
+    InvalidateGeometry();
     update();
 }
 
@@ -160,6 +229,7 @@ ChartSeries* MetricChartWidget::AddSeries(const QString& name, ChartSeriesKind k
     // 建系列时把"我画在哪个图表上"交代给系列，后面的 Append / Replace / setter
     // 才能自己排重绘
     series_.push_back(std::make_unique<ChartSeries>(kind, name, color, this));
+    InvalidateGeometry();
     update();
     return series_.back().get();
 }
@@ -182,11 +252,16 @@ void MetricChartWidget::ClearSeriesData() {
     }
     hover_series_ = -1;
     hover_index_ = -1;
+    ResetView();
+    InvalidateGeometry();
     update();
 }
 
 void MetricChartWidget::SetAxisY2Visible(bool visible) {
+    if (axis_y2_visible_ == visible)
+        return;
     axis_y2_visible_ = visible;
+    InvalidateGeometry();
     update();
 }
 
@@ -267,6 +342,20 @@ MetricChartWidget::Geometry MetricChartWidget::ComputeGeometry() const {
     }
     if (geo.x_max - geo.x_min < 1e-9)
         geo.x_max = geo.x_min + 1.0;
+
+    // 记录未缩放的完整区间（缩放钳制边界），再套用局部视图。
+    // 这里按边界钳制而不改 view_active_：ComputeGeometry 是 const 缓存计算，
+    // 数据缩水时视图会自动退回完整区间，不需要额外写回。
+    geo.base_x_min = geo.x_min;
+    geo.base_x_max = geo.x_max;
+    if (view_active_) {
+        const double lo = std::max(view_x_min_, geo.base_x_min);
+        const double hi = std::min(view_x_max_, geo.base_x_max);
+        if (hi - lo > 1e-12) {
+            geo.x_min = lo;
+            geo.x_max = hi;
+        }
+    }
 
     // ---- Y 量程（左 / 右轴各自独立）----
     const bool has_bars = std::any_of(series_.begin(), series_.end(), [](const std::unique_ptr<ChartSeries>& s) {
@@ -672,11 +761,37 @@ void MetricChartWidget::paintEvent(QPaintEvent* event) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setFont(font());
 
-    const Geometry geo = ComputeGeometry();
+    const Geometry& geo = ChartGeometry();
     DrawTitle(painter, geo);
     DrawLegend(painter, geo);
     DrawAxisAndGrid(painter, geo);
     DrawSeries(painter, geo);
+
+    // 缩放态提示：不占布局空间，叠在绘图区右上角。
+    const double base_span = geo.base_x_max - geo.base_x_min;
+    if (base_span > 0.0 && (geo.x_max - geo.x_min) < base_span * 0.999) {
+        painter.save();
+        painter.setFont(font());
+        const QString hint = QStringLiteral("已缩放 · 双击复位");
+        const QFontMetrics fm(font());
+        const int tw = fm.horizontalAdvance(hint) + 12;
+        const QRect box(geo.plot.right() - tw - 6, geo.plot.top() + 6, tw, fm.height() + 4);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 96));
+        painter.drawRoundedRect(box, 3, 3);
+        painter.setPen(palette().color(QPalette::WindowText));
+        painter.drawText(box, Qt::AlignCenter, hint);
+        painter.restore();
+    }
+}
+
+double MetricChartWidget::DataXAt(const QPoint& pos, const Geometry& geo) const {
+    const double span_x = geo.x_max - geo.x_min;
+    if (geo.plot.width() <= 0 || !(span_x > 0.0))
+        return geo.x_min;
+    const double ratio =
+        std::clamp(static_cast<double>(pos.x() - geo.plot.left()) / static_cast<double>(geo.plot.width()), 0.0, 1.0);
+    return geo.x_min + ratio * span_x;
 }
 
 bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF* out) {
@@ -693,17 +808,25 @@ bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF*
         return plot.bottom() - (y - lo) / (hi - lo) * static_cast<double>(plot.height());
     };
 
+    // 光标左右 kHitRadiusPx 对应的数据 x 区间。按时间排序的曲线只需在这个窗口内二分，
+    // 不必每次鼠标移动都线性扫过全部点（4000 点 × 每次 move 的旧口径）。
+    const double window_x_min = DataXAt(QPoint(pos.x() - kHitRadiusPx, pos.y()), geo);
+    const double window_x_max = DataXAt(QPoint(pos.x() + kHitRadiusPx, pos.y()), geo);
+
     double best = static_cast<double>(kHitRadiusPx * kHitRadiusPx);
     bool found = false;
     for (int si = static_cast<int>(series_.size()) - 1; si >= 0; --si) {
         const auto& s = series_[si];
         const QVector<QPointF>& pts = s->Points();
-        for (int i = 0; i < pts.size(); ++i) {
+        if (pts.isEmpty())
+            continue;
+        const int axis_index = s->ValueAxisIndex();
+        const auto consider = [&](int i) {
             const QPointF& p = pts.at(i);
             if (!FinitePoint(p))
-                continue;
+                return;
             const double dx = to_px(p.x()) - pos.x();
-            const double dy = to_py(p.y(), s->ValueAxisIndex()) - pos.y();
+            const double dy = to_py(p.y(), axis_index) - pos.y();
             const double dist = dx * dx + dy * dy;
             if (dist <= best) {
                 best = dist;
@@ -713,13 +836,44 @@ bool MetricChartWidget::HitTest(const QPoint& pos, const Geometry& geo, QPointF*
                     *out = p;
                 found = true;
             }
+        };
+        if (s->XSorted()) {
+            const auto first = std::lower_bound(pts.cbegin(), pts.cend(), window_x_min,
+                                                [](const QPointF& p, double v) { return p.x() < v; });
+            const auto last =
+                std::upper_bound(first, pts.cend(), window_x_max, [](double v, const QPointF& p) { return v < p.x(); });
+            for (auto it = first; it != last; ++it)
+                consider(static_cast<int>(it - pts.cbegin()));
+        } else {
+            for (int i = 0; i < pts.size(); ++i)
+                consider(i);
         }
     }
     return found;
 }
 
 void MetricChartWidget::mouseMoveEvent(QMouseEvent* event) {
-    const Geometry geo = ComputeGeometry();
+    if (dragging_) {
+        const Geometry& geo = ChartGeometry();
+        const int dx = event->pos().x() - press_pos_.x();
+        if (!drag_moved_ && std::abs(dx) >= 3)
+            drag_moved_ = true;
+        const double span = drag_view_max_ - drag_view_min_;
+        const double base_span = geo.base_x_max - geo.base_x_min;
+        if (view_active_ && drag_moved_ && span > 0.0 && base_span >= span && geo.plot.width() > 0) {
+            const double shift = -static_cast<double>(dx) / static_cast<double>(geo.plot.width()) * span;
+            const double lo = std::clamp(drag_view_min_ + shift, geo.base_x_min, geo.base_x_max - span);
+            view_x_min_ = lo;
+            view_x_max_ = lo + span;
+            InvalidateGeometry();
+            update();
+            emit ViewChanged(view_x_min_, view_x_max_);
+        }
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+
+    const Geometry& geo = ChartGeometry();
     QPointF hit;
     const bool found = HitTest(event->pos(), geo, &hit);
     const int prev_series = hover_series_;
@@ -728,15 +882,126 @@ void MetricChartWidget::mouseMoveEvent(QMouseEvent* event) {
         hover_series_ = -1;
         hover_index_ = -1;
     }
-    if (found || prev_series != hover_series_ || prev_index != hover_index_) {
+    // 悬浮点没变就不重绘：旧实现只要命中就 update()，鼠标停在一个点附近抖动也会
+    // 一直排重绘。
+    const bool changed = found ? (prev_series != hover_series_ || prev_index != hover_index_) : (prev_series >= 0);
+    if (changed)
         update();
-    }
-    if (found) {
+    if (found && changed)
         emit PointHovered(hit, true);
-    } else if (prev_series >= 0) {
+    else if (!found && prev_series >= 0)
         emit PointHovered(QPointF(), false);
-    }
     QWidget::mouseMoveEvent(event);
+}
+
+void MetricChartWidget::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        const Geometry& geo = ChartGeometry();
+        dragging_ = geo.plot.contains(event->pos());
+        drag_moved_ = false;
+        press_pos_ = event->pos();
+        drag_view_min_ = geo.x_min;
+        drag_view_max_ = geo.x_max;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void MetricChartWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && dragging_) {
+        const Geometry& geo = ChartGeometry();
+        const bool was_click = !drag_moved_ && geo.plot.contains(event->pos());
+        dragging_ = false;
+        drag_moved_ = false;
+        if (was_click)
+            emit PlotClicked(DataXAt(event->pos(), geo));
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
+void MetricChartWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        const Geometry& geo = ChartGeometry();
+        if (geo.plot.contains(event->pos()) && view_active_) {
+            ResetView();
+            event->accept();
+            return;
+        }
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
+void MetricChartWidget::wheelEvent(QWheelEvent* event) {
+    const Geometry& geo = ChartGeometry();
+    if (!geo.plot.contains(event->position().toPoint())) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    const double base_span = geo.base_x_max - geo.base_x_min;
+    const double cur_span = geo.x_max - geo.x_min;
+    const int delta = event->angleDelta().y() != 0 ? event->angleDelta().y() : event->pixelDelta().y();
+    if (!(base_span > 0.0) || !(cur_span > 0.0) || delta == 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    // 向上滚放大（0.8×），向下缩小；以光标位置为锚点，缩放时视线不跑。
+    const double new_span =
+        std::clamp(cur_span * (delta > 0 ? 0.8 : 1.25), std::max(base_span * 0.002, 1e-9), base_span);
+    if (new_span >= base_span * 0.999) {
+        ResetView();
+        event->accept();
+        return;
+    }
+
+    const double cursor_x = DataXAt(event->position().toPoint(), geo);
+    const double ratio = std::clamp((cursor_x - geo.x_min) / cur_span, 0.0, 1.0);
+    double lo = cursor_x - ratio * new_span;
+    double hi = lo + new_span;
+    if (lo < geo.base_x_min) {
+        lo = geo.base_x_min;
+        hi = lo + new_span;
+    }
+    if (hi > geo.base_x_max) {
+        hi = geo.base_x_max;
+        lo = hi - new_span;
+    }
+    view_active_ = true;
+    view_x_min_ = lo;
+    view_x_max_ = hi;
+    InvalidateGeometry();
+    update();
+    emit ViewChanged(view_x_min_, view_x_max_);
+    event->accept();
+}
+
+void MetricChartWidget::ResetView() {
+    if (!view_active_)
+        return;
+    view_active_ = false;
+    InvalidateGeometry();
+    update();
+    const Geometry& geo = ChartGeometry();
+    emit ViewChanged(geo.x_min, geo.x_max);
+}
+
+void MetricChartWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    InvalidateGeometry();
+}
+
+void MetricChartWidget::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    switch (event->type()) {
+    case QEvent::FontChange:
+    case QEvent::ApplicationFontChange:
+    case QEvent::StyleChange:
+    case QEvent::PaletteChange:
+        // 边距按字体实测，换字体/主题必须重算
+        InvalidateGeometry();
+        break;
+    default:
+        break;
+    }
 }
 
 void MetricChartWidget::leaveEvent(QEvent* event) {

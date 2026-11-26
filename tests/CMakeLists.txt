@@ -406,6 +406,21 @@ target_link_libraries(test_chart_decimation PRIVATE
 add_test(NAME ChartDecimationTests COMMAND test_chart_decimation)
 
 # ============================================================
+# 测试 2c-2: MetricChartWidget 交互（点击跳播 / 滚轮缩放 / 拖动不平移误触）
+#
+# 曲线控件的命中测试按"x 是否单调"选择二分或线性扫描；单击/缩放/平移
+# 三条交互都直接影响分析页的跳播行为。用 offscreen 平台跑。
+# ============================================================
+videoeye_add_test(test_metric_chart_widget
+    unit/test_metric_chart_widget.cpp
+)
+target_link_libraries(test_metric_chart_widget PRIVATE
+    VideoEyeUiCharts Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME MetricChartWidgetTests COMMAND test_metric_chart_widget)
+set_tests_properties(MetricChartWidgetTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# ============================================================
 # 测试 2d: RecordTableModel (十万级明细表的 model/view 底座)
 #
 # 纯 Qt Core + Gui（QColor），不需要 QApplication。

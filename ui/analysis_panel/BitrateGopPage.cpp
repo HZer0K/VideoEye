@@ -10,14 +10,18 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTableView>
+#include <QTableWidget>
 #include <QTextStream>
 #include <QVBoxLayout>
 
 #include <QColor>
 #include <QDateTime>
 
+#include "core/domain/model/GopInfo.h"
 #include "infrastructure/logging/ScopedTimer.h"
 #include "ui/analysis_panel/AnalysisPageSupport.h"
+#include "ui/analysis_panel/RecordTableModel.h"
 #include "ui/theme/AppTheme.h"
 
 // BitrateAnomalyType 与 model::ToString(BitrateAnomalyType) 住在 domain 的
@@ -41,6 +45,14 @@ namespace {
 // 画面质量页 600、流概览页 300，四套口径在同一份界面上并存。
 constexpr int kMaxGopTableRows = 5000;
 constexpr int kMaxAnomalyTableRows = 2000;
+
+// GOP 表模型的完整类型只存在于本翻译单元；头文件只保留 QTableView 指针，
+// 这样 ui/analysis_panel 的公共头里不会出现 videoeye::model 子命名空间。
+using GopTableModel = RecordTableModel<model::GopInfo>;
+
+GopTableModel* GopModelOf(const QTableView* table) {
+    return table != nullptr ? static_cast<GopTableModel*>(table->model()) : nullptr;
+}
 } // namespace
 
 BitrateGopPage::BitrateGopPage(QWidget* parent) : QWidget(parent) {
@@ -199,6 +211,10 @@ void BitrateGopPage::SetupUi() {
         axis_x_->SetTitleText(tr("时间 (s)"));
         axis_y_->SetTitleText(tr("kbps"));
         chart_->setMinimumHeight(240);
+        chart_->setToolTip(tr("滚轮缩放时间轴，左键拖动平移，双击复位；单击任意位置跳转到该时刻。"
+                              "I 帧 / 场景切换 / 异常峰值标记会随缩放一起放大。"));
+        // 图表点击跳播：与点 GOP / 异常行同一条出口，面板统一转给播放器。
+        connect(chart_, &MetricChartWidget::PlotClicked, this, &BitrateGopPage::SeekRequested);
         layout->addWidget(chart_);
     }
 
@@ -211,16 +227,70 @@ void BitrateGopPage::SetupUi() {
         pl->setContentsMargins(2, 2, 2, 2);
         gop_hint_ = new QLabel(tr("点击「开始分析」后在此列出 GOP 分段明细。"), page);
         pl->addWidget(gop_hint_);
-        gop_table_ = new QTableWidget(0, 11, page);
-        gop_table_->setHorizontalHeaderLabels({tr("序号"), tr("起始"), tr("结束"), tr("时长(s)"), tr("帧数"),
-                                               tr("大小(KB)"), tr("平均码率(kbps)"), tr("I / P / B"), tr("最大帧(KB)"),
-                                               tr("类型"), tr("状态")});
+
+        // 5000 行 × 11 列：QTableWidget 会为每个单元格建一个堆对象，
+        // 这里换 model/view，文本只在可见行现算（与包表同一套做法）。
+        using Spec = RecordTableModel<model::GopInfo>::ColumnSpec;
+        std::vector<Spec> columns;
+        columns.push_back(Spec{tr("序号"), [](const model::GopInfo& g) { return QString::number(g.index); }, {}});
+        columns.push_back(Spec{
+            tr("起始"),
+            [](const model::GopInfo& g) { return theme::font::formatTime(static_cast<int>(g.start_seconds * 1000)); },
+            {}});
+        columns.push_back(Spec{
+            tr("结束"),
+            [](const model::GopInfo& g) { return theme::font::formatTime(static_cast<int>(g.end_seconds * 1000)); },
+            {}});
+        columns.push_back(
+            Spec{tr("时长(s)"), [](const model::GopInfo& g) { return QString::number(g.DurationSeconds(), 'f', 3); },
+                 [this](const model::GopInfo& g) -> QColor {
+                     return (options_.max_gop_seconds > 0.0 && g.DurationSeconds() > options_.max_gop_seconds)
+                                ? QColor("#ef6c00")
+                                : QColor();
+                 }});
+        columns.push_back(Spec{tr("帧数"), [](const model::GopInfo& g) { return QString::number(g.frame_count); }, {}});
+        columns.push_back(Spec{
+            tr("大小(KB)"), [](const model::GopInfo& g) { return FormatKb(static_cast<double>(g.byte_count)); }, {}});
+        columns.push_back(Spec{tr("平均码率(kbps)"),
+                               [](const model::GopInfo& g) { return QString::number(g.AverageBitrateKbps(), 'f', 0); },
+                               {}});
+        columns.push_back(Spec{
+            tr("I / P / B"), [](const model::GopInfo& g) { return QString::fromStdString(g.FrameTypeSummary()); }, {}});
+        columns.push_back(Spec{tr("最大帧(KB)"),
+                               [](const model::GopInfo& g) { return FormatKb(static_cast<double>(g.max_frame_bytes)); },
+                               {}});
+        columns.push_back(
+            Spec{tr("类型"), [](const model::GopInfo& g) { return g.closed_gop ? tr("closed") : tr("open"); }, {}});
+        columns.push_back(
+            Spec{tr("状态"), [](const model::GopInfo& g) { return g.complete ? tr("已收尾") : tr("未收尾"); }, {}});
+        GopTableModel* gop_model = new GopTableModel(std::move(columns), page);
+
+        gop_table_ = new QTableView(page);
+        gop_table_->setModel(gop_model);
         gop_table_->verticalHeader()->setVisible(false);
         gop_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
         gop_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        gop_table_->setSelectionMode(QAbstractItemView::SingleSelection);
+        gop_table_->setAlternatingRowColors(true);
+        gop_table_->setSortingEnabled(false);
         gop_table_->horizontalHeader()->setStretchLastSection(true);
+        gop_table_->horizontalHeader()->setMinimumSectionSize(50);
+        // 显式列宽：resizeColumnsToContents 在 5000 × 11 下要逐行量文本，
+        // 是迁移前每次刷新都卡一下的主因。
+        gop_table_->setColumnWidth(0, 60);  // 序号
+        gop_table_->setColumnWidth(1, 90);  // 起始
+        gop_table_->setColumnWidth(2, 90);  // 结束
+        gop_table_->setColumnWidth(3, 80);  // 时长
+        gop_table_->setColumnWidth(4, 70);  // 帧数
+        gop_table_->setColumnWidth(5, 90);  // 大小
+        gop_table_->setColumnWidth(6, 120); // 平均码率
+        gop_table_->setColumnWidth(7, 150); // I/P/B
+        gop_table_->setColumnWidth(8, 100); // 最大帧
+        gop_table_->setColumnWidth(9, 80);  // 类型
+        gop_table_->setColumnWidth(10, 80); // 状态
         gop_table_->setMinimumHeight(220);
-        connect(gop_table_, &QTableWidget::cellClicked, this, &BitrateGopPage::OnGopCellClicked);
+        connect(gop_table_, &QTableView::clicked, this,
+                [this](const QModelIndex& index) { OnGopRowClicked(index.row()); });
         pl->addWidget(gop_table_);
         sub_tabs_->addTab(page, tr("GOP 列表"));
     }
@@ -303,13 +373,14 @@ void BitrateGopPage::OnLinkSceneChanges() {
     emit SceneLinkRequested(scene_changes_, options_);
 }
 
-void BitrateGopPage::OnGopCellClicked(int row, int) {
-    if (!gop_table_ || row < 0)
+void BitrateGopPage::OnGopRowClicked(int row) {
+    GopTableModel* gop_model = GopModelOf(gop_table_);
+    if (gop_model == nullptr || row < 0)
         return;
-    const auto& gops = result_->bitrate_gop.gops;
-    if (row >= static_cast<int>(gops.size()))
+    const model::GopInfo* gop = gop_model->RecordAt(row);
+    if (gop == nullptr)
         return;
-    emit SeekRequested(gops[row].start_seconds);
+    emit SeekRequested(gop->start_seconds);
 }
 
 void BitrateGopPage::OnAnomalyCellClicked(int row, int) {
@@ -391,6 +462,8 @@ void BitrateGopPage::UpdateSummary() {
 void BitrateGopPage::UpdateChart() {
     if (!bitrate_series_)
         return;
+    // 整份曲线重填前复位局部缩放：旧文件的视窗不能带到新窗口/新结果上。
+    chart_->ResetView();
     bitrate_series_->Clear();
     target_series_->Clear();
     iframe_series_->Clear();
@@ -480,9 +553,10 @@ void BitrateGopPage::UpdateChart() {
 }
 
 void BitrateGopPage::RebuildGopTable() {
-    if (!gop_table_)
+    GopTableModel* gop_model = GopModelOf(gop_table_);
+    if (gop_model == nullptr)
         return;
-    gop_table_->setRowCount(0);
+    gop_model->Clear();
     if (!has_result_) {
         if (gop_hint_)
             gop_hint_->setText(tr("点击「开始分析」后在此列出 GOP 分段明细。"));
@@ -493,28 +567,11 @@ void BitrateGopPage::RebuildGopTable() {
     const int total = static_cast<int>(result_->bitrate_gop.gop_count);
     const int listed = static_cast<int>(gops.size());
     const int rows = std::min(listed, kMaxGopTableRows);
-    gop_table_->setRowCount(rows);
-    for (int i = 0; i < rows; ++i) {
-        const auto& g = gops[i];
-        SetTableItemText(gop_table_, i, 0, QString::number(g.index));
-        SetTableItemText(gop_table_, i, 1, theme::font::formatTime(static_cast<int>(g.start_seconds * 1000)));
-        SetTableItemText(gop_table_, i, 2, theme::font::formatTime(static_cast<int>(g.end_seconds * 1000)));
-        SetTableItemText(gop_table_, i, 3, QString::number(g.DurationSeconds(), 'f', 3));
-        SetTableItemText(gop_table_, i, 4, QString::number(g.frame_count));
-        SetTableItemText(gop_table_, i, 5, FormatKb(static_cast<double>(g.byte_count)));
-        SetTableItemText(gop_table_, i, 6, QString::number(g.AverageBitrateKbps(), 'f', 0));
-        SetTableItemText(gop_table_, i, 7, QString::fromStdString(g.FrameTypeSummary()));
-        SetTableItemText(gop_table_, i, 8, FormatKb(static_cast<double>(g.max_frame_bytes)));
-        SetTableItemText(gop_table_, i, 9, g.closed_gop ? tr("closed") : tr("open"));
-        SetTableItemText(gop_table_, i, 10, g.complete ? tr("已收尾") : tr("未收尾"));
-
-        if (options_.max_gop_seconds > 0.0 && g.DurationSeconds() > options_.max_gop_seconds) {
-            if (QTableWidgetItem* cell = gop_table_->item(i, 3)) {
-                cell->setForeground(QColor("#ef6c00"));
-            }
-        }
-    }
-    gop_table_->resizeColumnsToContents();
+    std::vector<model::GopInfo> visible;
+    visible.reserve(static_cast<std::size_t>(rows));
+    for (int i = 0; i < rows; ++i)
+        visible.push_back(gops[i]);
+    gop_model->AppendRecords(std::move(visible));
 
     // 两种截断要分开说：UI 表格上限（明细还在，CSV 能导出全部）与分析器的
     // max_gops 上限（明细本身就没保留全，CSV 也只有这么多）。混成一句会让读者

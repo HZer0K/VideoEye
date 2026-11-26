@@ -26,7 +26,6 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
-#include <QTableWidget>
 
 #include <cstddef>
 #include <memory>
@@ -37,6 +36,9 @@
 #include "core/domain/model/SceneChangeResult.h"
 #include "ui/analysis_panel/ScanClient.h"
 #include "ui/charts/MetricChartWidget.h"
+
+class QTableView;
+class QTableWidget;
 
 namespace videoeye {
 namespace ui {
@@ -104,7 +106,7 @@ private:
     void OnWindowChanged();
     void OnOptionChanged();
     void OnLinkSceneChanges();
-    void OnGopCellClicked(int row, int column);
+    void OnGopRowClicked(int row);
     void OnAnomalyCellClicked(int row, int column);
     void UpdateSummary();
     void UpdateChart();
@@ -144,7 +146,9 @@ private:
     ChartAxis* axis_y_ = nullptr;
 
     QTabWidget* sub_tabs_ = nullptr;
-    QTableWidget* gop_table_ = nullptr;
+    // GOP 列表改用 model/view：5000 行 × 11 列不再生成 5.5 万个 QTableWidgetItem，
+    // 单元格文本只在可见行上现算。模型具体类型留在 .cpp，避免把模板细节透进公共头。
+    QTableView* gop_table_ = nullptr;
     QTableWidget* anomaly_table_ = nullptr;
     // 两张表都有行数上限（GOP 5000 / 异常 2000），超出会截断。截断本身合理，
     // 但不说明就有问题：用户会以为"总共就这么多"。这两个 label 负责报总数、

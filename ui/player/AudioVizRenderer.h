@@ -38,6 +38,16 @@ private:
 
     VideoWidget* video_widget_ = nullptr;
     QImage album_cover_;
+    // 封面缩放与倒影只在封面或目标尺寸变化时重算：旧实现每帧都做一次
+    // SmoothTransformation 缩放 + mirrored()，纯音频模式下就是稳定的一笔额外开销。
+    QImage scaled_cover_cache_;
+    QImage reflection_cache_;
+    int cover_cache_size_ = -1;
+    // 渲染缓冲区：尺寸不变时复用。用双缓冲轮换 —— VideoWidget 持有的上一帧与
+    // 本次要绘制的那张共用同一份数据，QPainter 会触发 detach（整图复制）；
+    // 交替使用两张后，绘制目标永远没有额外引用。
+    QImage render_buffers_[2];
+    int render_buffer_index_ = 0;
     std::deque<double> audio_level_history_;
     std::deque<double> spectrum_history_;
     QElapsedTimer audio_vis_timer_;
