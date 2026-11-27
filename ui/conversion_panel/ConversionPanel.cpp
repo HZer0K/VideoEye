@@ -85,6 +85,12 @@ ConversionPanel::ConversionPanel(QWidget* parent) : QWidget(parent) {
     settings_ = new QSettings(this);
     BuildUi();
 
+    // 参数落盘防抖：附加参数每敲一个字符都会触发 OnSettingsChanged，逐字符写注册表太浪费。
+    settings_save_timer_ = new QTimer(this);
+    settings_save_timer_->setSingleShot(true);
+    connect(settings_save_timer_, &QTimer::timeout, this, &ConversionPanel::SaveSettings);
+    LoadSettings();
+
     runner_ = new ffmpeg::FfmpegProcessRunner(this);
     connect(runner_, &ffmpeg::FfmpegProcessRunner::OutputLine, this, &ConversionPanel::OnRunOutput);
     connect(runner_, &ffmpeg::FfmpegProcessRunner::Finished, this, &ConversionPanel::OnRunFinished);
@@ -122,6 +128,11 @@ ConversionPanel::ConversionPanel(QWidget* parent) : QWidget(parent) {
 }
 
 ConversionPanel::~ConversionPanel() {
+    // 关页面前补一次落盘（防抖窗口内的改动还没写过）。
+    if (settings_save_timer_ != nullptr) {
+        settings_save_timer_->stop();
+    }
+    SaveSettings();
     CancelProbe();
     CancelEncoderListProbe();
     CancelVerify();
@@ -227,6 +238,7 @@ void ConversionPanel::BuildUi() {
 
     grid->addWidget(new QLabel(tr("CRF"), target_group), 1, 2);
     crf_spin_ = new QSpinBox(target_group);
+    crf_spin_->setObjectName(QStringLiteral("ConversionCrf"));
     crf_spin_->setRange(0, 63); // H.264/HEVC 上限 51、VP9/AV1 上限 63，统一放到 63 再在 core 里夹
     crf_spin_->setValue(23);
     crf_spin_->setEnabled(false);
@@ -253,6 +265,7 @@ void ConversionPanel::BuildUi() {
 
     grid->addWidget(new QLabel(tr("帧率"), target_group), 2, 2);
     fps_combo_ = new QComboBox(target_group);
+    fps_combo_->setObjectName(QStringLiteral("ConversionFrameRate"));
     AddEnumItem(fps_combo_, tr("保持原样"), ffmpeg::ConversionFrameRate::Keep);
     AddEnumItem(fps_combo_, QStringLiteral("60 fps"), ffmpeg::ConversionFrameRate::Fps60);
     AddEnumItem(fps_combo_, QStringLiteral("30 fps"), ffmpeg::ConversionFrameRate::Fps30);
@@ -284,7 +297,8 @@ void ConversionPanel::BuildUi() {
     for (const auto preset : ffmpeg::AllConversionPresets()) {
         AddEnumItem(preset_combo_, ffmpeg::PresetLabel(preset), preset);
     }
-    preset_combo_->setToolTip(tr("只对 H.264 / H.265 生效：越慢压缩率越高，同画质下文件更小。"));
+    preset_combo_->setToolTip(
+        tr("越慢压缩率越高，同画质下文件更小。H.264 / H.265 写 -preset；VP9 / AV1 换算成 -cpu-used。"));
     grid->addWidget(preset_combo_, 3, 3);
 
     grid->addWidget(new QLabel(tr("像素格式"), target_group), 3, 4);
@@ -297,24 +311,35 @@ void ConversionPanel::BuildUi() {
         tr("8-bit 兼容性最好；10-bit 需要编码器支持（H.264 / H.265 / VP9 / AV1），能减少暗部色带。"));
     grid->addWidget(pixel_combo_, 3, 5);
 
-    grid->addWidget(new QLabel(tr("附加参数"), target_group), 4, 0);
+    // GIF 专属：循环次数。其它容器由播放器决定，这一项会一直置灰。
+    grid->addWidget(new QLabel(tr("循环"), target_group), 4, 0);
+    gif_loop_combo_ = new QComboBox(target_group);
+    gif_loop_combo_->setObjectName(QStringLiteral("ConversionGifLoop"));
+    for (const auto loop : ffmpeg::AllConversionGifLoops()) {
+        AddEnumItem(gif_loop_combo_, ffmpeg::GifLoopLabel(loop), loop);
+    }
+    gif_loop_combo_->setEnabled(false);
+    gif_loop_combo_->setToolTip(tr("仅 GIF 生效：无限循环，或播完停在最后一帧。"));
+    grid->addWidget(gif_loop_combo_, 4, 1);
+
+    grid->addWidget(new QLabel(tr("附加参数"), target_group), 5, 0);
     extra_edit_ = new QLineEdit(target_group);
     extra_edit_->setObjectName(QStringLiteral("ConversionExtraArgs"));
     extra_edit_->setPlaceholderText(tr("可选：追加 ffmpeg 原始参数，例如 -metadata title=\"片名\" -map 0:s?"));
     extra_edit_->setClearButtonEnabled(true);
     extra_edit_->setToolTip(tr("原样追加到输出文件之前，ffmpeg 以最后一个同名选项为准。\n"
                                "不允许 -i / -y / -n / -nostdin，也不能写输入或输出文件路径。"));
-    grid->addWidget(extra_edit_, 4, 1, 1, 5);
+    grid->addWidget(extra_edit_, 5, 1, 1, 5);
 
     auto* output_label = new QLabel(tr("输出文件"), target_group);
-    grid->addWidget(output_label, 5, 0);
+    grid->addWidget(output_label, 6, 0);
     output_edit_ = new QLineEdit(target_group);
     output_edit_->setObjectName(QStringLiteral("ConversionOutputPath"));
     output_edit_->setPlaceholderText(tr("留空则与源文件同目录、同名换扩展名"));
     output_edit_->setClearButtonEnabled(true);
-    grid->addWidget(output_edit_, 5, 1, 1, 4);
+    grid->addWidget(output_edit_, 6, 1, 1, 4);
     browse_output_button_ = new QPushButton(tr("另存为…"), target_group);
-    grid->addWidget(browse_output_button_, 5, 5);
+    grid->addWidget(browse_output_button_, 6, 5);
     root->addWidget(target_group);
 
     connect(container_combo_, &QComboBox::currentIndexChanged, this, &ConversionPanel::OnContainerChanged);
@@ -329,6 +354,7 @@ void ConversionPanel::BuildUi() {
     connect(bitrate_combo_, &QComboBox::currentIndexChanged, this, &ConversionPanel::OnSettingsChanged);
     connect(scale_combo_, &QComboBox::currentIndexChanged, this, &ConversionPanel::OnSettingsChanged);
     connect(fps_combo_, &QComboBox::currentIndexChanged, this, &ConversionPanel::OnSettingsChanged);
+    connect(gif_loop_combo_, &QComboBox::currentIndexChanged, this, &ConversionPanel::OnSettingsChanged);
     connect(extra_edit_, &QLineEdit::textChanged, this, &ConversionPanel::OnSettingsChanged);
     // textEdited 只在用户手工输入时发；程序调用 setText 不发 —— auto_output_ 靠这个区分。
     connect(output_edit_, &QLineEdit::textEdited, this, &ConversionPanel::OnOutputEdited);
@@ -431,6 +457,7 @@ ffmpeg::ConversionProfile ConversionPanel::CurrentProfile() const {
     profile.audio_bitrate_kbps = bitrate_combo_->currentData().toInt();
     profile.scale = CurrentEnum<ffmpeg::ConversionScale>(scale_combo_);
     profile.fps = CurrentEnum<ffmpeg::ConversionFrameRate>(fps_combo_);
+    profile.gif_loop = CurrentEnum<ffmpeg::ConversionGifLoop>(gif_loop_combo_);
     profile.extra_arguments = extra_edit_->text();
     return profile;
 }
@@ -476,6 +503,27 @@ void ConversionPanel::RebuildPlan() {
     }
     // 预设 / 10-bit 只对部分编码有意义；换了编码还留着旧选项会让界面与命令不一致。
     NormalizeCodecOptions(resolved_video);
+
+    const bool is_gif = CurrentEnum<ffmpeg::ConversionContainer>(container_combo_) == ffmpeg::ConversionContainer::Gif;
+    const bool can_transform =
+        resolved_video != ffmpeg::ConversionVideoCodec::Copy && resolved_video != ffmpeg::ConversionVideoCodec::None;
+
+    // 自定义质量滑杆的范围按编码器走：H.264/H.265 到 51，VP9/AV1 到 63，MPEG-4 是
+    // -q:v 2..31。范围外的值 core 会夹掉，但界面不该给一个永远不会生效的数字。
+    if (can_transform) {
+        const int min_value = ffmpeg::MinQualityValue(resolved_video);
+        const int max_value = ffmpeg::MaxQualityValue(resolved_video);
+        if (crf_spin_->minimum() != min_value || crf_spin_->maximum() != max_value) {
+            const QSignalBlocker blocker(crf_spin_);
+            crf_spin_->setRange(min_value, max_value);
+        }
+        crf_spin_->setToolTip(resolved_video == ffmpeg::ConversionVideoCodec::Mpeg4
+                                  ? tr("MPEG-4 用 -q:v：2 最好、31 最差（只在「自定义 CRF」时生效）。")
+                                  : tr("只在「自定义 CRF」时生效。数值越小越清晰、文件越大（范围 %1~%2）。")
+                                        .arg(min_value)
+                                        .arg(max_value));
+    }
+
     const ffmpeg::ConversionProfile profile = CurrentProfile();
     const ffmpeg::ConversionPlan plan =
         ffmpeg::BuildConversionPlan(profile, input, output_edit_->text().trimmed(), CurrentSourceFacts());
@@ -545,11 +593,12 @@ void ConversionPanel::RebuildPlan() {
     stop_button_->setEnabled(running);
     // 流复制 / 不要视频时这些参数不会进命令，这里顺手置灰，
     // 比让用户点完再看到红字提示更省事。
-    const bool can_transform =
-        resolved_video != ffmpeg::ConversionVideoCodec::Copy && resolved_video != ffmpeg::ConversionVideoCodec::None;
+    // GIF 例外：视频编码虽然是 None，但缩放 / 帧率确实会进调色板滤镜。
+    const bool can_scale_frames = can_transform || is_gif;
     const bool rate_by_bitrate = profile.video_rate_mode == ffmpeg::ConversionVideoRateMode::Bitrate;
-    scale_combo_->setEnabled(can_transform && !running);
-    fps_combo_->setEnabled(can_transform && !running);
+    scale_combo_->setEnabled(can_scale_frames && !running);
+    fps_combo_->setEnabled(can_scale_frames && !running);
+    gif_loop_combo_->setEnabled(is_gif && !running);
     rate_mode_combo_->setEnabled(can_transform && !running);
     video_bitrate_spin_->setEnabled(can_transform && rate_by_bitrate && !running);
     quality_combo_->setEnabled(can_transform && !rate_by_bitrate && !running);
@@ -563,6 +612,90 @@ void ConversionPanel::RebuildPlan() {
 
 void ConversionPanel::OnSettingsChanged() {
     RebuildPlan();
+    if (settings_save_timer_ != nullptr) {
+        settings_save_timer_->start(800);
+    }
+}
+
+void ConversionPanel::LoadSettings() {
+    const auto stored = [this](const QString& key, int fallback) { return settings_->value(key, fallback).toInt(); };
+    // 容器先单独恢复：编码下拉的内容取决于容器，下面才能把上次的编码选回去。
+    {
+        const QSignalBlocker blocker(container_combo_);
+        const int index = container_combo_->findData(
+            stored(QStringLiteral("conversion/container"), static_cast<int>(ffmpeg::ConversionContainer::Mp4)));
+        if (index >= 0) {
+            container_combo_->setCurrentIndex(index);
+        }
+    }
+    RefreshCodecChoices();
+
+    // 其余控件一次性恢复。全部用 blocker：这里只是"把上次的值摆回去"，
+    // 不该在构造期触发一串 RebuildPlan。
+    {
+        const QSignalBlocker video_blocker(video_combo_);
+        const QSignalBlocker audio_blocker(audio_combo_);
+        const QSignalBlocker quality_blocker(quality_combo_);
+        const QSignalBlocker crf_blocker(crf_spin_);
+        const QSignalBlocker rate_mode_blocker(rate_mode_combo_);
+        const QSignalBlocker video_bitrate_blocker(video_bitrate_spin_);
+        const QSignalBlocker preset_blocker(preset_combo_);
+        const QSignalBlocker pixel_blocker(pixel_combo_);
+        const QSignalBlocker audio_bitrate_blocker(bitrate_combo_);
+        const QSignalBlocker scale_blocker(scale_combo_);
+        const QSignalBlocker fps_blocker(fps_combo_);
+        const QSignalBlocker loop_blocker(gif_loop_combo_);
+
+        const auto select = [](QComboBox* combo, int value) {
+            const int index = combo->findData(value);
+            if (index >= 0) {
+                combo->setCurrentIndex(index);
+            }
+        };
+        select(video_combo_,
+               stored(QStringLiteral("conversion/video"), static_cast<int>(ffmpeg::ConversionVideoCodec::Auto)));
+        select(audio_combo_,
+               stored(QStringLiteral("conversion/audio"), static_cast<int>(ffmpeg::ConversionAudioCodec::Auto)));
+        select(quality_combo_,
+               stored(QStringLiteral("conversion/quality"), static_cast<int>(ffmpeg::ConversionQuality::Balanced)));
+        crf_spin_->setValue(stored(QStringLiteral("conversion/crf"), 23));
+        select(rate_mode_combo_, stored(QStringLiteral("conversion/rate_mode"),
+                                        static_cast<int>(ffmpeg::ConversionVideoRateMode::Quality)));
+        video_bitrate_spin_->setValue(stored(QStringLiteral("conversion/video_bitrate"), 4000));
+        select(preset_combo_,
+               stored(QStringLiteral("conversion/preset"), static_cast<int>(ffmpeg::ConversionPreset::Medium)));
+        select(pixel_combo_, stored(QStringLiteral("conversion/pixel_format"),
+                                    static_cast<int>(ffmpeg::ConversionPixelFormat::Yuv420p)));
+        select(bitrate_combo_, stored(QStringLiteral("conversion/audio_bitrate"), 0));
+        select(scale_combo_,
+               stored(QStringLiteral("conversion/scale"), static_cast<int>(ffmpeg::ConversionScale::Keep)));
+        select(fps_combo_,
+               stored(QStringLiteral("conversion/fps"), static_cast<int>(ffmpeg::ConversionFrameRate::Keep)));
+        select(gif_loop_combo_,
+               stored(QStringLiteral("conversion/gif_loop"), static_cast<int>(ffmpeg::ConversionGifLoop::Infinite)));
+    }
+}
+
+void ConversionPanel::SaveSettings() {
+    if (settings_ == nullptr) {
+        return;
+    }
+    // 附加参数与输出路径属于"这一次转换"，不持久化 —— 把上次的 -metadata 之类带到
+    // 下一次转换上是意外，不是便利。
+    settings_->setValue(QStringLiteral("conversion/container"), container_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/video"), video_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/audio"), audio_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/quality"), quality_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/crf"), crf_spin_->value());
+    settings_->setValue(QStringLiteral("conversion/rate_mode"), rate_mode_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/video_bitrate"), video_bitrate_spin_->value());
+    settings_->setValue(QStringLiteral("conversion/preset"), preset_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/pixel_format"), pixel_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/audio_bitrate"), bitrate_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/scale"), scale_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/fps"), fps_combo_->currentData().toInt());
+    settings_->setValue(QStringLiteral("conversion/gif_loop"), gif_loop_combo_->currentData().toInt());
+    settings_->sync();
 }
 
 void ConversionPanel::ResetTransformChoices() {

@@ -25,6 +25,7 @@ using videoeye::ffmpeg::BuildConversionPlan;
 using videoeye::ffmpeg::ConversionAudioCodec;
 using videoeye::ffmpeg::ConversionContainer;
 using videoeye::ffmpeg::ConversionFrameRate;
+using videoeye::ffmpeg::ConversionGifLoop;
 using videoeye::ffmpeg::ConversionPixelFormat;
 using videoeye::ffmpeg::ConversionPlan;
 using videoeye::ffmpeg::ConversionPreset;
@@ -35,9 +36,11 @@ using videoeye::ffmpeg::ConversionSourceFacts;
 using videoeye::ffmpeg::ConversionVerification;
 using videoeye::ffmpeg::ConversionVideoCodec;
 using videoeye::ffmpeg::ConversionVideoRateMode;
+using videoeye::ffmpeg::MaxQualityValue;
 using videoeye::ffmpeg::MediaProbeSnapshot;
 using videoeye::ffmpeg::MediaStreamKind;
 using videoeye::ffmpeg::MediaStreamSnapshot;
+using videoeye::ffmpeg::MinQualityValue;
 using videoeye::ffmpeg::RequiredEncoders;
 using videoeye::ffmpeg::ResolveAudioCodec;
 using videoeye::ffmpeg::ResolveVideoCodec;
@@ -778,6 +781,44 @@ TEST_F(FormatConversionPlanTest, VerificationHandlesGifAndNoVideoTargets) {
     wrong.streams.push_back(MakeStream(MediaStreamKind::Video, QStringLiteral("h264"), 320, 240));
     wrong.streams.push_back(MakeStream(MediaStreamKind::Audio, QStringLiteral("mp3")));
     EXPECT_TRUE(VerifyConversionOutput(audio_only, source, wrong).mismatch);
+}
+
+TEST_F(FormatConversionPlanTest, GifHonorsScaleFrameRateAndLoop) {
+    ConversionProfile gif;
+    gif.container = ConversionContainer::Gif;
+    gif.scale = ConversionScale::P720;
+    gif.fps = ConversionFrameRate::Fps24;
+    gif.gif_loop = ConversionGifLoop::Once;
+
+    const ConversionPlan plan = BuildConversionPlan(gif, input_, Output(QStringLiteral("out.gif")));
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    const QString filter = ValueAfter(plan.arguments, QStringLiteral("-filter_complex"));
+    EXPECT_TRUE(filter.contains(QStringLiteral("fps=24"))) << S(filter);
+    EXPECT_TRUE(filter.contains(QStringLiteral("scale=-2:720"))) << S(filter);
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-loop"))), "-1"); // 播放一次
+}
+
+TEST_F(FormatConversionPlanTest, GifDefaultsTo15Fps480AndInfiniteLoop) {
+    ConversionProfile gif;
+    gif.container = ConversionContainer::Gif;
+    const ConversionPlan plan = BuildConversionPlan(gif, input_, Output(QStringLiteral("out.gif")));
+    ASSERT_TRUE(plan.ok) << S(plan.error);
+    const QString filter = ValueAfter(plan.arguments, QStringLiteral("-filter_complex"));
+    EXPECT_TRUE(filter.contains(QStringLiteral("fps=15"))) << S(filter);
+    EXPECT_TRUE(filter.contains(QStringLiteral("scale=-2:480"))) << S(filter);
+    EXPECT_EQ(S(ValueAfter(plan.arguments, QStringLiteral("-loop"))), "0"); // 无限循环
+}
+
+TEST_F(FormatConversionPlanTest, QualityRangeFollowsCodec) {
+    EXPECT_EQ(MinQualityValue(ConversionVideoCodec::H264), 0);
+    EXPECT_EQ(MaxQualityValue(ConversionVideoCodec::H264), 51);
+    EXPECT_EQ(MaxQualityValue(ConversionVideoCodec::H265), 51);
+    EXPECT_EQ(MinQualityValue(ConversionVideoCodec::Vp9), 0);
+    EXPECT_EQ(MaxQualityValue(ConversionVideoCodec::Vp9), 63);
+    EXPECT_EQ(MaxQualityValue(ConversionVideoCodec::Av1), 63);
+    // MPEG-4 的 -q:v：2 最好、31 最差。
+    EXPECT_EQ(MinQualityValue(ConversionVideoCodec::Mpeg4), 2);
+    EXPECT_EQ(MaxQualityValue(ConversionVideoCodec::Mpeg4), 31);
 }
 
 } // namespace

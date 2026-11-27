@@ -117,6 +117,13 @@ enum class ConversionFrameRate {
     Fps24,
 };
 
+/// GIF 循环方式。ffmpeg 的 gif muxer：`-loop 0` 无限循环、`-loop -1` 播放一次。
+/// 只在 GIF 容器上生效，其它容器的循环由播放器决定。
+enum class ConversionGifLoop {
+    Infinite,
+    Once,
+};
+
 /// 源素材的事实（可选）。页面从 FfmpegMediaProbe 的快照里填，未探测时保持
 /// known=false —— 这时兼容性只能给警告，不能断言"必然失败"。
 struct ConversionSourceFacts {
@@ -153,6 +160,8 @@ struct ConversionProfile {
     int audio_bitrate_kbps = 0;
     ConversionScale scale = ConversionScale::Keep;
     ConversionFrameRate fps = ConversionFrameRate::Keep;
+    /// 仅 GIF 生效：无限循环 / 播放一次。
+    ConversionGifLoop gif_loop = ConversionGifLoop::Infinite;
     /// 追加到输出文件之前的原始 ffmpeg 参数（原样文本）。由 BuildConversionPlan
     /// 分词并校验：不允许 -i / -y / -n / -nostdin，也不允许出现输入/输出路径。
     QString extra_arguments;
@@ -227,6 +236,16 @@ QString PixelFormatLabel(ConversionPixelFormat format); // "8-bit（兼容性最
 QString PixelFormatName(ConversionPixelFormat format);  // "yuv420p10le"
 /// 10-bit 只对 H.264/H.265/VP9/AV1 有意义（MPEG-4 Part 2 只有 8-bit）。
 bool CodecSupportsTenBit(ConversionVideoCodec codec);
+
+/// GIF 循环方式的下拉项与文案；GifLoopValue 是直接写进 -loop 的值（0 / -1）。
+std::vector<ConversionGifLoop> AllConversionGifLoops();
+QString GifLoopLabel(ConversionGifLoop loop); // "无限循环"
+int GifLoopValue(ConversionGifLoop loop);     // 0 / -1
+
+/// 「自定义质量」滑杆的取值范围（含端点）：H.264/H.265 0..51，VP9/AV1 0..63，
+/// MPEG-4（-q:v）2..31。界面据此设置 range，core 里仍会再夹一次，两边口径一致。
+int MinQualityValue(ConversionVideoCodec codec);
+int MaxQualityValue(ConversionVideoCodec codec);
 /// 实际传给 ffmpeg 的编码器名；Copy / None 返回空。
 QString VideoEncoderName(ConversionVideoCodec codec); // "libx264"
 QString AudioEncoderName(ConversionAudioCodec codec); // "aac"

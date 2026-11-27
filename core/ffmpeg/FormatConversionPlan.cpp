@@ -507,6 +507,17 @@ ParsedExtraArguments ParseExtraArguments(const QString& text, const QString& inp
 
 } // namespace
 
+// ===================== 质量数值范围 =====================
+
+int MinQualityValue(ConversionVideoCodec codec) {
+    // MPEG-4 的 -q:v 没有 0/1（2 已经是最佳画质），其它编码的 CRF 从 0 开始。
+    return codec == ConversionVideoCodec::Mpeg4 ? 2 : 0;
+}
+
+int MaxQualityValue(ConversionVideoCodec codec) {
+    return codec == ConversionVideoCodec::Mpeg4 ? 31 : CrfCeiling(codec);
+}
+
 // ===================== 能力表 =====================
 
 std::vector<ConversionContainer> AllConversionContainers() {
@@ -579,6 +590,18 @@ QString AudioCodecLabel(ConversionAudioCodec codec) {
         return QStringLiteral("不要音频");
     }
     return QString();
+}
+
+std::vector<ConversionGifLoop> AllConversionGifLoops() {
+    return {ConversionGifLoop::Infinite, ConversionGifLoop::Once};
+}
+
+QString GifLoopLabel(ConversionGifLoop loop) {
+    return loop == ConversionGifLoop::Once ? QStringLiteral("播放一次") : QStringLiteral("无限循环");
+}
+
+int GifLoopValue(ConversionGifLoop loop) {
+    return loop == ConversionGifLoop::Once ? -1 : 0;
 }
 
 std::vector<ConversionPreset> AllConversionPresets() {
@@ -845,12 +868,12 @@ ConversionPlan BuildConversionPlan(const ConversionProfile& profile, const QStri
                                               "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer")
                                    .arg(fps)
                                    .arg(height);
-        plan.warnings << QStringLiteral("GIF 用固定调色板转码：视频/音频编码与质量档位不生效（按 %1 fps、高 %2 采样）")
-                             .arg(fps)
-                             .arg(height);
+        plan.warnings << QStringLiteral(
+                             "GIF 用固定调色板转码：视频/音频编码与质量档位不生效（按 %1 fps、高 %2 采样，%3）")
+                             .arg(QString::number(fps), QString::number(height), GifLoopLabel(profile.gif_loop));
         plan.arguments << QStringLiteral("-hide_banner") << QStringLiteral("-y") << QStringLiteral("-i") << input
                        << QStringLiteral("-filter_complex") << filter << QStringLiteral("-an")
-                       << QStringLiteral("-loop") << QStringLiteral("0");
+                       << QStringLiteral("-loop") << QString::number(GifLoopValue(profile.gif_loop));
         plan.arguments << extra.tokens;
         plan.arguments << output;
         plan.ok = true;

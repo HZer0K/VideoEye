@@ -111,6 +111,11 @@ private:
     /// 用探测结果刷新"源信息"一行（容器 / 时长 / 分辨率 / 编码）。
     void RefreshSourceSummary();
 
+    /// 参数持久化：记住上次的容器 / 编码 / 质量等（附加参数与输出路径是"这一次"的，
+    /// 不持久化）。写盘用 800ms 防抖 —— 附加参数是逐字符触发的。
+    void LoadSettings();
+    void SaveSettings();
+
     QString CurrentProgram() const;
     void RefreshToolState();
     void SetRunning(bool running);
@@ -131,6 +136,8 @@ private:
     void ShowProgressLine();
 
     QSettings* settings_ = nullptr;
+    /// 参数改动的落盘防抖（见 OnSettingsChanged）。
+    QTimer* settings_save_timer_ = nullptr;
 
     // ---- 页头 ----
     QLabel* tool_label_ = nullptr;
@@ -154,6 +161,7 @@ private:
     QComboBox* bitrate_combo_ = nullptr;
     QComboBox* scale_combo_ = nullptr;
     QComboBox* fps_combo_ = nullptr;
+    QComboBox* gif_loop_combo_ = nullptr;
     QLineEdit* extra_edit_ = nullptr;
     QLineEdit* output_edit_ = nullptr;
     QPushButton* browse_output_button_ = nullptr;

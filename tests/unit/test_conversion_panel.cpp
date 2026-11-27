@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QSpinBox>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -26,20 +27,28 @@ namespace {
 
 using videoeye::ffmpeg::ConversionAudioCodec;
 using videoeye::ffmpeg::ConversionContainer;
+using videoeye::ffmpeg::ConversionFrameRate;
+using videoeye::ffmpeg::ConversionGifLoop;
 using videoeye::ffmpeg::ConversionPixelFormat;
+using videoeye::ffmpeg::ConversionQuality;
 using videoeye::ffmpeg::ConversionScale;
 using videoeye::ffmpeg::ConversionVideoCodec;
 using videoeye::ffmpeg::ConversionVideoRateMode;
 using videoeye::ui::ConversionPanel;
 
 QApplication* EnsureApp() {
-    if (QCoreApplication::instance() != nullptr) {
-        return qobject_cast<QApplication*>(QCoreApplication::instance());
+    QApplication* app = qobject_cast<QApplication*>(QCoreApplication::instance());
+    if (app == nullptr) {
+        static int argc = 1;
+        static char arg0[] = "test_conversion_panel";
+        static char* argv[] = {arg0, nullptr};
+        static QApplication* created = new QApplication(argc, argv);
+        app = created;
     }
-    static int argc = 1;
-    static char arg0[] = "test_conversion_panel";
-    static char* argv[] = {arg0, nullptr};
-    static QApplication* app = new QApplication(argc, argv);
+    // QSettings 需要有组织名 / 应用名才有一个真实的落盘位置；测试用独立名字，
+    // 既不污染正式版（VideoEye/VideoEye），也让参数持久化用例有个干净的 arena。
+    app->setOrganizationName(QStringLiteral("VideoEye"));
+    app->setApplicationName(QStringLiteral("VideoEyeTest"));
     return app;
 }
 
@@ -48,16 +57,22 @@ protected:
     void SetUp() override {
         ASSERT_NE(EnsureApp(), nullptr);
         ASSERT_TRUE(dir_.isValid());
+        // 参数会在析构时落盘：不清掉的话，上一个用例选过的容器 / 编码会被下一个
+        // 用例的页面恢复，断言"默认值"就会随机失败。
+        QSettings().remove(QStringLiteral("conversion"));
         panel_ = new ConversionPanel();
         container_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionContainer"));
         video_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionVideoCodec"));
         audio_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionAudioCodec"));
         scale_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionScale"));
+        fps_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionFrameRate"));
         quality_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionQuality"));
         rate_mode_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionRateMode"));
         video_bitrate_ = panel_->findChild<QSpinBox*>(QStringLiteral("ConversionVideoBitrate"));
+        crf_ = panel_->findChild<QSpinBox*>(QStringLiteral("ConversionCrf"));
         preset_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionPreset"));
         pixel_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionPixelFormat"));
+        loop_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionGifLoop"));
         extra_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionExtraArgs"));
         input_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionInputPath"));
         output_ = panel_->findChild<QLineEdit*>(QStringLiteral("ConversionOutputPath"));
@@ -67,11 +82,14 @@ protected:
         ASSERT_NE(video_, nullptr);
         ASSERT_NE(audio_, nullptr);
         ASSERT_NE(scale_, nullptr);
+        ASSERT_NE(fps_, nullptr);
         ASSERT_NE(quality_, nullptr);
         ASSERT_NE(rate_mode_, nullptr);
         ASSERT_NE(video_bitrate_, nullptr);
+        ASSERT_NE(crf_, nullptr);
         ASSERT_NE(preset_, nullptr);
         ASSERT_NE(pixel_, nullptr);
+        ASSERT_NE(loop_, nullptr);
         ASSERT_NE(extra_, nullptr);
         ASSERT_NE(input_, nullptr);
         ASSERT_NE(output_, nullptr);
@@ -82,6 +100,8 @@ protected:
     void TearDown() override {
         delete panel_;
         panel_ = nullptr;
+        // 持久化用例会把选择写进测试专用的 QSettings 作用域，这里收尾清掉。
+        QSettings().remove(QStringLiteral("conversion"));
     }
 
     void SelectContainer(ConversionContainer container) {
@@ -115,11 +135,14 @@ protected:
     QComboBox* video_ = nullptr;
     QComboBox* audio_ = nullptr;
     QComboBox* scale_ = nullptr;
+    QComboBox* fps_ = nullptr;
     QComboBox* quality_ = nullptr;
     QComboBox* rate_mode_ = nullptr;
     QSpinBox* video_bitrate_ = nullptr;
+    QSpinBox* crf_ = nullptr;
     QComboBox* preset_ = nullptr;
     QComboBox* pixel_ = nullptr;
+    QComboBox* loop_ = nullptr;
     QLineEdit* extra_ = nullptr;
     QLineEdit* input_ = nullptr;
     QLineEdit* output_ = nullptr;
@@ -279,6 +302,73 @@ TEST_F(ConversionPanelTest, InputWithGeneratedOutputAllowsStart) {
     EXPECT_TRUE(CommandText().contains(input)) << CommandText().toStdString();
     EXPECT_TRUE(CommandText().contains(QStringLiteral("-i"))) << CommandText().toStdString();
     EXPECT_TRUE(CommandText().contains(QStringLiteral("+faststart"))) << CommandText().toStdString();
+}
+
+TEST_F(ConversionPanelTest, CustomCrfRangeFollowsVideoCodec) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    quality_->setCurrentIndex(quality_->findData(static_cast<int>(ConversionQuality::Custom)));
+
+    // MP4 + Auto → H.264：CRF 0~51。
+    EXPECT_EQ(crf_->minimum(), 0);
+    EXPECT_EQ(crf_->maximum(), 51);
+
+    // WebM + Auto → VP9：CRF 上限 63。
+    SelectContainer(ConversionContainer::Webm);
+    EXPECT_EQ(crf_->maximum(), 63);
+
+    // AVI + MPEG-4：走 -q:v 2~31，不是 CRF。
+    SelectContainer(ConversionContainer::Avi);
+    SelectVideo(ConversionVideoCodec::Mpeg4);
+    EXPECT_EQ(crf_->minimum(), 2);
+    EXPECT_EQ(crf_->maximum(), 31);
+}
+
+TEST_F(ConversionPanelTest, GifEnablesScaleFrameRateAndLoop) {
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    SelectContainer(ConversionContainer::Gif);
+
+    // GIF 的视频编码是"不要视频"（调色板分支），但缩放 / 帧率 / 循环确实生效，不能置灰。
+    EXPECT_TRUE(scale_->isEnabled());
+    EXPECT_TRUE(fps_->isEnabled());
+    EXPECT_TRUE(loop_->isEnabled());
+
+    scale_->setCurrentIndex(scale_->findData(static_cast<int>(ConversionScale::P720)));
+    fps_->setCurrentIndex(fps_->findData(static_cast<int>(ConversionFrameRate::Fps24)));
+    loop_->setCurrentIndex(loop_->findData(static_cast<int>(ConversionGifLoop::Once)));
+
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("fps=24"))) << CommandText().toStdString();
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("scale=-2:720"))) << CommandText().toStdString();
+    EXPECT_TRUE(CommandText().contains(QStringLiteral("-loop -1"))) << CommandText().toStdString();
+
+    // 换回普通容器后循环项必须置灰：它只对 GIF 有意义。
+    SelectContainer(ConversionContainer::Mp4);
+    EXPECT_FALSE(loop_->isEnabled());
+}
+
+TEST_F(ConversionPanelTest, RememberTargetOptionsOnNextLaunch) {
+    // 参数持久化：面板析构时把选择落盘，下次打开恢复的是同一套目标参数。
+    input_->setText(dir_.filePath(QStringLiteral("clip.mp4")));
+    SelectContainer(ConversionContainer::Mkv);
+    SelectVideo(ConversionVideoCodec::H265);
+    quality_->setCurrentIndex(quality_->findData(static_cast<int>(ConversionQuality::Small)));
+
+    const int saved_container = container_->currentData().toInt();
+    const int saved_video = video_->currentData().toInt();
+    const int saved_quality = quality_->currentData().toInt();
+
+    delete panel_;
+    panel_ = new ConversionPanel();
+
+    container_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionContainer"));
+    video_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionVideoCodec"));
+    quality_ = panel_->findChild<QComboBox*>(QStringLiteral("ConversionQuality"));
+    ASSERT_NE(container_, nullptr);
+    ASSERT_NE(video_, nullptr);
+    ASSERT_NE(quality_, nullptr);
+
+    EXPECT_EQ(container_->currentData().toInt(), saved_container);
+    EXPECT_EQ(video_->currentData().toInt(), saved_video);
+    EXPECT_EQ(quality_->currentData().toInt(), saved_quality);
 }
 
 } // namespace
