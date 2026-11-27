@@ -1,3 +1,4 @@
+#include "core/domain/model/ImageDemuxer.h"
 #include "core/qc/QcRuleEngineInternal.h"
 
 #include <cctype>
@@ -89,6 +90,14 @@ std::string FriendlyContainerName(const std::string& token) {
         {"webm", "WebM"},
         {"hls", "HLS 清单"},
         {"dash", "DASH 清单"},
+        // 图片：解复用器名是 *_pipe（FFmpeg 的图像 demuxer 都是管道族）
+        {"gif", "GIF"},
+        {"apng", "APNG"},
+        {"png_pipe", "PNG"},
+        {"jpeg_pipe", "JPEG"},
+        {"bmp_pipe", "BMP"},
+        {"webp_pipe", "WebP"},
+        {"tiff_pipe", "TIFF"},
     };
     auto it = kNames.find(token);
     return (it != kNames.end()) ? it->second : token;
@@ -105,9 +114,14 @@ std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rul
                                                         const IssueFactory& make_issue) {
     std::vector<model::DiagnosticIssue> issues;
 
+    // 图片（GIF/APNG/PNG/JPEG/BMP/WebP/TIFF）没有时间轴、也没有音轨：
+    // 时长异常 / 不可拖动 / 缺音频这三条对它天然不成立，拿它们扣分会把
+    // 每一张正常图片都判成问题（duration_invalid 还是 Critical）。
+    const bool image_input = model::IsImageDemuxer(result.container_format);
+
     // ---------- 容器 ----------
     if (rule.id == "container.duration_invalid") {
-        if (Triggered(rule, result.duration_seconds)) {
+        if (!image_input && Triggered(rule, result.duration_seconds)) {
             issues.push_back(make_issue(result.duration_seconds, "容器时长为 " +
                                                                      FormatValue(result.duration_seconds, 3) +
                                                                      " 秒（阈值 " + ThresholdText(rule) + "）。"));
@@ -115,7 +129,7 @@ std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rul
         return issues;
     }
     if (rule.id == "container.unseekable") {
-        if (Triggered(rule, result.seekable ? 0.0 : 1.0)) {
+        if (!image_input && Triggered(rule, result.seekable ? 0.0 : 1.0)) {
             issues.push_back(make_issue(1.0, "底层 IO 不支持随机访问，只能线性播放。"));
         }
         return issues;
@@ -137,7 +151,7 @@ std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rul
         return issues;
     }
     if (rule.id == "container.missing_audio") {
-        if (result.AudioStreamCount() == 0 && !IsStreamingManifest(result)) {
+        if (result.AudioStreamCount() == 0 && !IsStreamingManifest(result) && !image_input) {
             issues.push_back(make_issue(1.0, "未检测到音频流。"));
         }
         return issues;

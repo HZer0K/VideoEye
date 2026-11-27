@@ -151,6 +151,8 @@ void PlayerPanel::SetupConnections() {
 
 void PlayerPanel::SetCurrentSource(const QString& source) {
     current_source_ = source;
+    image_input_ = false;
+    keep_finished_image_ = false;
     // 换源: 清掉上一份文件的叠加层缓存与状态栏统计, 避免新文件沿用旧分辨率/编码。
     // 放在这里而不是 ResetVideoUI, 是因为后者经 queued 回调执行, 可能晚于新内容的显示。
     last_overlay_fps_.clear();
@@ -204,7 +206,7 @@ void PlayerPanel::UpdateOverlay() {
     overlay.resolution = last_overlay_resolution_;
     overlay.codec = last_overlay_codec_;
     video_widget_->SetOverlayInfo(overlay);
-    video_widget_->SetCenterPlayButtonVisible(!is_playing && overlay.has_video);
+    video_widget_->SetCenterPlayButtonVisible(!is_playing && overlay.has_video && !keep_finished_image_);
 }
 
 void PlayerPanel::RefreshOverlayMediaInfo(const QImage* frame) {
@@ -484,6 +486,7 @@ void PlayerPanel::OnPlayerOpenFinished(bool ok) {
     if (!player_) {
         return;
     }
+    image_input_ = ok && player_->GetStreamInfo().is_image_input;
     // 打开收尾时把进度条的总量与可用性定下来：时长未知（直播流 / 估算失败的裸流）
     // 时禁用拖动并给出说明，而不是留一根拖了没反应的滑杆。
     UpdateSeekAvailability(ok ? player_->GetDuration() : 0);
@@ -515,6 +518,7 @@ void PlayerPanel::ResetVideoUI() {
 void PlayerPanel::OnStop() {
     // 清理状态（不立即清理视频UI，让 OnStateChanged 统一处理）
     open_then_play_ = false; // 停止即作废"打开后续播"意图
+    keep_finished_image_ = false;
     audio_vis_->Reset();
     audio_vis_->SetAlbumCover(QImage()); // 停止即清空封面
     audio_only_mode_ = false;
@@ -611,15 +615,19 @@ void PlayerPanel::OnStateChanged(model::PlayerState state) {
         state_text = tr("加载中");
         break;
     case model::PlayerState::Playing:
+        keep_finished_image_ = false;
         state_text = tr("播放中");
         break;
     case model::PlayerState::Paused:
         state_text = tr("已暂停");
         break;
     case model::PlayerState::Stopped:
-        state_text = tr("已停止");
-        // 停止状态下清理UI，确保最后一帧被清除
-        QMetaObject::invokeMethod(this, [this]() { ResetVideoUI(); }, Qt::QueuedConnection);
+        if (keep_finished_image_) {
+            state_text = tr("预览完成");
+        } else {
+            state_text = tr("已停止");
+            QMetaObject::invokeMethod(this, [this]() { ResetVideoUI(); }, Qt::QueuedConnection);
+        }
         break;
     case model::PlayerState::Error:
         state_text = tr("错误");
@@ -653,8 +661,9 @@ void PlayerPanel::OnFrameReady(const QImage& frame) {
         return;
     }
 
-    // 如果播放器已停止，忽略帧更新
-    if (player_ && player_->GetState() == model::PlayerState::Stopped) {
+    const bool stopped = image_input_ ? last_known_state_ == model::PlayerState::Stopped
+                                      : player_ && player_->GetState() == model::PlayerState::Stopped;
+    if (stopped) {
         return;
     }
 
@@ -785,6 +794,11 @@ void PlayerPanel::OnOpenFailed(const QString& message) {
 }
 
 void PlayerPanel::OnPlaybackFinished() {
+    if (image_input_) {
+        keep_finished_image_ =
+            last_known_state_ == model::PlayerState::Playing || last_known_state_ == model::PlayerState::Paused;
+        return;
+    }
     OnStop();
     emit StatusMessage(tr("播放完成"), 0);
 }

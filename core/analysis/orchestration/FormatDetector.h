@@ -36,7 +36,7 @@ public:
     /// 已登记的媒体与清单扩展名，含走 FFmpeg 通用解析的格式（无点、小写、无重复）
     static const std::vector<std::string>& SupportedExtensions();
 
-    /// 音视频与裸流扩展名（不含 HLS/DASH 清单）
+    /// 音视频、图片与裸流扩展名（不含 HLS/DASH 清单）
     static const std::vector<std::string>& MediaExtensions();
 
     /// 流媒体清单扩展名（m3u8/m3u/mpd）

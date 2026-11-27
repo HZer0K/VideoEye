@@ -14,8 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/analysis/orchestration/FormatDetector.h"
@@ -62,6 +64,14 @@ const std::vector<ExtensionFamily>& Families() {
         {"mxf", {"mxf"}},
         // RealMedia：rmvb 与 rm 共用 FFmpeg 的 "rm" 解复用器。
         {"rm", {"rm", "rmvb"}},
+        {"gif", {"gif"}},
+        {"apng", {"apng", "png"}},
+        // .apng 里其实是普通 PNG 时 FFmpeg 报 png_pipe —— 同一种图像，不算不符。
+        {"png_pipe", {"png", "apng"}},
+        {"jpeg_pipe", {"jpg", "jpeg"}},
+        {"bmp_pipe", {"bmp"}},
+        {"webp_pipe", {"webp"}},
+        {"tiff_pipe", {"tif", "tiff"}},
         {"h264", {"h264", "264", "avc"}},
         {"hevc", {"hevc", "h265", "265", "hvc"}},
         {"vvc", {"vvc", "266", "h266"}},
@@ -141,6 +151,31 @@ TEST(ContainerExtensionMismatchTest, SupportedExtensionsNeverLookLikeMismatch) {
     }
 }
 
+TEST(ContainerExtensionMismatchTest, ImageInputsDoNotRequireAudioOrContainerDuration) {
+    const auto has_issue = [](const model::QcReport& report, const char* rule_id) {
+        return std::any_of(report.issues.begin(), report.issues.end(),
+                           [rule_id](const auto& issue) { return issue.rule_id == rule_id; });
+    };
+    QcRuleEngine engine;
+    const std::pair<const char*, const char*> images[] = {{"gif", "gif"}, {"png", "apng"}, {"png", "png_pipe"}};
+    for (const auto& [extension, format] : images) {
+        auto image = MakeResult(extension, format);
+        image.duration_seconds = 0.0;
+        image.seekable = false; // 图片没有时间轴可拖：不能报 container.unseekable
+        const auto report = engine.Evaluate(image);
+        EXPECT_FALSE(has_issue(report, "container.missing_audio")) << format;
+        EXPECT_FALSE(has_issue(report, "container.duration_invalid")) << format;
+        EXPECT_FALSE(has_issue(report, "container.unseekable")) << format;
+    }
+    auto video = MakeResult("mp4", kMovName);
+    video.duration_seconds = 0.0;
+    video.seekable = false;
+    const auto report = engine.Evaluate(video);
+    EXPECT_TRUE(has_issue(report, "container.missing_audio"));
+    EXPECT_TRUE(has_issue(report, "container.duration_invalid"));
+    EXPECT_TRUE(has_issue(report, "container.unseekable"));
+}
+
 // ---------------------------------------------------------------------------
 // 2) 覆盖层：扩展名表新增条目必须在这里登记
 // ---------------------------------------------------------------------------
@@ -185,6 +220,7 @@ TEST(ContainerExtensionMismatchTest, ReportsRealMismatch) {
         {"mkv", "flv", "Flash Video (FLV)"}, // 标成 MKV 的 FLV
         {"mov", "mxf", "MXF"},               // 标成 MOV 的 MXF
         {"mkv", "ogg", "Ogg"},               // 标成 MKV 的 Ogg
+        {"png", "gif", "GIF"}, // 标成 PNG 的动图：文案要给可读名，不能只甩 png_pipe/gif 原始 token
     };
 
     for (const auto& c : cases) {
@@ -225,6 +261,8 @@ TEST(ContainerExtensionMismatchTest, ToleratesCaseDotsAndSpaces) {
 
 // 交叉校验：别名只在自家解复用器里生效，不能变成"什么都能过"
 TEST(ContainerExtensionMismatchTest, AliasDoesNotLeakAcrossFamilies) {
+    EXPECT_FALSE(qc::detail::ExtensionMatchesContainer("png", "gif"));
+    EXPECT_FALSE(qc::detail::ExtensionMatchesContainer("jpg", "png_pipe"));
     EXPECT_FALSE(qc::detail::ExtensionMatchesContainer("oga", "mpegts"));
     EXPECT_FALSE(qc::detail::ExtensionMatchesContainer("m4v", "matroska,webm"));
     EXPECT_FALSE(qc::detail::ExtensionMatchesContainer("h265", "h264"));

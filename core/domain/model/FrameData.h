@@ -15,6 +15,7 @@ enum class PlayerState { Idle, Loading, Playing, Paused, Stopped, Error };
 // 流信息结构体
 struct StreamInfo {
     std::string filename;
+    bool is_image_input = false;
 
     struct ExtractorFormat {
         std::string complete_name;

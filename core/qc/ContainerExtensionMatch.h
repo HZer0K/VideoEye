@@ -14,6 +14,7 @@
 // 依赖红线：本头只吃 <string>，不碰 Qt / FFmpeg / analysis —— VideoEyeQcRules
 // 是纯 std:: + domain 的判定层，链上 Qt 或 FFmpeg 会毁掉这条边界。
 
+#include <algorithm>
 #include <cctype>
 #include <map>
 #include <string>
@@ -29,8 +30,8 @@ namespace detail {
 // ac3 / eac3 / dts / ape / amr / h264 / hevc / vvc / obu / mj2 / 3gp / 3g2）
 // 一律不写进来 —— 冗余条目会让这张表看起来像"需要逐条穷举"，进而在新增
 // 格式时被抄漏。
-inline const std::map<std::string, std::string>& ExtensionAliasMap() {
-    static const std::map<std::string, std::string> kAlias = {
+inline const std::multimap<std::string, std::string>& ExtensionAliasMap() {
+    static const std::multimap<std::string, std::string> kAlias = {
         // --- MPEG-TS 家族：192 字节包长的 m2ts/mts、以及广播圈的 .tts / .m2t ---
         {"ts", "mpegts"},
         {"m2ts", "mpegts"},
@@ -87,6 +88,18 @@ inline const std::map<std::string, std::string>& ExtensionAliasMap() {
         {"aif", "aiff"},
         // --- RealMedia 家族：解复用器名是 "rm"，.rmvb 是同一种容器 ---
         {"rmvb", "rm"},
+        {"png", "png_pipe"},
+        {"png", "apng"},
+        // .apng 里放的是普通 PNG（没有 acTL 块 / 构建缺少 apng demuxer）时
+        // FFmpeg 会落到 png_pipe。这不值得报"扩展名不符"：两者都是 PNG 图像，
+        // 用户改名成 .apng 只是想让动图更显眼。
+        {"apng", "png_pipe"},
+        {"jpg", "jpeg_pipe"},
+        {"jpeg", "jpeg_pipe"},
+        {"bmp", "bmp_pipe"},
+        {"webp", "webp_pipe"},
+        {"tif", "tiff_pipe"},
+        {"tiff", "tiff_pipe"},
         // --- 流媒体清单：container_format 由 StreamingManifestScan 直接写 "hls" / "dash" ---
         {"m3u8", "hls"},
         {"m3u", "hls"},
@@ -115,7 +128,7 @@ inline bool ExtensionMatchesContainer(const std::string& raw_ext, const std::str
     }
 
     const auto& alias = ExtensionAliasMap();
-    const auto alias_it = alias.find(ext);
+    const auto [alias_begin, alias_end] = alias.equal_range(ext);
 
     size_t start = 0;
     while (start <= container_format.size()) {
@@ -131,7 +144,7 @@ inline bool ExtensionMatchesContainer(const std::string& raw_ext, const std::str
         if (!trimmed.empty()) {
             if (trimmed == ext)
                 return true;
-            if (alias_it != alias.end() && trimmed == alias_it->second)
+            if (std::any_of(alias_begin, alias_end, [&trimmed](const auto& entry) { return entry.second == trimmed; }))
                 return true;
         }
         if (comma == std::string::npos)

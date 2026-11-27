@@ -27,7 +27,8 @@ QString FilterSection(int index) {
 }
 
 bool HasPattern(const QString& section, const QString& ext) {
-    return section.contains(QStringLiteral("*.") + ext);
+    const QString pattern = QStringLiteral("*.") + ext;
+    return section.contains(pattern + QLatin1Char(' ')) || section.endsWith(pattern + QLatin1Char(')'));
 }
 
 } // namespace
@@ -48,6 +49,13 @@ TEST(MediaFileFilter, includesRealMediaExtensions) {
         const QString pattern = QStringLiteral("*.") + QString::fromLatin1(ext);
         EXPECT_TRUE(media.contains(pattern + QLatin1Char(' ')) || media.endsWith(pattern + QLatin1Char(')')))
             << "媒体文件过滤器缺少完整模式 " << pattern.toStdString();
+    }
+}
+
+TEST(MediaFileFilter, includesStillAndAnimatedImageExtensions) {
+    const QString media = FilterSection(0);
+    for (const char* ext : {"gif", "apng", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"}) {
+        EXPECT_TRUE(HasPattern(media, QString::fromLatin1(ext))) << "媒体文件过滤器缺少 *." << ext;
     }
 }
 

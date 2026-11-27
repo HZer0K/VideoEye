@@ -70,6 +70,15 @@ const std::vector<ExtensionEntry>& ExtensionTable() {
         // RealMedia：没有专用容器解析器，走 FFmpeg 通用分析；rmvb 与 rm 是同一种容器
         {"rm", ContainerFormat::FFmpeg_Generic},
         {"rmvb", ContainerFormat::FFmpeg_Generic},
+        {"gif", ContainerFormat::FFmpeg_Generic},
+        {"apng", ContainerFormat::FFmpeg_Generic},
+        {"png", ContainerFormat::FFmpeg_Generic},
+        {"jpg", ContainerFormat::FFmpeg_Generic},
+        {"jpeg", ContainerFormat::FFmpeg_Generic},
+        {"bmp", ContainerFormat::FFmpeg_Generic},
+        {"webp", ContainerFormat::FFmpeg_Generic},
+        {"tif", ContainerFormat::FFmpeg_Generic},
+        {"tiff", ContainerFormat::FFmpeg_Generic},
         // 裸流：没有容器层，结构页走 FFmpeg 通用分析
         {"h264", ContainerFormat::RAW_ES},
         {"264", ContainerFormat::RAW_ES},

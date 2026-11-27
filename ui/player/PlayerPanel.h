@@ -202,6 +202,8 @@ private:
 
     // 模式标志
     bool audio_only_mode_ = false;
+    bool image_input_ = false;
+    bool keep_finished_image_ = false;
     bool mv_overlay_enabled_ = false;
 
     // 叠加层缓存

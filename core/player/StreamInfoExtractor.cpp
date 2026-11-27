@@ -1,4 +1,5 @@
 #include "core/player/StreamInfoExtractor.h"
+#include "core/domain/model/ImageDemuxer.h"
 #include <QFileInfo>
 
 #include <cmath>
@@ -442,6 +443,8 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
 
     info.extractor.complete_name = info.filename;
     if (format_ctx->iformat) {
+        if (format_ctx->iformat->name)
+            info.is_image_input = model::IsImageDemuxer(format_ctx->iformat->name);
         if (format_ctx->iformat->long_name)
             info.extractor.format = format_ctx->iformat->long_name;
         else if (format_ctx->iformat->name)

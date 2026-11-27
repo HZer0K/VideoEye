@@ -28,6 +28,8 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
@@ -38,11 +40,13 @@
 #include <functional>
 #include <string>
 
+#include "core/player/MediaPlayer.h"
 #include "ui/analysis_panel/AnalysisPanel.h"
 #include "ui/main_window/ElidedLabel.h"
 #include "ui/main_window/MainWindow.h"
 #include "ui/main_window/OverviewPage.h"
 #include "ui/main_window/ScanTaskBar.h"
+#include "ui/main_window/VideoWidget.h"
 #include "ui/player/PlayerPanel.h"
 
 #include "HttpTestServer.h"
@@ -179,6 +183,52 @@ TEST(MainWindowE2E, OpensRealMediaAndShowsParseResult) {
         },
         kOpenBudgetMs))
         << "媒体信息一直停在占位文案: " << info->toPlainText().left(120).toStdString();
+}
+
+TEST(MainWindowE2E, StillImageRemainsVisibleUntilStopped) {
+    EnsureApp();
+    ResetSettingsForTest();
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("preview.png"));
+    QImage source(64, 64, QImage::Format_RGB32);
+    source.fill(Qt::red);
+    ASSERT_TRUE(source.save(path));
+
+    bool finished = false;
+    MainWindow window;
+    auto* panel = window.findChild<PlayerPanel*>();
+    auto* player = window.findChild<videoeye::player::MediaPlayer*>();
+    ASSERT_NE(panel, nullptr);
+    ASSERT_NE(player, nullptr);
+    auto* preview = panel->findChild<VideoWidget*>();
+    ASSERT_NE(preview, nullptr);
+    window.show();
+    panel->SetPlayerAreaVisible(true, /*persist=*/false);
+    QApplication::processEvents();
+    ASSERT_TRUE(preview->isVisible());
+
+    QObject::connect(player, &videoeye::player::MediaPlayer::PlaybackFinished, &window,
+                     [&finished]() { finished = true; });
+    const auto shows_red_image = [preview]() {
+        const auto image = preview->grab().toImage().convertToFormat(QImage::Format_RGB32);
+        int red_pixels = 0;
+        for (int row = 0; row < image.height(); ++row) {
+            const auto* pixels = reinterpret_cast<const QRgb*>(image.constScanLine(row));
+            for (int column = 0; column < image.width(); ++column) {
+                const auto pixel = pixels[column];
+                if (qRed(pixel) > 220 && qGreen(pixel) < 30 && qBlue(pixel) < 30 && ++red_pixels == 100)
+                    return true;
+            }
+        }
+        return false;
+    };
+    ASSERT_TRUE(window.OpenMedia(path));
+    ASSERT_TRUE(PumpUntil([&finished]() { return finished; }, kOpenBudgetMs));
+    ASSERT_TRUE(shows_red_image());
+
+    panel->StopPlayback();
+    EXPECT_TRUE(PumpUntil([&shows_red_image]() { return !shows_red_image(); }, kOpenBudgetMs));
 }
 
 // 打开一个不存在的文件：不弹模态框、不进死循环，仍然进入"分析模式"，且错误提示
