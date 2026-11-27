@@ -22,6 +22,7 @@
 
 #include "core/analysis/orchestration/FormatDetector.h"
 #include "core/domain/model/AnalysisResult.h"
+#include "core/domain/model/ImageDemuxer.h"
 #include "core/domain/model/QcReport.h"
 #include "core/domain/model/QcRule.h"
 #include "core/qc/ContainerExtensionMatch.h"
@@ -49,7 +50,7 @@ struct ExtensionFamily {
 // 「不在默认打开清单里、但批量 QC 一定会遇到」的音频/容器扩展名。
 const std::vector<ExtensionFamily>& Families() {
     static const std::vector<ExtensionFamily> kFamilies = {
-        {kMovName, {"mp4", "m4v", "m4a", "m4b", "m4p", "m4r", "f4v", "mov", "mj2", "3gp", "3g2"}},
+        {kMovName, {"mp4", "m4v", "m4a", "m4b", "m4p", "m4r", "f4v", "mov", "mj2", "3gp", "3g2", "avif"}},
         {"matroska,webm", {"mkv", "mka", "mk3d", "webm"}},
         {"mpegts", {"ts", "mts", "m2ts", "tts", "m2t"}},
         {"avi", {"avi"}},
@@ -69,8 +70,20 @@ const std::vector<ExtensionFamily>& Families() {
         // .apng 里其实是普通 PNG 时 FFmpeg 报 png_pipe —— 同一种图像，不算不符。
         {"png_pipe", {"png", "apng"}},
         {"jpeg_pipe", {"jpg", "jpeg"}},
+        // 单文件 JPEG 在 FFmpeg 8.x 里首选 image2 解复用器（实测 .jpg/.jpeg 都是），
+        // jpeg_pipe 只在按管道/显式指定时出现。两者都是"一张 JPEG"。
+        {"image2", {"jpg", "jpeg", "tga", "pam"}},
         {"bmp_pipe", {"bmp"}},
         {"webp_pipe", {"webp"}},
+        // 动图 WebP 在新版 FFmpeg 里拆成独立的 webp_anim 解复用器。
+        {"webp_anim", {"webp"}},
+        {"j2k_pipe", {"jp2", "j2k", "j2c"}},
+        {"jpegxl_pipe", {"jxl"}},
+        {"qoi_pipe", {"qoi"}},
+        {"exr_pipe", {"exr"}},
+        {"ppm_pipe", {"ppm", "pnm"}},
+        {"pgm_pipe", {"pgm"}},
+        {"pbm_pipe", {"pbm"}},
         {"tiff_pipe", {"tif", "tiff"}},
         {"h264", {"h264", "264", "avc"}},
         {"hevc", {"hevc", "h265", "265", "hvc"}},
@@ -157,7 +170,11 @@ TEST(ContainerExtensionMismatchTest, ImageInputsDoNotRequireAudioOrContainerDura
                            [rule_id](const auto& issue) { return issue.rule_id == rule_id; });
     };
     QcRuleEngine engine;
-    const std::pair<const char*, const char*> images[] = {{"gif", "gif"}, {"png", "apng"}, {"png", "png_pipe"}};
+    const std::pair<const char*, const char*> images[] = {
+        {"gif", "gif"},      {"png", "apng"},     {"png", "png_pipe"},    {"jpg", "image2"},
+        {"jpeg", "image2"},  {"jp2", "j2k_pipe"}, {"jxl", "jpegxl_pipe"}, {"tga", "image2"},
+        {"pam", "image2"},   {"qoi", "qoi_pipe"}, {"exr", "exr_pipe"},    {"ppm", "ppm_pipe"},
+        {"pnm", "ppm_pipe"}, {"pgm", "pgm_pipe"}, {"pbm", "pbm_pipe"},    {"avif", kMovName}};
     for (const auto& [extension, format] : images) {
         auto image = MakeResult(extension, format);
         image.duration_seconds = 0.0;
@@ -174,6 +191,30 @@ TEST(ContainerExtensionMismatchTest, ImageInputsDoNotRequireAudioOrContainerDura
     EXPECT_TRUE(has_issue(report, "container.missing_audio"));
     EXPECT_TRUE(has_issue(report, "container.duration_invalid"));
     EXPECT_TRUE(has_issue(report, "container.unseekable"));
+}
+
+// 播放侧（StreamInfoExtractor → PlayerPanel）与 QC 侧共用 ImageDemuxer.h 的白名单。
+// 漏登记一个真实图片解复用器的后果不对称：播放到 EOF 会走普通视频收尾把画面清掉，
+// QC 会把"缺音频 / 时长异常 / 不可拖动"当缺陷（JPEG 的 image2 两条都踩过）。
+TEST(ContainerExtensionMismatchTest, ImageDemuxerWhitelistCoversRealImageDemuxers) {
+    for (const char* name :
+         {"gif", "apng", "image2", "webp_anim", "png_pipe", "jpeg_pipe", "bmp_pipe", "webp_pipe", "tiff_pipe",
+          "j2k_pipe", "jpegxl_pipe", "qoi_pipe", "exr_pipe", "ppm_pipe", "pgm_pipe", "pbm_pipe"}) {
+        EXPECT_TRUE(model::IsImageDemuxer(name)) << name << " 是图片解复用器，却被当成普通视频";
+    }
+    for (const char* name : {"mp4", "mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm", "mpegts", "rawvideo", ""}) {
+        EXPECT_FALSE(model::IsImageDemuxer(name)) << name << " 不是图片解复用器，不能按图片语义收尾";
+    }
+}
+
+// AVIF 落在 mov 解复用器里：解复用器名与视频完全相同，只能靠扩展名判图片。
+TEST(ContainerExtensionMismatchTest, IsobmffStillImageIsDetectedByExtension) {
+    EXPECT_TRUE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "avif"));
+    EXPECT_TRUE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", ".AVIF"));
+    // 普通视频 / 音频扩展名不能被误判成图片
+    EXPECT_FALSE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "mp4"));
+    EXPECT_FALSE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "m4a"));
+    EXPECT_FALSE(model::IsImageInput("matroska,webm", "mkv"));
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+#include "core/domain/model/ImageDemuxer.h"
 #include "core/qc/QcRuleEngineInternal.h"
 
 #include <algorithm>
@@ -37,6 +38,10 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
                                                     const IssueFactory& make_issue) {
     std::vector<model::DiagnosticIssue> issues;
 
+    // 图片没有真实帧率/时间轴：以 fps 为分母、或假定"连续帧"的规则（低 bpp、
+    // 奇数分辨率要求）对静图天然不成立，按图片语义直接跳过。
+    const bool image_input = model::IsImageInput(result.container_format, result.file_extension);
+
     // ---------- 码率 ----------
     if (rule.id == "video.bitrate.peak_ratio") {
         const auto& series =
@@ -54,7 +59,9 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
     }
     if (rule.id == "video.bitrate.low_bpp") {
         const model::StreamDigest* video = result.FirstVideoStream();
-        if (video && video->width > 0 && video->height > 0) {
+        // 静图的 fps 是解复用器填的占位值（常见 25），bpp 算出来必然极低 ——
+        // 那是"图片只有一帧"的必然结果，不是码率缺陷。
+        if (!image_input && video && video->width > 0 && video->height > 0) {
             double fps = video->avg_fps;
             if (fps <= 0.0)
                 fps = result.video_fps.Mean();
@@ -148,7 +155,9 @@ std::vector<model::DiagnosticIssue> CheckVideoRules(const model::QcRule& rule, c
     }
     if (rule.id == "video.resolution.odd") {
         const model::StreamDigest* video = result.FirstVideoStream();
-        if (video && (video->width % 2 != 0 || video->height % 2 != 0)) {
+        // "偶数边"是编码器/播放链路的兼容性要求，图片没有这层约束：
+        // 321x241 的截图是合法输入，不该被扣分。
+        if (!image_input && video && (video->width % 2 != 0 || video->height % 2 != 0)) {
             issues.push_back(make_issue(1.0,
                                         "分辨率为 " + std::to_string(video->width) + "x" +
                                             std::to_string(video->height) + "，存在奇数边。",

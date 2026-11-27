@@ -4,6 +4,7 @@
 #include <QFileInfo>
 
 #include <cstdint>
+#include <string_view>
 #include <utility>
 
 extern "C" {
@@ -250,6 +251,14 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
     result.has_video = video.has_video;
     result.audio_stream_index = audio_index;
 
+    // 动图 WebP 在当前 FFmpeg 构建里解不出任何画面（解复用器只给一条 0x0 的空壳）：
+    // 直接以明确原因失败，别让用户对着黑屏找问题。
+    if (IsUndecodableAnimatedWebp(fmt, result.video_stream_index)) {
+        result.error = QStringLiteral("无法播放该 WebP：未能解析出有效画面尺寸。动图 WebP 在当前 FFmpeg 构建中不受支持"
+                                      "（仅支持静态 WebP），也可能是文件已损坏；可先转成 GIF/APNG 再打开。");
+        return result;
+    }
+
     if (result.video_stream_index >= 0 && !PrepareVideoDecoder(params, fmt, result.video_stream_index, best_video_codec,
                                                                result.video_decoder, result.error)) {
         return result;
@@ -380,6 +389,26 @@ bool IsCoverArtStream(const AVFormatContext* format, int video_index) {
     }
     const AVStream* vs = format->streams[video_index];
     return vs != nullptr && (vs->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0;
+}
+
+bool IsUndecodableAnimatedWebp(const AVFormatContext* format, int video_index) {
+    if (!format || !format->iformat || !format->iformat->name) {
+        return false;
+    }
+    // webp_pipe 是当前 FFmpeg 8.x 的 WebP 解复用器；webp_anim 是更新版本为动图
+    // 拆出来的。两者都看尺寸：能解出画面的构建会在 codecpar 里给出真实宽高。
+    const std::string_view demuxer(format->iformat->name);
+    if (demuxer != "webp_pipe" && demuxer != "webp_anim") {
+        return false;
+    }
+    if (video_index < 0 || video_index >= static_cast<int>(format->nb_streams)) {
+        return false;
+    }
+    const AVStream* stream = format->streams[video_index];
+    if (stream == nullptr || stream->codecpar == nullptr) {
+        return false;
+    }
+    return stream->codecpar->width <= 0 || stream->codecpar->height <= 0;
 }
 
 VideoStreamDecision ClassifyVideoStream(const AVFormatContext* format, int video_index) {

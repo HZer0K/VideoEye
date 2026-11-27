@@ -154,3 +154,75 @@ TEST(OpenControllerCoverArt, ClassifyAudioOnlyAndInvalidIndexHaveNoVideo) {
     EXPECT_FALSE(null_decision.has_video);
     EXPECT_EQ(-1, null_decision.video_stream_index);
 }
+
+// ===========================================================================
+// IsUndecodableAnimatedWebp: 动图 WebP 在当前 FFmpeg 构建里"能打开、没有画面"
+//
+// 回归点: webp_pipe 把 ANIM/ANMF 块当未知块跳过，视频流只剩一条 0x0 的空壳，
+// 打开链路照样成功 —— 用户对着黑屏，没有任何错误可循。判定依据就是尺寸：
+// 能解码的构建（静态图 / 新版 webp_anim 解复用器）都会给出真实宽高。
+// ===========================================================================
+
+namespace {
+
+AVInputFormat* FakeInputFormat(const char* name) {
+    static AVInputFormat format{};
+    format.name = name;
+    return &format;
+}
+
+} // namespace
+
+TEST(OpenControllerCoverArt, WebpStreamWithoutFrameSizeIsUndecodable) {
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    AVStream* video = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    video->codecpar->width = 0;
+    video->codecpar->height = 0;
+
+    // FFmpeg 8.x 的动图 WebP 现场: webp_pipe + 0x0
+    ctx->iformat = FakeInputFormat("webp_pipe");
+    EXPECT_TRUE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 0));
+    // 新版拆出来的动图解复用器同样按尺寸判：给不出尺寸就是解不出来
+    ctx->iformat = FakeInputFormat("webp_anim");
+    EXPECT_TRUE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 0));
+}
+
+TEST(OpenControllerCoverArt, DecodableOrNonWebpStreamsAreNotRejected) {
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    AVStream* video = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    video->codecpar->width = 320;
+    video->codecpar->height = 240;
+
+    // 静态 WebP / 能解动图的新版解复用器：尺寸正常，不能拦
+    ctx->iformat = FakeInputFormat("webp_pipe");
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 0));
+    ctx->iformat = FakeInputFormat("webp_anim");
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 0));
+
+    // 非 WebP 解复用器即便尺寸缺失（损坏文件）也不该被这条针对性判定接手
+    video->codecpar->width = 0;
+    video->codecpar->height = 0;
+    ctx->iformat = FakeInputFormat("image2");
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 0));
+}
+
+TEST(OpenControllerCoverArt, UndecodableWebpCheckIsBoundsSafe) {
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(nullptr, 0));
+
+    auto ctx = MakeContext();
+    ASSERT_NE(ctx, nullptr);
+    AVStream* video = avformat_new_stream(ctx.get(), nullptr);
+    ASSERT_NE(video, nullptr);
+    video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    ctx->iformat = FakeInputFormat("webp_pipe");
+
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), -1));
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 1));
+    EXPECT_FALSE(videoeye::player::IsUndecodableAnimatedWebp(ctx.get(), 99));
+}

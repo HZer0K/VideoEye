@@ -42,8 +42,11 @@ inline OpenTargetKind ClassifyOpenTarget(const QString& source) {
     // 注意 URL（rtmp://…、http://…/x.m3u8）也走这里：没有扩展名时 suffix() 为空，
     // 落到 Media 分支，与历史行为相同。
     const QString suffix = QFileInfo(source).suffix().toLower();
-    if (suffix == "yuv" || suffix == "nv12" || suffix == "rgb" || suffix == "bgr" || suffix == "yuy2" ||
-        suffix == "raw") {
+    // 裸像素后缀：4:2:0 家族（yuv/nv12/nv21/yv12/p010/yuv420p10）、packed 4:2:2
+    // （yuy2/uyvy）、灰度（gray）与 RGB/BGR；.raw 见上面的二义性说明。
+    if (suffix == "yuv" || suffix == "nv12" || suffix == "nv21" || suffix == "yv12" || suffix == "p010" ||
+        suffix == "yuv420p10" || suffix == "yuy2" || suffix == "uyvy" || suffix == "gray" || suffix == "rgb" ||
+        suffix == "bgr" || suffix == "raw") {
         return OpenTargetKind::RawImage;
     }
     if (suffix == "pcm") {

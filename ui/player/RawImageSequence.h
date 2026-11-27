@@ -5,6 +5,8 @@
 #include <QString>
 #include <QWidget>
 
+class QTimer; // 全局转发声明：不能写进 videoeye::ui，否则会声明出另一个类型
+
 namespace videoeye {
 namespace ui {
 
@@ -43,6 +45,14 @@ public:
     void OnNextRawFrame();
     void SetRawImageMode(bool on);
 
+    // 连续播放：按加载时确认的帧率定时推进帧。单帧/未加载时返回 false。
+    // 播放到最后一帧自动停止（停在最后一帧），不会循环。
+    bool StartRawPlayback();
+    void StopRawPlayback();
+    bool IsRawPlaying() const {
+        return raw_playing_;
+    }
+
     // 复位所有 Raw 序列状态（不刷新导航控件，调用方自行在之后调 UpdateRawNavigationState）。
     void Reset();
 
@@ -56,8 +66,11 @@ signals:
     void RawImageInfoReady(const QString& info);
     // 显示一帧后通知面板：由面板写 last_overlay_codec_ 并刷新叠加层（overlay 状态归面板所有）。
     void RawFrameShown(const QImage& frame, const QString& codec);
+    // 连续播放状态变化（开始/暂停/播到末帧）。面板据此切换播放按钮图标。
+    void RawPlaybackStateChanged(bool playing);
 
 private:
+    void AdvancePlaybackFrame();
     // === Raw 序列状态（原 PlayerPanel 成员整体迁入）===
     bool showing_raw_image_ = false;
     QString raw_image_path_;
@@ -67,6 +80,11 @@ private:
     qint64 raw_frame_size_ = 0;
     int raw_total_frames_ = 0;
     int raw_current_frame_ = 0;
+    int raw_fps_ = 25;
+
+    // 连续播放（Raw 没有音频，QTimer 即时钟）。
+    QTimer* playback_timer_ = nullptr;
+    bool raw_playing_ = false;
 
     // 非拥有依赖
     QWidget* dialog_parent_ = nullptr;

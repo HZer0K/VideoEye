@@ -15,6 +15,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QInputDialog>
 #include <QLinearGradient>
 #include <QMessageBox>
@@ -26,6 +27,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QTransform>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -46,6 +48,36 @@ constexpr int kSideBySidePlayerShare = 42;
 constexpr int kSideBySideContentMinWidth = 560;
 // 上下模式下内容区再挤也要留一点：窗口被压得很矮时只按最小高度钳制会算出负数。
 constexpr int kMinContentHeight = 80;
+
+// EXIF 方向只影响"显示"：解码出来的像素本身不旋转（分析/导出仍拿原始像素）。
+// Qt 的 QImageReader 会从文件头读 EXIF orientation（JPEG 由部署的 qjpeg 插件提供），
+// 这里换算成一次性 QTransform，在把帧交给 VideoWidget 前应用。
+// 插件缺失 / 无 EXIF / 不在支持后缀内时返回单位变换，行为与改动前一致。
+QTransform ExifOrientationTransform(const QString& path) {
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix != "jpg" && suffix != "jpeg" && suffix != "tif" && suffix != "tiff") {
+        return QTransform();
+    }
+    QImageReader reader(path);
+    switch (reader.transformation()) {
+    case QImageIOHandler::TransformationMirror:
+        return QTransform().scale(-1, 1);
+    case QImageIOHandler::TransformationFlip:
+        return QTransform().scale(1, -1);
+    case QImageIOHandler::TransformationRotate180:
+        return QTransform().rotate(180);
+    case QImageIOHandler::TransformationRotate90:
+        return QTransform().rotate(90);
+    case QImageIOHandler::TransformationRotate270:
+        return QTransform().rotate(270);
+    case QImageIOHandler::TransformationMirrorAndRotate90:
+        return QTransform().rotate(90).scale(1, -1);
+    case QImageIOHandler::TransformationFlipAndRotate90:
+        return QTransform().rotate(90).scale(-1, 1);
+    default:
+        return QTransform();
+    }
+}
 } // namespace
 
 PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
@@ -66,6 +98,13 @@ PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
         // overlay 的编码/分辨率缓存归面板所有，由这里写 last_overlay_codec_ 并刷新。
         last_overlay_codec_ = codec;
         RefreshOverlayMediaInfo(&frame);
+    });
+    // Raw 连续播放不属于 MediaPlayer 的状态机，按钮图标由组件回报的播放状态驱动。
+    connect(raw_seq_, &RawImageSequence::RawPlaybackStateChanged, this, [this](bool playing) {
+        if (control_bar_ && control_bar_->playPauseButton()) {
+            control_bar_->playPauseButton()->setIcon(
+                style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+        }
     });
 }
 
@@ -130,6 +169,7 @@ void PlayerPanel::SetupConnections() {
             return;
         last_drag_seek_ms_ = now;
         if (raw_seq_->IsShowingRawImage()) {
+            raw_seq_->StopRawPlayback(); // 手动拖动即暂停，避免定时器与拖动抢帧
             raw_seq_->ShowRawFrame(v);
             return;
         }
@@ -153,6 +193,7 @@ void PlayerPanel::SetCurrentSource(const QString& source) {
     current_source_ = source;
     image_input_ = false;
     keep_finished_image_ = false;
+    exif_transform_ = QTransform();
     // 换源: 清掉上一份文件的叠加层缓存与状态栏统计, 避免新文件沿用旧分辨率/编码。
     // 放在这里而不是 ResetVideoUI, 是因为后者经 queued 回调执行, 可能晚于新内容的显示。
     last_overlay_fps_.clear();
@@ -455,7 +496,12 @@ void PlayerPanel::OnPlayPause() {
     }
 
     if (raw_seq_->IsShowingRawImage()) {
-        emit StatusMessage(tr("当前为图像文件，无法播放"), 0);
+        if (raw_seq_->IsRawPlaying()) {
+            raw_seq_->StopRawPlayback();
+            emit StatusMessage(tr("已暂停"), 0);
+        } else if (!raw_seq_->StartRawPlayback()) {
+            emit StatusMessage(tr("当前为图像文件，无法播放"), 0);
+        }
         return;
     }
 
@@ -487,6 +533,8 @@ void PlayerPanel::OnPlayerOpenFinished(bool ok) {
         return;
     }
     image_input_ = ok && player_->GetStreamInfo().is_image_input;
+    // 手机竖拍的 JPEG 靠 EXIF 声明方向，解码像素是横的：只影响显示，不影响分析与导出。
+    exif_transform_ = image_input_ ? ExifOrientationTransform(current_source_) : QTransform();
     // 打开收尾时把进度条的总量与可用性定下来：时长未知（直播流 / 估算失败的裸流）
     // 时禁用拖动并给出说明，而不是留一根拖了没反应的滑杆。
     UpdateSeekAvailability(ok ? player_->GetDuration() : 0);
@@ -537,6 +585,7 @@ void PlayerPanel::StopPlayback() {
 
 void PlayerPanel::OnSeek(int value) {
     if (raw_seq_->IsShowingRawImage()) {
+        raw_seq_->StopRawPlayback(); // 键盘/程序化定位同样打断连续播放
         raw_seq_->ShowRawFrame(value);
         return;
     }
@@ -673,10 +722,14 @@ void PlayerPanel::OnFrameReady(const QImage& frame) {
         return;
     }
 
-    video_widget_->SetFrame(frame);
+    QImage displayed = frame;
+    if (!exif_transform_.isIdentity()) {
+        displayed = frame.transformed(exif_transform_, Qt::SmoothTransformation);
+    }
+    video_widget_->SetFrame(displayed);
 
     // 顺带刷新叠加层的分辨率/编码 (首帧或分辨率变化时才真正下发)
-    RefreshOverlayMediaInfo(&frame);
+    RefreshOverlayMediaInfo(&displayed);
 }
 
 void PlayerPanel::OnPositionChanged(int position_ms, int duration_ms) {

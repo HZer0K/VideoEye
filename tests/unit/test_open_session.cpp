@@ -28,6 +28,12 @@ using videoeye::ui::TakeOpenTicket;
 TEST(OpenSessionTests, RawImageSuffixesRouteToRawImage) {
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.yuv")), OpenTargetKind::RawImage);
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.nv12")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.nv21")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.yv12")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.p010")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.yuv420p10")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.uyvy")), OpenTargetKind::RawImage);
+    EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.gray")), OpenTargetKind::RawImage);
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.rgb")), OpenTargetKind::RawImage);
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.bgr")), OpenTargetKind::RawImage);
     EXPECT_EQ(ClassifyOpenTarget(QString::fromUtf8("a.yuy2")), OpenTargetKind::RawImage);

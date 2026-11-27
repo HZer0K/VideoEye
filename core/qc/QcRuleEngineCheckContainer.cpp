@@ -98,6 +98,13 @@ std::string FriendlyContainerName(const std::string& token) {
         {"bmp_pipe", "BMP"},
         {"webp_pipe", "WebP"},
         {"tiff_pipe", "TIFF"},
+        {"j2k_pipe", "JPEG 2000"},
+        {"jpegxl_pipe", "JPEG XL"},
+        {"qoi_pipe", "QOI"},
+        {"exr_pipe", "OpenEXR"},
+        {"ppm_pipe", "PNM (PPM)"},
+        {"pgm_pipe", "PNM (PGM)"},
+        {"pbm_pipe", "PNM (PBM)"},
     };
     auto it = kNames.find(token);
     return (it != kNames.end()) ? it->second : token;
@@ -114,10 +121,11 @@ std::vector<model::DiagnosticIssue> CheckContainerRules(const model::QcRule& rul
                                                         const IssueFactory& make_issue) {
     std::vector<model::DiagnosticIssue> issues;
 
-    // 图片（GIF/APNG/PNG/JPEG/BMP/WebP/TIFF）没有时间轴、也没有音轨：
-    // 时长异常 / 不可拖动 / 缺音频这三条对它天然不成立，拿它们扣分会把
+    // 图片（GIF/APNG/PNG/JPEG/BMP/WebP/TIFF/JP2/JXL/QOI/EXR/PNM/AVIF…）没有时间轴、
+    // 也没有音轨：时长异常 / 不可拖动 / 缺音频这三条对它天然不成立，拿它们扣分会把
     // 每一张正常图片都判成问题（duration_invalid 还是 Critical）。
-    const bool image_input = model::IsImageDemuxer(result.container_format);
+    // 判定走 IsImageInput：AVIF 的解复用器是 mov 家族，只看解复用器名会漏。
+    const bool image_input = model::IsImageInput(result.container_format, result.file_extension);
 
     // ---------- 容器 ----------
     if (rule.id == "container.duration_invalid") {

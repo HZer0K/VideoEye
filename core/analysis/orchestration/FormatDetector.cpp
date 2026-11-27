@@ -79,6 +79,22 @@ const std::vector<ExtensionEntry>& ExtensionTable() {
         {"webp", ContainerFormat::FFmpeg_Generic},
         {"tif", ContainerFormat::FFmpeg_Generic},
         {"tiff", ContainerFormat::FFmpeg_Generic},
+        // 其余图片格式：均已在自带 FFmpeg 里实测"解复用器 + 解码器"齐备（AVIF 走
+        // mov 家族，靠扩展名识别为静图）。.ico 有解复用器但没有 ico 解码器，
+        // 登记进来只会得到黑屏，故不列。
+        {"avif", ContainerFormat::FFmpeg_Generic},
+        {"jp2", ContainerFormat::FFmpeg_Generic},
+        {"j2k", ContainerFormat::FFmpeg_Generic},
+        {"j2c", ContainerFormat::FFmpeg_Generic},
+        {"jxl", ContainerFormat::FFmpeg_Generic},
+        {"tga", ContainerFormat::FFmpeg_Generic},
+        {"qoi", ContainerFormat::FFmpeg_Generic},
+        {"exr", ContainerFormat::FFmpeg_Generic},
+        {"ppm", ContainerFormat::FFmpeg_Generic},
+        {"pgm", ContainerFormat::FFmpeg_Generic},
+        {"pbm", ContainerFormat::FFmpeg_Generic},
+        {"pam", ContainerFormat::FFmpeg_Generic},
+        {"pnm", ContainerFormat::FFmpeg_Generic},
         // 裸流：没有容器层，结构页走 FFmpeg 通用分析
         {"h264", ContainerFormat::RAW_ES},
         {"264", ContainerFormat::RAW_ES},
@@ -190,12 +206,9 @@ uint32_t ReadU32Be(const std::string& data, size_t offset) {
            (static_cast<uint32_t>(ByteAt(data, offset + 2)) << 8) | static_cast<uint32_t>(ByteAt(data, offset + 3));
 }
 
-// ftyp 的 major_brand 与 compatible_brands 里有没有 QuickTime 标记。
-// major_brand 在偏移 8，compatible_brands 从 16 开始、按 4 字节一项排到 box 末尾。
-// 以前只看 major_brand，于是 major_brand=mp42 但 compatible 里带 "qt  " 的文件
-// 会被判成 MP4；另外还留了一个 `brand == "mdat"` 的死分支（major_brand 不可能是
-// mdat —— mdat 是普通 box 类型），一并清掉。
-bool FtypDeclaresQuickTime(const std::string& head) {
+// ftyp 的 compatible_brands 里有没有指定 brand（4 字节）。
+// compatible_brands 从偏移 16 开始、按 4 字节一项排到 box 末尾。
+bool FtypDeclaresBrand(const std::string& head, const char* brand) {
     const uint32_t box_size = ReadU32Be(head, 0);
     // size 不合法（0=延伸到文件尾 / 1=64 位 largesize / 越界）时退回读入范围
     size_t limit = head.size();
@@ -203,11 +216,20 @@ bool FtypDeclaresQuickTime(const std::string& head) {
         limit = static_cast<size_t>(box_size);
     }
     for (size_t off = 16; off + 4 <= limit; off += 4) {
-        if (head.compare(off, 4, "qt  ") == 0) {
+        if (head.compare(off, 4, brand) == 0) {
             return true;
         }
     }
     return false;
+}
+
+// ftyp 的 major_brand 与 compatible_brands 里有没有 QuickTime 标记。
+// major_brand 在偏移 8，compatible_brands 从 16 开始、按 4 字节一项排到 box 末尾。
+// 以前只看 major_brand，于是 major_brand=mp42 但 compatible 里带 "qt  " 的文件
+// 会被判成 MP4；另外还留了一个 `brand == "mdat"` 的死分支（major_brand 不可能是
+// mdat —— mdat 是普通 box 类型），一并清掉。
+bool FtypDeclaresQuickTime(const std::string& head) {
+    return FtypDeclaresBrand(head, "qt  ");
 }
 
 // AV1 低开销码流（low-overhead bitstream format）以 temporal delimiter OBU 起头：
@@ -319,8 +341,14 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
 
     // MP4/MOV: offset 4-7 = "ftyp"
     if (header.size() >= 8 && header.compare(4, 4, "ftyp") == 0) {
-        // 区分 MP4 vs MOV: major_brand 或 compatible_brands 里带 "qt  "
+        // AVIF / AVIF 序列是 ftyp 家族里的"图片"，不是可解析的 MP4 视频：
+        // 它们没有 moov/trak，丢进 MP4 Box 解析器会被判"结构无效/解析失败"。
+        // 直接归到 FFmpeg 通用路径（播放走 mov 解复用器，QC 按静图规则处理）。
         const std::string major_brand = header.substr(8, 4);
+        if (major_brand == "avif" || major_brand == "avis" || FtypDeclaresBrand(header, "avif")) {
+            return model::ContainerFormat::FFmpeg_Generic;
+        }
+        // 区分 MP4 vs MOV: major_brand 或 compatible_brands 里带 "qt  "
         if (major_brand == "qt  " || FtypDeclaresQuickTime(header)) {
             return model::ContainerFormat::MOV;
         }

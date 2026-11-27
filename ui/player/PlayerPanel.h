@@ -7,6 +7,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QString>
+#include <QTransform>
 #include <QVector>
 #include <QWidget>
 #include <deque>
@@ -205,6 +206,8 @@ private:
     bool image_input_ = false;
     bool keep_finished_image_ = false;
     bool mv_overlay_enabled_ = false;
+    // 静图的 EXIF 显示方向（解码像素不旋转，只在交给 VideoWidget 前应用）。
+    QTransform exif_transform_;
 
     // 叠加层缓存
     QString last_overlay_fps_;

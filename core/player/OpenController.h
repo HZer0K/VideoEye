@@ -62,6 +62,14 @@ namespace player {
 // 不需要真实媒体样本。
 bool IsCoverArtStream(const AVFormatContext* format, int video_index);
 
+// 动图 WebP 在当前 FFmpeg 构建里"能打开、却永远出不来画面"：webp_pipe 解复用器把
+// ANIM/ANMF 块当未知块跳过，视频流只剩一条 0x0 的空壳（解码器日志是 image data not
+// found），打开链路照样成功，用户看到的是黑屏 —— 没有任何错误可循。
+// 这里把"WebP 解复用器 + 画面尺寸无效"识别出来，由 Prepare 给出明确失败原因。
+// 新版 FFmpeg 的 webp_anim 解复用器能正常给出尺寸/帧，不会被误拦。
+// 边界检查与前两个判定一致：空上下文 / 越界索引 / 非 WebP 解复用器一律返回 false。
+bool IsUndecodableAnimatedWebp(const AVFormatContext* format, int video_index);
+
 // "视频流"的三件套结论：可播放视频流索引、是不是封面图、以及界面该不该按视频模式显示。
 //
 // 抽出来是因为 has_video 与 video_index 必须**同时**从"封面降级之后"的状态推导。

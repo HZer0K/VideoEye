@@ -42,7 +42,8 @@ inline QString BuildMediaFileFilter() {
     //   * .raw 是原始像素序列（按宽高直读），不是音频。裸音频若命名成 .raw
     //     或其它后缀，会走 FFmpeg 自动探测并被误判成别的编码（实测 adpcm_dtk）。
     const QString raw_audio = QStringLiteral("*.pcm");
-    const QString raw_pixels = QStringLiteral("*.yuv *.nv12 *.rgb *.bgr *.yuy2 *.raw");
+    const QString raw_pixels =
+        QStringLiteral("*.yuv *.nv12 *.nv21 *.yv12 *.p010 *.yuv420p10 *.yuy2 *.uyvy *.gray *.rgb *.bgr *.raw");
     const QString extra = audio + QLatin1Char(' ') + raw_audio + QLatin1Char(' ') + raw_pixels;
     const QString manifest = join_patterns(FormatDetector::ManifestExtensions());
 

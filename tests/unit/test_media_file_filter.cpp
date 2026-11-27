@@ -94,7 +94,8 @@ TEST(MediaFileFilter, manifestsStayInTheirOwnSection) {
 // 原始像素序列由播放器按宽高直接打开，只有 UI 知道，必须自己列进来。
 TEST(MediaFileFilter, keepsRawPixelPatterns) {
     const QString media = FilterSection(0);
-    for (const char* ext : {"pcm", "yuv", "nv12", "rgb", "bgr", "yuy2", "raw"}) {
+    for (const char* ext :
+         {"pcm", "yuv", "nv12", "nv21", "yv12", "p010", "yuv420p10", "yuy2", "uyvy", "gray", "rgb", "bgr", "raw"}) {
         EXPECT_TRUE(HasPattern(media, QString::fromLatin1(ext))) << "媒体文件过滤器缺少 *." << ext;
     }
 }

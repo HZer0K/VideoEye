@@ -157,3 +157,32 @@ TEST(RawImageSequenceTests, UpdateNavigationStateWithoutControlBarIsSafe) {
     sequence.UpdateRawNavigationState();
     EXPECT_FALSE(sequence.IsShowingRawImage());
 }
+
+// ---------------------------------------------------------------------------
+// 6. 连续播放的前置条件：没有加载序列时拒绝启动
+//
+// 启动播放依赖"路径 + 帧长 + 总帧数"三样都在，缺一样都必须返回 false ——
+// 否则定时器会在没有数据的情况下一帧帧空转、或对空路径读盘。
+// ---------------------------------------------------------------------------
+
+TEST(RawImageSequenceTests, PlaybackRequiresLoadedSequence) {
+    EnsureApp();
+
+    RawImageSequence sequence;
+    EXPECT_FALSE(sequence.IsRawPlaying());
+    // 未进入 Raw 模式
+    EXPECT_FALSE(sequence.StartRawPlayback());
+
+    // 进入 Raw 模式但没加载文件（路径/帧长/总帧数都为空）
+    sequence.SetRawImageMode(true);
+    EXPECT_FALSE(sequence.StartRawPlayback());
+    EXPECT_FALSE(sequence.IsRawPlaying());
+
+    // 未在播放时 Stop 是空操作
+    sequence.StopRawPlayback();
+    EXPECT_FALSE(sequence.IsRawPlaying());
+
+    sequence.Reset();
+    EXPECT_FALSE(sequence.IsRawPlaying());
+    EXPECT_FALSE(sequence.IsShowingRawImage());
+}

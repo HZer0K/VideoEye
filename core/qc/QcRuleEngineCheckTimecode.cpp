@@ -1,3 +1,4 @@
+#include "core/domain/model/ImageDemuxer.h"
 #include "core/qc/QcRuleEngineInternal.h"
 
 #include <string>
@@ -17,6 +18,9 @@ std::vector<model::DiagnosticIssue> CheckTimecodeChapterRules(const model::QcRul
 
     // ---------- 时码与章节（core/analysis/diagnostics/TimecodeAnalyzer.h）----------
     if (rule.id == "timecode.missing") {
+        // 图片没有时间轴，也没有地方承载 tmcd 时码轨 —— "缺少时码"对它是噪声。
+        if (model::IsImageInput(result.container_format, result.file_extension))
+            return issues;
         if (!result.DimensionExecuted(model::AnalysisDimension::Timecode))
             return issues;
         if (Triggered(rule, result.timecode.has_primary ? 0.0 : 1.0)) {

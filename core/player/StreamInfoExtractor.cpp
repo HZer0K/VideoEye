@@ -443,8 +443,11 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
 
     info.extractor.complete_name = info.filename;
     if (format_ctx->iformat) {
-        if (format_ctx->iformat->name)
-            info.is_image_input = model::IsImageDemuxer(format_ctx->iformat->name);
+        if (format_ctx->iformat->name) {
+            // AVIF 落在 mov 解复用器里，解复用器名看不出"这是张图"，扩展名才是依据。
+            const std::string extension = QFileInfo(url).suffix().toLower().toStdString();
+            info.is_image_input = model::IsImageInput(format_ctx->iformat->name, extension);
+        }
         if (format_ctx->iformat->long_name)
             info.extractor.format = format_ctx->iformat->long_name;
         else if (format_ctx->iformat->name)

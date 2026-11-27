@@ -194,3 +194,21 @@ TEST(FormatDetectorTruthTest, StandardFtypStillMp4) {
     bytes.resize(1024, '\0');
     EXPECT_EQ(Detect(WriteBytes(dir, "clip.mp4", bytes)), ContainerFormat::MP4);
 }
+
+// AVIF 是 ftyp 家族里的"图片"，不是可解析的 MP4 视频：它没有 moov/trak，
+// 丢进 MP4 Box 解析器只会得到"结构无效 / 解析失败"。必须落到 FFmpeg 通用路径。
+// 特意用 .bin 扩展名，确保命中的是内容判定而不是扩展名兜底。
+TEST(FormatDetectorTruthTest, AvifFtypGoesGenericNotMp4) {
+    const fs::path dir = ScratchDir("avif_ftyp");
+    std::string bytes = Box32(24, "ftyp") + "avif" + Bytes({0, 0, 2, 0}) + "avif" + "mif1";
+    bytes.resize(1024, '\0');
+    EXPECT_EQ(Detect(WriteBytes(dir, "still.bin", bytes)), ContainerFormat::FFmpeg_Generic);
+}
+
+// major_brand 是通用 mif1（HEIF 家族）时，靠 compatible_brands 里的 avif 识别。
+TEST(FormatDetectorTruthTest, AvifCompatibleBrandGoesGeneric) {
+    const fs::path dir = ScratchDir("avif_compatible");
+    std::string bytes = Box32(24, "ftyp") + "mif1" + Bytes({0, 0, 2, 0}) + "avif" + "mif1";
+    bytes.resize(1024, '\0');
+    EXPECT_EQ(Detect(WriteBytes(dir, "still.bin", bytes)), ContainerFormat::FFmpeg_Generic);
+}

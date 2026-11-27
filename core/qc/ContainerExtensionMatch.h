@@ -96,10 +96,33 @@ inline const std::multimap<std::string, std::string>& ExtensionAliasMap() {
         {"apng", "png_pipe"},
         {"jpg", "jpeg_pipe"},
         {"jpeg", "jpeg_pipe"},
+        // FFmpeg 8.x 里单文件 JPEG 首选 image2 解复用器（实测 .jpg/.jpeg 都落到它），
+        // jpeg_pipe 只在按管道/显式指定时出现。只登记 jpeg_pipe 会把每一张正常
+        // JPEG 都判成"扩展名与实际容器不符"。
+        {"jpg", "image2"},
+        {"jpeg", "image2"},
         {"bmp", "bmp_pipe"},
         {"webp", "webp_pipe"},
+        // 新版 FFmpeg 的动图 WebP 由 webp_anim 解复用器承载（静态仍是 webp_pipe）。
+        {"webp", "webp_anim"},
         {"tif", "tiff_pipe"},
         {"tiff", "tiff_pipe"},
+        // --- 其它图片格式：解复用器名与扩展名不同名，必须逐条登记 ---
+        // .tga / .pam 由 image2 承载；.pnm 是 PNM 家族统称，FFmpeg 按内容落到 ppm_pipe。
+        {"tga", "image2"},
+        {"pam", "image2"},
+        {"jp2", "j2k_pipe"},
+        {"j2k", "j2k_pipe"},
+        {"j2c", "j2k_pipe"},
+        {"jxl", "jpegxl_pipe"},
+        {"qoi", "qoi_pipe"},
+        {"exr", "exr_pipe"},
+        {"ppm", "ppm_pipe"},
+        {"pnm", "ppm_pipe"},
+        {"pgm", "pgm_pipe"},
+        {"pbm", "pbm_pipe"},
+        // AVIF 是 ISOBMFF 里的单帧图片，解复用器是 mov 家族。
+        {"avif", "mov"},
         // --- 流媒体清单：container_format 由 StreamingManifestScan 直接写 "hls" / "dash" ---
         {"m3u8", "hls"},
         {"m3u", "hls"},
