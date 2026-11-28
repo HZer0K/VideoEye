@@ -142,12 +142,16 @@ const std::vector<model::RepairDeclaredExclusion>& AllDeclaredExclusions() {
                      "切片 W 实现音频静音填补；三者都必须**显式启用**，且逐处空洞记账、"
                      "填补时长不计入恢复率分子。重复帧填补未实现，"
                      "synthetic_frames_inserted=false 只表示这次没插，不代表能力缺失清单里「没有这一项」。"));
-        items.push_back(MakeBase("transcode_properties_not_inherited", "实测到的转码属性损失不补回",
-                                 "S08 且做过源侧保真探测",
-                                 "位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据等实测损失本版本不补回；"
-                                 "产物只能说「属性损失已列明」，不能声称视觉无损。",
-                                 "切片 J 起逐项实测并写入 fidelity.transcode；同色深的 SAR / 色度位置 / 色彩标记"
-                                 "已继承，旋转与 HDR 只记账不继承，10-bit 编码器尚未选型。"));
+        items.push_back(
+            MakeBase("transcode_properties_not_inherited", "10-bit 与 HDR 动态元数据不补回", "S08 且做过源侧保真探测",
+                     "位深（统一 8-bit yuv420p，10-bit → 8-bit 的色阶损失）与 HDR 动态元数据"
+                     "（逐帧 SEI / 杜比视界 RPU，必须由编码器重新生成）本版本不补回；"
+                     "位深降级时色彩标记与 HDR 静态元数据主动不沿用（照搬会让播放器把 SDR 画面按 HDR 渲染）。"
+                     "产物只能说「属性损失已列明」，不能声称视觉无损。",
+                     "切片 J 起逐项实测并写入 fidelity.transcode；切片 Q 起旋转 displaymatrix 与"
+                     " HDR 静态元数据真的挂到输出流，由收尾处重新打开产物实测后才下结论；"
+                     "同色深的 SAR / 色度位置 / 色彩标记已继承；10-bit 编码器尚未选型"
+                     "（本项目锁定的 LGPL FFmpeg 不含 x264 / x265）。"));
         items.push_back(MakeBase("fragment_resync_not_attempted", "容器级分片重同步不做", "分片（fragmented）输入",
                                  "不做 moof/trun/mdat 级重同步与分片样本表重建；分片边界丢失的内容不会"
                                  "通过容器重同步找回，只能靠已存在的初始化段与可读分片恢复。",

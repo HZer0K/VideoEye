@@ -150,8 +150,10 @@ model::RepairCapabilityBoundary MakeDecodableGopTranscode() {
         "丢帧导致卡顿、合成帧导致画面冻结或抖动；GOP 边界判断错误会让段首花屏",
         "音画不同步：视频时间轴重算后音频若按原时间戳复制，偏差会越积越大",
         "无参考样片时 perceptual_fidelity 只能是 unknown_without_reference，不能声称画质无损",
-        "源侧位深 / 色彩标记 / 旋转矩阵 / HDR 静态元数据可能在统一 8-bit yuv420p 重编码里丢失；"
-        "切片 J 起逐项实测并写入 fidelity.transcode，未实测时不得声称属性均已保留",
+        "位深（统一重编码成 8-bit yuv420p，10-bit 色阶不可恢复）与 HDR 动态元数据"
+        "（逐帧 SEI / 杜比视界 RPU，需编码器重新生成）不继承；位深降级时色彩标记与 HDR 静态元数据"
+        "主动不沿用；旋转 displaymatrix 与 HDR 静态元数据自切片 Q 起随产物携带，"
+        "并按收尾处对产物的实测结果判定保留 / 丢失 / 未实测，不得凭意图声称",
         "实际编码器可能与首选的 libx264 不同（LGPL 构建不含 libx264）；画质与码率特性要按"
         "fidelity.transcode.encoder_used 记录的实际编码器评估，不能套用首选编码器的表现",
     };

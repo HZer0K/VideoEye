@@ -383,6 +383,28 @@ TEST(RepairDeclaredExclusions, TriggerFactsAreStructuredFieldValues) {
               transcode->trigger_facts.end());
 }
 
+// 切片 Q 之后「旋转矩阵 / HDR 静态元数据不继承」这句话已经不成立：它们会被真的拷进
+// 产物，并由收尾处重新打开产物实测后才下结论。报告若继续这么写，用户会低估能力，
+// 而且同一份报告里的 fidelity.transcode 会与这条声明互相打架 —— 所以文案本身也要守住。
+TEST(RepairDeclaredExclusions, TranscodePropertiesItemMatchesSliceQInheritance) {
+    RepairResult result = EvaluatedBaseline();
+    result.executions.push_back(AttemptedExecution(RepairAction::S08_TolerantTranscode));
+    result.fidelity.video_reencoded = true;
+    result.fidelity.transcode.inspected = true;
+    result.fidelity.transcode.lost_properties = {"位深 10 → 8 bit"};
+
+    // 必须先把结果落到具名变量：FindItem 返回的是指向容器内部的指针，
+    // 直接对返回值取指针会在语句结束时留下悬垂引用。
+    const auto declared = repair::BuildDeclaredExclusions(result);
+    const auto* item = FindItem(declared, "transcode_properties_not_inherited");
+    ASSERT_NE(item, nullptr);
+    const std::string text = item->consequence + item->evidence;
+    EXPECT_EQ(text.find("只记账不继承"), std::string::npos)
+        << "切片 Q 起旋转 / HDR 静态元数据会随产物携带并实测，不能再写成「只记账」";
+    EXPECT_NE(text.find("HDR 动态元数据"), std::string::npos) << "真正不继承的是动态元数据与位深";
+    EXPECT_NE(text.find("displaymatrix"), std::string::npos);
+}
+
 // 切片 T / Z：S08 只有一条解码-重编码视频链 —— 这条能力边界必须能被「容器拒绝、
 // 只能丢掉的第二视频轨」触发，但不能被「容器拒绝音频」或「源侧已丢弃」触发
 // （那是别人的决定，不是我们的能力缺口）。
