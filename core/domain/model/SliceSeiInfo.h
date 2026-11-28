@@ -14,7 +14,9 @@
 //                 Dolby Vision RPU (HEVC NAL 62 + T.35)、film grain (type 19)、
 //                 recovery point (type 6)
 //   * slice    —— H.264 的 slice_type 分布与**逐帧 QP**（slice_qp_delta + PPS
-//                 的 pic_init_qp_minus26）。HEVC 侧见 VideoEsInspector.h 的说明。
+//                 的 pic_init_qp_minus26）；VVC 的 slice_type 分布与"有条件"的
+//                 逐 slice QP（见 VvcSliceHeader.h 的边界表）；HEVC / AV1 未做，
+//                 原因写在 VideoEsInspector.h 与 unsupported_reason 里。
 //
 // 为什么 analyzer（BitstreamAnalyzer）不做这件事：
 //   参数集在 extradata 里、slice 与 SEI 只在**码流包**里。两者的输入来源不同，
@@ -111,6 +113,12 @@ struct SliceSummary {
     // slice 的 QP 通过取值范围校验。拿不到 PPS 时只能把 slice_qp_delta 相加，
     // 那不是真的 QP —— 一律不算。
     bool qp_valid = false;
+    // qp_valid == false 时的**具体**原因（空 = 只用默认文案）。
+    // 为什么要单独一个字段：H.264 的失败原因基本只有"没有 PPS 基准"，
+    // 而 VVC 的 slice 可能因为"非 I slice 前面压着 pred_weight_table"、
+    // "ALF/LMCS 让位流宽度不可证"等原因拿不到 QP。统一写成"缺少 PPS 基准"
+    // 会把人带到完全错误的排查方向。
+    std::string qp_unavailable_reason;
 
     // QP 曲线（已抽稀到 kMaxCurvePoints 个点以内，供 UI 画折线）
     std::vector<int> qp_curve;

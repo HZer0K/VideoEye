@@ -520,6 +520,11 @@ struct PpsQpOptions {
     // true = 走 tile 划分段（no_pic_partition_flag = 0）：2 列 × 1 行 tile。
     // 这一段是"顺序差一位、QP 全错"的重灾区，单独给它一个用例。
     bool tile_partition = false;
+    // "该信息放在 PH 里"开关：只在 !no_pic_partition 时存在（7.3.2.4 尾部）。
+    // ❗ 早先的构造器整段没写 —— 与本仓库"漏读也整段没读"的 bug 正好互补，
+    // 于是两边互相印证、一起错到面板上。
+    bool rpl_info_in_ph = false;
+    bool qp_delta_info_in_ph = false;
 };
 
 // no_pic_partition_flag = 1（跳过 tile 段）→ 直接进 QP 段。
@@ -564,10 +569,21 @@ std::vector<uint8_t> MakePpsWithQp(const PpsQpOptions& opt) {
     w.Bit(0);                                               // pps_cu_qp_delta_enabled_flag
     w.Bit(0);                                               // pps_chroma_tool_offsets_present_flag
     w.Bit(0);                                               // pps_deblocking_filter_control_present_flag
-    w.Bit(0);                                               // pps_picture_header_extension_present_flag
-    w.Bit(0);                                               // pps_slice_header_extension_present_flag
-    w.Bit(0);                                               // pps_extension_flag
-    w.Bit(1);                                               // rbsp trailing bits：stop bit
+    if (opt.tile_partition) {
+        // ---- "信息放在 PH 里" 开关：只在 no_pic_partition_flag = 0 时存在 ----
+        // 位置上它们在 deblocking 段之后、pps_picture_header_extension_present_flag
+        // 之前。漏写这 4 位，解析器会把后面三个 extension 标志当成它们读。
+        w.Bit(opt.rpl_info_in_ph ? 1 : 0); // pps_rpl_info_in_ph_flag
+        w.Bit(0);                          // pps_sao_info_in_ph_flag
+        w.Bit(0);                          // pps_alf_info_in_ph_flag
+        // pps_wp_info_in_ph_flag 只在 (weighted_pred || weighted_bipred) && rpl_in_ph
+        // 时存在；上面两个 weighted 都是 0，所以这里没有它。
+        w.Bit(opt.qp_delta_info_in_ph ? 1 : 0); // pps_qp_delta_info_in_ph_flag
+    }
+    w.Bit(0); // pps_picture_header_extension_present_flag
+    w.Bit(0); // pps_slice_header_extension_present_flag
+    w.Bit(0); // pps_extension_flag
+    w.Bit(1); // rbsp trailing bits：stop bit
     return w.Bytes();
 }
 
@@ -579,6 +595,11 @@ TEST_F(VvcPpsTest, QpSectionFollowsSpecOrder) {
     ASSERT_TRUE(pps.present);
     EXPECT_TRUE(pps.qp_fields_valid) << "规范顺序的 PPS 必须能解出 QP 段";
     EXPECT_EQ(pps.parse_depth, VvcPpsInfo::ParseDepth::Full);
+    // 实测：libvvenc 的默认配置是 no_pic_partition = 1（一幅图像一个 slice、无 tile），
+    // 所以这份真实样本覆盖的是"in_ph 段不存在"那条分支；in_ph 段本身由
+    // InPhFlagsAreReadAfterDeblocking 按 cbs_h266 的字段顺序合成验证。
+    EXPECT_EQ(pps.NumTilesInPic(), 1);
+    EXPECT_TRUE(pps.pps_no_pic_partition_flag);
     EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
     EXPECT_EQ(pps.pps_pic_init_qp_minus26 + 26, 30);
     // 两条默认 active 都是无条件的：rpl1_idx_present_flag = 0 时第二条照样存在
@@ -617,6 +638,41 @@ TEST_F(VvcPpsTest, TilePartitionSectionKeepsQpAligned) {
     EXPECT_TRUE(pps.pps_rect_slice_flag);
     EXPECT_TRUE(pps.pps_single_slice_per_subpic_flag);
     EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4);
+    // NumTilesInPic = 列 × 行：slice_header 的地址宽度全靠它，必须是解析出的实测值。
+    EXPECT_EQ(pps.pps_num_tile_columns, 2);
+    EXPECT_EQ(pps.pps_num_tile_rows, 1);
+    EXPECT_EQ(pps.pps_num_tiles_in_pic, 2);
+    EXPECT_EQ(pps.NumTilesInPic(), 2);
+    // no_pic_partition = 0 时 in_ph 开关**存在**（值是 0），与"字段不存在"不是一回事
+    EXPECT_FALSE(pps.pps_qp_delta_info_in_ph_flag);
+}
+
+// in_ph 段（7.3.2.4 尾部）的值必须真的落进字段：它决定 slice_header 里
+// sh_qp_delta / ref_pic_lists() 是否存在，读错一位就是整条 slice 错位。
+TEST_F(VvcPpsTest, InPhFlagsAreReadAfterDeblocking) {
+    PpsQpOptions opt;
+    opt.tile_partition = true;
+    opt.rpl_info_in_ph = true;
+    opt.qp_delta_info_in_ph = true;
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, MakePpsWithQp(opt)));
+    ASSERT_TRUE(pps.present);
+    EXPECT_TRUE(pps.qp_fields_valid) << "in_ph 段少读/多读一位，QP 段就会错位";
+    EXPECT_TRUE(pps.pps_rpl_info_in_ph_flag);
+    EXPECT_TRUE(pps.pps_qp_delta_info_in_ph_flag);
+    EXPECT_FALSE(pps.pps_sao_info_in_ph_flag);
+    EXPECT_FALSE(pps.pps_alf_info_in_ph_flag);
+    EXPECT_EQ(pps.pps_pic_init_qp_minus26, 4); // 仍然没错位
+}
+
+// no_pic_partition_flag = 1 ⇒ 这一段**不存在**，规范推导为 0。
+// 若解析器照样去读，就会把 pps_picture_header_extension_present_flag 当它。
+TEST_F(VvcPpsTest, InPhFlagsAbsentWhenPictureNotPartitioned) {
+    const VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(MakeNal(16, MakePpsWithQp(PpsQpOptions{})));
+    ASSERT_TRUE(pps.present);
+    ASSERT_TRUE(pps.qp_fields_valid);
+    EXPECT_FALSE(pps.pps_rpl_info_in_ph_flag);
+    EXPECT_FALSE(pps.pps_qp_delta_info_in_ph_flag);
+    EXPECT_EQ(pps.NumTilesInPic(), 1);
 }
 
 TEST_F(VvcPpsTest, WraparoundOffsetIsConsumedBeforeQp) { // pps_ref_wraparound_enabled_flag = 1 时多一个 ue(v)。漏读它，
@@ -764,6 +820,12 @@ TEST_F(VvcRealEncoderTest, ParseRealSpsAndPps) {
     ASSERT_TRUE(pps.present);
     EXPECT_EQ(pps.pps_pic_width_in_luma_samples, 640);
     EXPECT_EQ(pps.pps_pic_height_in_luma_samples, 360);
+    // ❗ 这一条是"新读的字段没把 QP 段带偏"的地面真值判据：libvvenc 产出的是
+    // 真实码流，不按本仓库的假设构造。in_ph 段少读/多读一位，这里立刻变 false。
+    EXPECT_TRUE(pps.qp_fields_valid) << "parse_depth=" << static_cast<int>(pps.parse_depth)
+                                     << " no_pic_partition=" << pps.pps_no_pic_partition_flag
+                                     << " tiles=" << pps.pps_num_tiles_in_pic;
+    EXPECT_EQ(pps.parse_depth, VvcPpsInfo::ParseDepth::Full);
 }
 
 // --------------------------------------------------------------------------

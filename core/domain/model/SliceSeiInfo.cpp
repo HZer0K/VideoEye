@@ -60,7 +60,12 @@ std::string SliceSummary::Summary() const {
     if (qp_valid) {
         out += " / QP=[" + std::to_string(qp_min) + ", " + std::to_string(qp_max) + "] avg=" + Fixed(qp_avg, 1);
     } else {
-        out += " / QP 不可用（缺少 PPS 的 pic_init_qp_minus26 基准）";
+        out += " / QP 不可用";
+        if (!qp_unavailable_reason.empty()) {
+            out += "（" + qp_unavailable_reason + "）";
+        } else {
+            out += "（缺少 PPS 的 pic_init_qp_minus26 基准）";
+        }
     }
     return out;
 }

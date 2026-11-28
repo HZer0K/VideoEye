@@ -793,3 +793,266 @@ TEST(VideoEsInspectorTests, PacketBudgetStopsTheScan) {
     EXPECT_TRUE(inspector.result().truncated);
     EXPECT_EQ(inspector.result().packets_scanned, 2);
 }
+
+// ==========================================================================
+// VVC：帧级 slice（类型分布 + 有条件 QP）与 SEI
+//
+// VVC 的 NAL header 是 **2 字节**：byte0 = forbidden(1) | reserved(1) | layer_id(6)，
+// byte1 = nal_unit_type(5) | temporal_id_plus1(3)。写成 H.264 那种单字节 header，
+// 15 号 SPS 会被当成 VCL 去解 slice header —— 反过来也成立（HEVC 的 SPS=33）。
+// 所以这里的封装单独一个 helper。
+// ==========================================================================
+
+std::vector<uint8_t> MakeVvcAnnexB(uint8_t type, const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out{0x00, 0x00, 0x00, 0x01, 0x00, static_cast<uint8_t>((type << 3) | 1)};
+    const std::vector<uint8_t> escaped = EscapeRbsp(payload);
+    out.insert(out.end(), escaped.begin(), escaped.end());
+    return out;
+}
+
+// PH（NAL 19）只写巡检器会读的前缀：前两位无条件、pps_id 是 ue(v)。
+std::vector<uint8_t> MakeVvcPhPayload(bool inter_allowed, uint32_t pps_id) {
+    BitWriter w;
+    w.PutBool(true);  // ph_gdr_or_irap_pic_flag
+    w.PutBool(false); // ph_non_ref_pic_flag
+    w.PutBool(false); // ph_gdr_pic_flag
+    w.PutBool(inter_allowed);
+    if (inter_allowed)
+        w.PutBool(true); // ph_intra_slice_allowed_flag
+    w.PutUE(pps_id);
+    return w.bytes();
+}
+
+videoeye::model::VvcSpsInfo MakeVvcSps() {
+    videoeye::model::VvcSpsInfo sps;
+    sps.present = true;
+    sps.sps_seq_parameter_set_id = 0;
+    sps.sps_chroma_format_idc = 1;
+    sps.sps_bitdepth_minus8 = 0;
+    sps.sps_subpic_info_present_flag = false;
+    sps.sps_num_subpics_minus1 = 0;
+    sps.sps_num_extra_sh_bytes = 0;
+    sps.sps_alf_enabled_flag = false;
+    sps.sps_lmcs_enabled_flag = false;
+    sps.sps_explicit_scaling_list_enabled_flag = false;
+    sps.sps_idr_rpl_present_flag = false;
+    return sps;
+}
+
+videoeye::model::VvcPpsInfo MakeVvcPps() {
+    videoeye::model::VvcPpsInfo pps;
+    pps.present = true;
+    pps.pps_pic_parameter_set_id = 0;
+    pps.pps_seq_parameter_set_id = 0;
+    pps.pps_no_pic_partition_flag = true;
+    pps.pps_rect_slice_flag = true;
+    pps.pps_single_slice_per_subpic_flag = true;
+    pps.pps_num_tiles_in_pic = 1;
+    pps.pps_pic_init_qp_minus26 = 4; // SliceQpY 基准 = 30
+    return pps;
+}
+
+// IDR（NAL 7）的一个 I slice：外部 PH + 类型 + no_output 位 + sh_qp_delta。
+std::vector<uint8_t> MakeVvcIdrSlicePayload(int qp_delta) {
+    BitWriter w;
+    w.PutBool(false); // sh_picture_header_in_slice_header_flag
+    w.PutUE(2);       // sh_slice_type = I
+    w.PutBool(false); // sh_no_output_of_prior_pics_flag
+    w.PutSE(qp_delta);
+    return w.bytes();
+}
+
+TEST(VideoEsInspectorTests, VvcIdrSliceYieldsTypeAndQp) {
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_VVC);
+    ASSERT_TRUE(inspector.enabled());
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    inspector.SetVvcParameterSets(MakeVvcSps(), MakeVvcPps());
+
+    std::vector<uint8_t> packet = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    const std::vector<uint8_t> slice = MakeVvcAnnexB(7, MakeVvcIdrSlicePayload(-2));
+    packet.insert(packet.end(), slice.begin(), slice.end());
+
+    ASSERT_TRUE(inspector.Feed(packet.data(), packet.size()));
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    EXPECT_TRUE(s.supported);
+    EXPECT_TRUE(s.analyzed);
+    EXPECT_EQ(s.slice_count, 1);
+    EXPECT_EQ(s.frames, 1) << "sh_slice_address == 0 才是一幅新图像";
+    EXPECT_EQ(s.type_i, 1);
+    ASSERT_TRUE(s.qp_valid) << s.qp_unavailable_reason;
+    EXPECT_EQ(s.qp_min, 28); // 26 + 4 - 2
+    EXPECT_EQ(s.qp_max, 28);
+    EXPECT_EQ(s.qp_parsed_slices, 1);
+}
+
+// 非 I slice：类型照给，QP 必须拒绝，并写清"为什么"。
+TEST(VideoEsInspectorTests, VvcPSliceKeepsTypeButNotQp) {
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_VVC);
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    inspector.SetVvcParameterSets(MakeVvcSps(), MakeVvcPps());
+
+    std::vector<uint8_t> packet = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    BitWriter w;
+    w.PutBool(false);
+    w.PutUE(1);                                                     // P
+    const std::vector<uint8_t> slice = MakeVvcAnnexB(0, w.bytes()); // TRAIL_NUT
+    packet.insert(packet.end(), slice.begin(), slice.end());
+
+    ASSERT_TRUE(inspector.Feed(packet.data(), packet.size()));
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    EXPECT_TRUE(s.supported);
+    EXPECT_EQ(s.slice_count, 1);
+    EXPECT_EQ(s.type_p, 1);
+    EXPECT_EQ(s.frames, 1);
+    EXPECT_FALSE(s.qp_valid);
+    // 具体原因必须露出来：与 H.264 的"没有 PPS 基准"完全不是一回事
+    EXPECT_NE(s.qp_unavailable_reason.find("非 I slice"), std::string::npos) << s.qp_unavailable_reason;
+}
+
+// 一幅图像两个 slice（4 个 tile 的非矩形布局）：slice 数 2，帧数 1。
+// 帧数按 sh_slice_address == 0 数，不按 slice 数 —— 否则多 slice 图像会被数成多帧。
+TEST(VideoEsInspectorTests, VvcMultiSlicePictureCountsOneFrame) {
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_VVC);
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    videoeye::model::VvcPpsInfo pps = MakeVvcPps();
+    pps.pps_no_pic_partition_flag = false;
+    pps.pps_rect_slice_flag = false;
+    pps.pps_num_tiles_in_pic = 4;
+    inspector.SetVvcParameterSets(MakeVvcSps(), pps);
+
+    std::vector<uint8_t> packet = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    for (uint32_t address = 0; address < 2; ++address) {
+        BitWriter w;
+        w.PutBool(false);  // 外部 PH
+        w.Put(address, 2); // sh_slice_address（ceil(log2(4)) = 2 位）
+        w.PutUE(0);        // sh_num_tiles_in_slice_minus1
+        w.PutUE(2);        // I
+        w.PutBool(false);  // no_output（IDR）
+        w.PutSE(0);        // sh_qp_delta
+        const std::vector<uint8_t> slice = MakeVvcAnnexB(7, w.bytes());
+        packet.insert(packet.end(), slice.begin(), slice.end());
+    }
+
+    ASSERT_TRUE(inspector.Feed(packet.data(), packet.size()));
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    EXPECT_EQ(s.slice_count, 2);
+    EXPECT_EQ(s.frames, 1);
+    EXPECT_EQ(s.type_i, 2);
+    ASSERT_TRUE(s.qp_valid) << s.qp_unavailable_reason;
+    EXPECT_EQ(s.qp_parsed_slices, 2);
+}
+
+// VVC 的 SEI 与 HEVC 共用同一张 payloadType 表（都由 H.274 定义）：
+// CLL(144) 在 VVC 前缀 SEI（NAL 23）里同样要能取出来。
+TEST(VideoEsInspectorTests, VvcSeiContentLightLevelIsParsed) {
+    std::vector<uint8_t> sei_rbsp;
+    AppendSeiMessage(sei_rbsp, 144, {0x03, 0xE8, 0x01, 0x90}); // MaxCLL=1000, MaxFALL=400
+
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_VVC);
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    const std::vector<uint8_t> nal = MakeVvcAnnexB(23, sei_rbsp); // PREFIX_SEI_NUT
+    ASSERT_TRUE(inspector.Feed(nal.data(), nal.size()));
+    inspector.Finish();
+
+    const auto& sei = inspector.result().sei;
+    EXPECT_TRUE(sei.has_content_light_level);
+    EXPECT_EQ(sei.max_content_light_level, 1000u);
+    EXPECT_EQ(sei.max_pic_average_light_level, 400u);
+}
+
+// ==========================================================================
+// VVC 带内参数集（TS / 裸流：extradata 里没有 SPS/PPS，只能从包里捡）
+//
+// 这份 SPS 是 libvvenc 的真实产物（1080p / 10bit / 4:2:0，无 subpic、
+// 无 extra_sh_bit），与 tests/unit/test_vvc_frame_order_tracker.cpp 里用的是
+// 同一串字节。带内路径没法用"程序化参数集"验证 —— 那样就绕过了被测的
+// SPS/PPS 解析这一环。
+// ==========================================================================
+
+const std::vector<uint8_t> kRealVvcSps = {
+    0x01, 0x0B, 0x02, 0x33, 0x80, 0x00, 0x00, 0x0F, 0x02, 0x00, 0x43, 0x91, 0x88, 0x04, 0xBA, 0xD5, 0x7B,
+    0xFF, 0xFC, 0x6F, 0x6B, 0xFB, 0xFF, 0xB9, 0x89, 0x80, 0x88, 0x05, 0x09, 0x10, 0x09, 0x00, 0x40,
+};
+
+// PPS RBSP：no_pic_partition_flag = 1（整幅一个 tile / 一个 slice ⇒ 没有地址字段），
+// 后面按 7.3.2.4 补齐解析器会读的 QP 段。
+std::vector<uint8_t> MakeVvcPpsPayload(int pic_init_qp_minus26) {
+    BitWriter w;
+    w.Put(0, 6);                  // pps_pic_parameter_set_id
+    w.Put(0, 4);                  // pps_seq_parameter_set_id
+    w.PutBool(false);             // pps_mixed_nalu_types_in_pic_flag
+    w.PutUE(1920);                // pps_pic_width_in_luma_samples
+    w.PutUE(1080);                // pps_pic_height_in_luma_samples
+    w.PutBool(false);             // pps_conformance_window_flag
+    w.PutBool(false);             // pps_scaling_window_explicit_signalling_flag
+    w.PutBool(false);             // pps_output_flag_present_flag
+    w.PutBool(true);              // pps_no_pic_partition_flag = 1
+    w.PutBool(false);             // pps_subpic_id_mapping_present_flag
+    w.PutBool(false);             // pps_cabac_init_present_flag
+    w.PutUE(0);                   // pps_num_ref_idx_default_active_minus1[0]
+    w.PutUE(0);                   // pps_num_ref_idx_default_active_minus1[1]
+    w.PutBool(false);             // pps_rpl1_idx_present_flag
+    w.PutBool(false);             // pps_weighted_pred_flag
+    w.PutBool(false);             // pps_weighted_bipred_flag
+    w.PutBool(false);             // pps_ref_wraparound_enabled_flag
+    w.PutSE(pic_init_qp_minus26); // pps_pic_init_qp_minus26
+    w.PutBool(false);             // pps_cu_qp_delta_enabled_flag
+    w.PutBool(false);             // pps_chroma_tool_offsets_present_flag
+    w.PutBool(false);             // pps_deblocking_filter_control_present_flag
+    // no_pic_partition_flag = 1 ⇒ 这里**没有** pps_*_info_in_ph_flag 段
+    w.PutBool(false); // pps_picture_header_extension_present_flag
+    w.PutBool(false); // pps_slice_header_extension_present_flag
+    w.PutBool(false); // pps_extension_flag
+    w.PutBool(true);  // rbsp trailing bits
+    return w.bytes();
+}
+
+TEST(VideoEsInspectorTests, VvcInBandParameterSetsEnableSliceParsing) {
+    // 一个完整的带内包：SPS + PPS + PH + 一个 I slice。extradata 通过
+    // SetVvcParameterSets 一份都不给，参数集只能靠 InspectVvc 自己捡。
+    std::vector<uint8_t> packet = MakeVvcAnnexB(15, kRealVvcSps);                 // SPS
+    const std::vector<uint8_t> pps_nal = MakeVvcAnnexB(16, MakeVvcPpsPayload(4)); // PPS
+    packet.insert(packet.end(), pps_nal.begin(), pps_nal.end());
+    const std::vector<uint8_t> ph = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    packet.insert(packet.end(), ph.begin(), ph.end());
+
+    BitWriter slice_bits;
+    slice_bits.PutBool(false); // 外部 PH
+    slice_bits.PutUE(2);       // I
+    slice_bits.PutBool(false); // no_output（IDR）
+    slice_bits.PutSE(0);       // sh_qp_delta
+    const std::vector<uint8_t> slice = MakeVvcAnnexB(7, slice_bits.bytes());
+    packet.insert(packet.end(), slice.begin(), slice.end());
+
+    VideoEsInspector with_sets;
+    with_sets.Reset(AV_CODEC_ID_VVC);
+    with_sets.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    ASSERT_TRUE(with_sets.Feed(packet.data(), packet.size()));
+    with_sets.Finish();
+    // 参数集真的被用上了：能解出类型 ⇒ SPS 与 PPS 都解析成功
+    EXPECT_EQ(with_sets.result().slices.slice_count, 1);
+    EXPECT_TRUE(with_sets.result().slices.analyzed);
+
+    // 对照组：同一个包里把 SPS/PPS 去掉，slice 就无从解析（类型不计入）。
+    // 这一条用来证明上面的 1 是"参数集被捡到"换来的，而不是碰巧数到一条。
+    std::vector<uint8_t> bare = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    bare.insert(bare.end(), slice.begin(), slice.end());
+    VideoEsInspector without_sets;
+    without_sets.Reset(AV_CODEC_ID_VVC);
+    without_sets.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+    ASSERT_TRUE(without_sets.Feed(bare.data(), bare.size()));
+    without_sets.Finish();
+    EXPECT_EQ(without_sets.result().slices.slice_count, 0);
+    EXPECT_FALSE(without_sets.result().slices.qp_unavailable_reason.empty())
+        << "拿不到参数集时要说明原因，而不是静默给 0";
+}

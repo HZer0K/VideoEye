@@ -54,9 +54,10 @@ struct Sample {
     int width = 0;
     int height = 0;
     int frames = 0; // ffprobe -count_frames 的 nb_read_frames
-    // 巡检器是否该在这一编码上启用（VideoEsInspector::Reset 只认 h264/hevc/av1）
+    // 巡检器是否该在这一编码上启用（VideoEsInspector::Reset 认 h264/hevc/av1/vvc）
     bool es_inspector_enabled = false;
-    // slice QP 是否有实现（目前只有 H.264 做了）
+    // slice QP 是否有实现（H.264 全量；VVC 是"有条件"——类型总能给，QP 只在
+    // 位宽可证时给，见 VvcSliceHeader.h。HEVC / AV1 未做）
     bool slice_qp_supported = false;
 };
 

@@ -96,6 +96,13 @@ bool SkipTileAndSlicePartition(BitReader& reader, model::VvcPpsInfo& pps) {
         return false;
 
     const int64_t num_tiles = static_cast<int64_t>(num_tile_cols) * num_tile_rows;
+    pps.pps_num_tile_columns = num_tile_cols;
+    pps.pps_num_tile_rows = num_tile_rows;
+    if (num_tiles > 0 && num_tiles <= kMaxTiles) {
+        pps.pps_num_tiles_in_pic = static_cast<int>(num_tiles);
+    } else {
+        return false; // 荒谬的行列数：NumTilesInPic 不可信，别拿它推 slice 地址宽度
+    }
     if (num_tiles > 1) {
         pps.pps_loop_filter_across_tiles_flag = reader.ReadBit();
         pps.pps_rect_slice_flag = reader.ReadBit();
@@ -206,6 +213,22 @@ bool ParseQpAndFilterSection(BitReader& reader, model::VvcPpsInfo& pps) {
             pps.pps_tc_offset_div2 = reader.ReadSE();
         }
     }
+    // ---- "该信息放在 PH 里" 开关（7.3.2.4 尾部，只在 !no_pic_partition 时存在）----
+    // ❗ 这一段以前整段漏读。它对 PPS 自身字段没有影响（在后面），但 slice_header
+    // 里 sh_alf_enabled_flag / sh_qp_delta / ref_pic_lists() 是否存在全看它 ——
+    // 漏读会让 slice 从 sh_slice_type 之后整段错位，症状是"QP 是个看着合理的数"。
+    if (!pps.pps_no_pic_partition_flag) {
+        pps.pps_rpl_info_in_ph_flag = reader.ReadBit();
+        pps.pps_sao_info_in_ph_flag = reader.ReadBit();
+        pps.pps_alf_info_in_ph_flag = reader.ReadBit();
+        if ((pps.pps_weighted_pred_flag || pps.pps_weighted_bipred_flag) && pps.pps_rpl_info_in_ph_flag) {
+            pps.pps_wp_info_in_ph_flag = reader.ReadBit();
+        }
+        pps.pps_qp_delta_info_in_ph_flag = reader.ReadBit();
+        if (reader.HasError())
+            return false;
+    }
+
     pps.pps_picture_header_extension_present_flag = reader.ReadBit();
     pps.pps_slice_header_extension_present_flag = reader.ReadBit();
     pps.pps_extension_flag = reader.ReadBit();
@@ -912,7 +935,9 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     if (sps.sps_video_parameter_set_id > 0) {
         sps.sps_inter_layer_prediction_enabled_flag = reader.ReadBit();
     }
-    reader.SkipBits(1); // sps_idr_rpl_present_flag
+    // 以前这里是裸 SkipBits：SPS 自身无损，但 slice_header 是否需要
+    // ref_pic_lists()（IDR 也有例外）取决于这一位，丢弃后 QP 无法定位。
+    sps.sps_idr_rpl_present_flag = reader.ReadBit();
     const bool rpl1_same_as_rpl0 = reader.ReadBit();
 
     for (int i = 0; i < (rpl1_same_as_rpl0 ? 1 : 2); ++i) {
@@ -996,6 +1021,7 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         }
     }
     const bool explicit_scaling_list = reader.ReadBit();
+    sps.sps_explicit_scaling_list_enabled_flag = explicit_scaling_list;
     if (sps.sps_lfnst_enabled_flag && explicit_scaling_list) {
         reader.SkipBits(1);
     }

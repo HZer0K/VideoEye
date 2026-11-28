@@ -592,6 +592,10 @@ void AnalysisPipeline::ApplyParameterSetsToEsInspector(const model::BitstreamAna
         es_inspector_.SetH264ParameterSets(bs.h264_sps, bs.h264_pps);
     } else if (bs.has_hevc) {
         es_inspector_.SetHevcParameterSets(bs.hevc_sps, bs.hevc_pps);
+    } else if (bs.has_vvc) {
+        // VVC 的 slice_header 需要**两份**参数集：地址宽度（tile/subpic 划分）在
+        // PPS，位宽与功能开关在 SPS，QP 基准也在 PPS。只注一份就只能给类型。
+        es_inspector_.SetVvcParameterSets(bs.vvc_sps, bs.vvc_pps);
     }
 }
 

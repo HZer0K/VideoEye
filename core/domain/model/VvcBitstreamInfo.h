@@ -164,6 +164,12 @@ struct VvcSpsInfo {
     bool sps_weighted_bipred_flag = false;
     bool sps_long_term_ref_pics_flag = false;
     bool sps_inter_layer_prediction_enabled_flag = false;
+    // 下面两个是 slice_header 解析（帧级 slice / QP）的门控：IDR 是否携带
+    // ref_pic_lists()、slice 里有没有 sh_explicit_scaling_list_used_flag。
+    // 以前它们只被 SkipBits 跳过 —— 那对 SPS 自身无损，但巡检器要靠它们
+    // 判断"slice_type 之后到 sh_qp_delta 之间还有几位"，漏了就整体错位。
+    bool sps_idr_rpl_present_flag = false;
+    bool sps_explicit_scaling_list_enabled_flag = false;
     bool sps_temporal_mvp_enabled_flag = false;
     bool sps_affine_enabled_flag = false;
     bool sps_palette_enabled_flag = false;
@@ -270,6 +276,12 @@ struct VvcPpsInfo {
     bool pps_single_slice_per_subpic_flag = false;
     int pps_num_slices_in_pic_minus1 = 0;
     bool pps_loop_filter_across_slices_flag = false;
+    // NumTilesInPic = 列数 × 行数（两边都由 exp_tile_*_minus1 + 1 得到）。
+    // slice_header 里 sh_slice_address 的位宽 = ceil(log2(NumTilesInPic))，
+    // 所以这个值必须是**解析时算出来的实测值**，不能留 0 让调用方再推。
+    int pps_num_tiles_in_pic = 1;
+    int pps_num_tile_columns = 1;
+    int pps_num_tile_rows = 1;
 
     // ---- QP / 预测权重 / 去块开关（面板真正会展示的那几个）----
     bool pps_cabac_init_present_flag = false;
@@ -297,6 +309,17 @@ struct VvcPpsInfo {
     bool pps_deblocking_filter_disabled_flag = false;
     int pps_beta_offset_div2 = 0;
     int pps_tc_offset_div2 = 0;
+
+    // ---- "该信息放在 picture header 里" 的开关（7.3.2.4 尾部）----
+    // 只在 !pps_no_pic_partition_flag 时存在，位置在 deblocking 段之后、
+    // pps_picture_header_extension_present_flag 之前。
+    // slice_header 的对应语法段是否出现全看这几个：漏读它们不是"SPS 少几个字段"，
+    // 而是 slice 从 sh_slice_type 开始整段错位（错位后算出的 QP 看着完全合理）。
+    bool pps_rpl_info_in_ph_flag = false;
+    bool pps_sao_info_in_ph_flag = false;
+    bool pps_alf_info_in_ph_flag = false;
+    bool pps_wp_info_in_ph_flag = false;
+    bool pps_qp_delta_info_in_ph_flag = false;
 
     bool pps_picture_header_extension_present_flag = false;
     bool pps_slice_header_extension_present_flag = false;
@@ -326,6 +349,10 @@ struct VvcPpsInfo {
     }
     int InitQp() const {
         return pps_pic_init_qp_minus26 + 26;
+    }
+    // 容错取 1：字段默认 0 是"未解析"，语义上等价于不划分（NumTilesInPic == 1）。
+    int NumTilesInPic() const {
+        return pps_num_tiles_in_pic > 0 ? pps_num_tiles_in_pic : 1;
     }
 };
 

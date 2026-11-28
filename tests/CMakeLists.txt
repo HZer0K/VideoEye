@@ -1361,6 +1361,19 @@ target_link_libraries(test_vvc_frame_order_tracker PRIVATE VideoEyeAnalysis)
 add_test(NAME VvcFrameOrderTrackerTests COMMAND test_vvc_frame_order_tracker)
 
 # =================================================
+# 测试 20-C：VVC 帧级 slice（sh_slice_type / sh_qp_delta）
+# 说明: 参数集直接以结构体注入，变量只剩 slice_header 的字段顺序与"哪些位真的
+#       存在"——地址宽度（tile/subpic）、sh_extra_bit、IRAP 的 no_output 位、
+#       定长的 ALF 段，以及 QP 应该被拒绝的四条边界（非 I / delta 在 PH /
+#       LMCS / 显式缩放矩阵 / RPL 在 slice 里）。
+# =================================================
+videoeye_add_test(test_vvc_slice_header
+    unit/test_vvc_slice_header.cpp
+)
+target_link_libraries(test_vvc_slice_header PRIVATE VideoEyeAnalysis)
+add_test(NAME VvcSliceHeaderTests COMMAND test_vvc_slice_header)
+
+# =================================================
 # 测试 23-B：VP9 码流解析（关键帧 uncompressed header）
 # 说明: VP9 没有参数集，序列配置写在关键帧头部；测试数据由测试文件内的
 #       逐位 BitWriter 按规范 6.2 生成，不参考 parser 实现。

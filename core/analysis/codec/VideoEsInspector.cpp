@@ -9,6 +9,7 @@ extern "C" {
 }
 
 #include "core/analysis/codec/H264BitstreamParser.h"
+#include "core/analysis/codec/VvcBitstreamParser.h"
 #include "core/media/codec/BitReader.h"
 #include "core/media/codec/ExtradataParser.h"
 
@@ -49,7 +50,17 @@ constexpr int kH264NalSps = 7;
 constexpr int kH264NalPps = 8;
 // 参数集表容量上限：规范允许 32 个 SPS / 32 个 PPS，超出只能是畸形码流，
 // 按"淘汰最旧"处理，避免包内垃圾数据把表撑大。
-constexpr size_t kH264ParamSetCapacity = 32;
+constexpr size_t kParamSetCapacity = 32;
+
+// VVC NAL 类型（H.266 7.4.1 Table 5）。VCL 是 0..11，其余只有这四种与巡检有关。
+// ❗ 千万别沿用 HEVC 的编号（HEVC 的 SPS=33 / PPS=34 / SEI=39/40）；
+//    按 HEVC 的判据，VVC 的 SPS(15) 会被当成 VCL 去解 slice header。
+constexpr int kVvcNalSps = 15;
+constexpr int kVvcNalPps = 16;
+constexpr int kVvcNalPh = 19;
+constexpr int kVvcNalSeiPrefix = 23;
+constexpr int kVvcNalSeiSuffix = 24;
+constexpr int kVvcNalVclLast = 11;
 
 // Dolby Vision RPU：HEVC 里挂在 NAL type 62（unspecified）上，
 // RPU payload 首字节恒为 0x19。
@@ -229,9 +240,13 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
     h264_pps_list_.clear();
     hevc_sps_ = model::HevcSpsInfo();
     hevc_pps_ = model::HevcPpsInfo();
+    vvc_sps_list_.clear();
+    vvc_pps_list_.clear();
+    vvc_pending_ph_ = VvcPhPrefix{};
     slice_types_.clear();
     slice_qps_.clear();
     first_slice_count_ = 0;
+    first_qp_stop_reason_.clear();
     result_ = model::SliceSeiSummary();
 
     switch (static_cast<AVCodecID>(codec_id)) {
@@ -255,6 +270,14 @@ void VideoEsInspector::Reset(int codec_id, const Options& options) {
         result_.slices.supported = false;
         result_.slices.unsupported_reason = "AV1 的逐帧 QP 在 frame header 的 delta_qparams 段里，需要先解完 "
                                             "uncompressed header（含 tile / segmentation 分支），暂不支持";
+        break;
+    case AV_CODEC_ID_VVC:
+        result_.codec_name = "vvc";
+        enabled_ = true;
+        // VVC 是"部分支持"：类型分布基本总能给，QP 只在位宽可证时给。
+        // supported 表示"这个编码有 slice 解析实现"，QP 是否给出看 qp_valid
+        // 与 qp_unavailable_reason —— 别把 supported 当成"QP 一定算得出来"。
+        result_.slices.supported = true;
         break;
     default:
         enabled_ = false;
@@ -282,7 +305,7 @@ void VideoEsInspector::StoreH264Sps(const model::H264SpsInfo& sps) {
             return;
         }
     }
-    if (h264_sps_list_.size() >= kH264ParamSetCapacity)
+    if (h264_sps_list_.size() >= kParamSetCapacity)
         h264_sps_list_.erase(h264_sps_list_.begin());
     h264_sps_list_.push_back(sps);
 }
@@ -296,7 +319,7 @@ void VideoEsInspector::StoreH264Pps(const model::H264PpsInfo& pps) {
             return;
         }
     }
-    if (h264_pps_list_.size() >= kH264ParamSetCapacity)
+    if (h264_pps_list_.size() >= kParamSetCapacity)
         h264_pps_list_.erase(h264_pps_list_.begin());
     h264_pps_list_.push_back(pps);
 }
@@ -322,6 +345,55 @@ void VideoEsInspector::SetHevcParameterSets(const model::HevcSpsInfo& sps, const
     hevc_pps_ = pps;
 }
 
+void VideoEsInspector::SetVvcParameterSets(const model::VvcSpsInfo& sps, const model::VvcPpsInfo& pps) {
+    StoreVvcSps(sps);
+    StoreVvcPps(pps);
+}
+
+void VideoEsInspector::StoreVvcSps(const model::VvcSpsInfo& sps) {
+    if (!sps.present)
+        return;
+    for (model::VvcSpsInfo& existing : vvc_sps_list_) {
+        if (existing.sps_seq_parameter_set_id == sps.sps_seq_parameter_set_id) {
+            existing = sps;
+            return;
+        }
+    }
+    if (vvc_sps_list_.size() >= kParamSetCapacity)
+        vvc_sps_list_.erase(vvc_sps_list_.begin());
+    vvc_sps_list_.push_back(sps);
+}
+
+void VideoEsInspector::StoreVvcPps(const model::VvcPpsInfo& pps) {
+    if (!pps.present)
+        return;
+    for (model::VvcPpsInfo& existing : vvc_pps_list_) {
+        if (existing.pps_pic_parameter_set_id == pps.pps_pic_parameter_set_id) {
+            existing = pps;
+            return;
+        }
+    }
+    if (vvc_pps_list_.size() >= kParamSetCapacity)
+        vvc_pps_list_.erase(vvc_pps_list_.begin());
+    vvc_pps_list_.push_back(pps);
+}
+
+const model::VvcSpsInfo* VideoEsInspector::FindVvcSps(int id) const {
+    for (const model::VvcSpsInfo& sps : vvc_sps_list_) {
+        if (sps.sps_seq_parameter_set_id == id)
+            return &sps;
+    }
+    return nullptr;
+}
+
+const model::VvcPpsInfo* VideoEsInspector::FindVvcPps(int id) const {
+    for (const model::VvcPpsInfo& pps : vvc_pps_list_) {
+        if (pps.pps_pic_parameter_set_id == id)
+            return &pps;
+    }
+    return nullptr;
+}
+
 bool VideoEsInspector::Feed(const uint8_t* data, size_t size) {
     if (!enabled_ || done_ || data == nullptr || size == 0)
         return false;
@@ -339,6 +411,9 @@ bool VideoEsInspector::Feed(const uint8_t* data, size_t size) {
         break;
     case AV_CODEC_ID_HEVC:
         InspectHevc(data, size);
+        break;
+    case AV_CODEC_ID_VVC:
+        InspectVvc(data, size);
         break;
     case AV_CODEC_ID_AV1:
         InspectAv1(data, size);
@@ -455,6 +530,87 @@ void VideoEsInspector::InspectHevc(const uint8_t* data, size_t size) {
             // 干脆不碰 —— 宁可缺一块，也不给可能对不上号的分布表。
         }
     });
+}
+
+void VideoEsInspector::InspectVvc(const uint8_t* data, size_t size) {
+    ForEachNalUnit(data, size, NalSyntax::Vvc, [this](const NalView& nal) {
+        const int type = static_cast<int>(nal.type);
+
+        if (type == kVvcNalSps || type == kVvcNalPps) {
+            // 带内参数集：TS / 裸流 / 中途切参数集只有这条通路能把当前参数补进表。
+            // 复用码流解析器，不在巡检器里再写一份 SPS/PPS 语法（两份迟早分叉）。
+            NalUnit unit;
+            unit.type = nal.type;
+            unit.size = nal.size;
+            unit.data.assign(nal.payload, nal.payload + nal.size);
+            if (type == kVvcNalSps)
+                StoreVvcSps(VvcBitstreamParser::ParseSpsFromNalUnit(unit));
+            else
+                StoreVvcPps(VvcBitstreamParser::ParsePpsFromNalUnit(unit));
+            return;
+        }
+
+        if (type == kVvcNalPh) {
+            const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);
+            VvcPhPrefix ph;
+            if (!rbsp.empty()) {
+                BitReader reader;
+                reader.Reset(rbsp.data(), rbsp.size());
+                VvcSliceHeaderParser::ReadPhPrefix(reader, ph);
+            }
+            // ❗ 读不出来也要**覆盖**掉旧 PH：保留上一幅的 PH 会让截断的 PH 之后
+            // 那些 slice 按错的 pps_id / inter_slice_allowed 去解，症状是类型和
+            // QP 一起错，却没有任何报错。
+            vvc_pending_ph_ = ph;
+            return;
+        }
+
+        if (type == kVvcNalSeiPrefix || type == kVvcNalSeiSuffix) {
+            // VVC 的 SEI payload 结构与 HEVC 完全相同（都由 H.274 定义），
+            // 复用同一条通路；MDCV(137) / CLL(144) / HDR10+(T.35) 的编号也一致。
+            ParseSeiRbsp(nal.payload, nal.size, /*is_hevc=*/true);
+            return;
+        }
+
+        if (type < 0 || type > kVvcNalVclLast)
+            return; // AUD / OPI / DCI / APS / EOS / EOB / FD：与 slice 无关
+
+        const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);
+        if (rbsp.empty())
+            return;
+
+        const model::VvcPpsInfo* pps = FindVvcPps(vvc_pending_ph_.pps_id);
+        if (pps == nullptr) {
+            NoteQpStop("slice 之前没有解析到它引用的 PPS（id=" + std::to_string(vvc_pending_ph_.pps_id) + "）");
+            return;
+        }
+        const model::VvcSpsInfo* sps = FindVvcSps(pps->pps_seq_parameter_set_id);
+        if (sps == nullptr) {
+            NoteQpStop("PPS 引用的 SPS（id=" + std::to_string(pps->pps_seq_parameter_set_id) + "）没有解析到");
+            return;
+        }
+
+        const VvcSliceHeaderInfo info =
+            VvcSliceHeaderParser::Parse(rbsp.data(), rbsp.size(), type, vvc_pending_ph_, *sps, *pps);
+        if (!info.parsed) {
+            // 连类型都没解出来：这条 slice 不计入任何统计（计入就等于编了一个类型）。
+            NoteQpStop(info.stop_reason);
+            return;
+        }
+        slice_types_.push_back(info.slice_type);
+        if (info.first_slice_of_picture)
+            ++first_slice_count_;
+        if (info.has_qp)
+            slice_qps_.push_back(info.qp);
+        else
+            NoteQpStop(info.stop_reason);
+    });
+}
+
+void VideoEsInspector::NoteQpStop(const std::string& reason) {
+    // 只记第一条：后面的帧通常是同一个原因，让最后一条覆盖会把最有信息量的冲掉。
+    if (first_qp_stop_reason_.empty())
+        first_qp_stop_reason_ = reason;
 }
 
 void VideoEsInspector::InspectAv1(const uint8_t* data, size_t size) {
@@ -815,6 +971,11 @@ void VideoEsInspector::Finish() {
                 out.qp_curve.push_back(slice_qps_[static_cast<size_t>(std::lround(i * step))]);
             }
         }
+    } else if (!first_qp_stop_reason_.empty()) {
+        // 一条 QP 都没算出来时把**具体**原因带上：VVC 拿不到 QP 的原因可能是
+        // "非 I slice 前面压着 pred_weight_table"，与 H.264 的"没拿到 PPS"
+        // 完全不是一回事，混成同一句文案会把人带偏。
+        out.qp_unavailable_reason = first_qp_stop_reason_;
     }
 }
 

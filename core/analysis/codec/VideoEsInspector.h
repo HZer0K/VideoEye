@@ -13,20 +13,27 @@
 //   "这条流没有 SEI"）。
 //
 // ⚠️ 覆盖范围要说清楚：
-//   * SEI     —— H.264 / HEVC 都能解（同一个 wasm payloadType 表），主要盯
+//   * SEI     —— H.264 / HEVC / VVC 都能解（同一张 payloadType 表），主要盯
 //                MDCV(137) / CLL(144) / HDR10+(T.35 4) / DV RPU(HEVC NAL 62)
 //                / pic timing(1) / film grain(19)
-//   * slice   —— **目前只有 H.264**。HEVC 的 slice_qp_delta 前面压着一整套
-//                st_ref_pic_set() 与 NumPocTotalCurr 的推导，只做一半就会得到
-//                错位的 QP —— 那种数比没有更糟，所以宁可不产出（supported=false
-//                + unsupported_reason 写明原因），也不要给一个看着合理的假值。
+//   * slice   —— H.264 全量（类型分布 + 逐 slice QP）；VVC 见下；HEVC 未做。
+//                HEVC 的 slice_qp_delta 前面压着一整套 st_ref_pic_set() 与
+//                NumPocTotalCurr 的推导，只做一半就会得到错位的 QP —— 那种数比
+//                没有更糟，所以宁可不产出（supported=false + unsupported_reason
+//                写明原因），也不要给一个看着合理的假值。
+//   * VVC     —— 帧级 slice_type + **有条件**的 QP（见 VvcSliceHeader.h 的边界表）。
+//                QP 只在"从 sh_slice_type 到 sh_qp_delta 位宽可证固定"时产出；
+//                不满足时照样给类型分布，并把具体原因写进
+//                SliceSummary::qp_unavailable_reason，而不是让 QP 一栏空着没人知道为什么。
 //   * AV1     —— metadata OBU（CLL / MDCV / HDR10+ T.35），无 slice QP。
 // ==========================================================================
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "core/analysis/codec/VvcSliceHeader.h"
 #include "core/domain/model/BitstreamInfo.h"
 #include "core/domain/model/SliceSeiInfo.h"
 #include "core/media/codec/ExtradataTypes.h"
@@ -76,6 +83,10 @@ public:
     // 一旦不同还会让整条 slice header 从那儿开始错位。
     void SetH264ParameterSets(const model::H264SpsInfo& sps, const model::H264PpsInfo& pps);
     void SetHevcParameterSets(const model::HevcSpsInfo& sps, const model::HevcPpsInfo& pps);
+    // VVC 的参数集必须**同时**给 SPS 与 PPS：slice_header 的地址宽度来自 PPS
+    // （tile/subpic 划分），而 QP 基准 pps_pic_init_qp_minus26 也在 PPS，
+    // 位宽/开关在 SPS。缺一份就只能给类型、给不了 QP。
+    void SetVvcParameterSets(const model::VvcSpsInfo& sps, const model::VvcPpsInfo& pps);
 
     // 这个编码有没有可做的巡检（slice 或 SEI 至少占一样）
     bool enabled() const {
@@ -101,6 +112,7 @@ public:
 private:
     void InspectH264(const uint8_t* data, size_t size);
     void InspectHevc(const uint8_t* data, size_t size);
+    void InspectVvc(const uint8_t* data, size_t size);
     void InspectAv1(const uint8_t* data, size_t size);
 
     // 按当前 framing 逐 NAL 遍历（**零拷贝**：回调拿到的是指向本包内存的视图）。
@@ -129,6 +141,14 @@ private:
     const model::H264SpsInfo* FindH264Sps(int id) const;
     const model::H264PpsInfo* FindH264Pps(int id) const;
 
+    // ---- VVC 参数集表（按 ID 索引，理由同上）----
+    void StoreVvcSps(const model::VvcSpsInfo& sps);
+    void StoreVvcPps(const model::VvcPpsInfo& pps);
+    const model::VvcSpsInfo* FindVvcSps(int id) const;
+    const model::VvcPpsInfo* FindVvcPps(int id) const;
+    // 记下"为什么没给出 QP"（只记第一条）
+    void NoteQpStop(const std::string& reason);
+
     int codec_id_ = 0;
     Options options_;
     bool enabled_ = false;
@@ -141,11 +161,20 @@ private:
     std::vector<model::H264PpsInfo> h264_pps_list_;
     model::HevcSpsInfo hevc_sps_;
     model::HevcPpsInfo hevc_pps_;
+    std::vector<model::VvcSpsInfo> vvc_sps_list_;
+    std::vector<model::VvcPpsInfo> vvc_pps_list_;
+    // 最近一个 PH 的前缀。VVC 的 slice 不带"我用哪套 PPS"以外的类型信息 ——
+    // slice_type 是否存在取决于 PH 的 ph_inter_slice_allowed_flag，PPS 又由 PH 指定。
+    // 内联 PH 的流在这里是 invalid，解析器会明确拒绝并给原因。
+    VvcPhPrefix vvc_pending_ph_;
 
     // 累积态（Finish() 时汇总进 result_）
     std::vector<int> slice_types_; // 已归一化到 0..4（H.264 的 slice_type % 5）
     std::vector<int> slice_qps_;
-    int first_slice_count_ = 0; // first_mb_in_slice == 0 的 slice 数（≈ 帧数）
+    int first_slice_count_ = 0; // first_mb_in_slice == 0 / sh_slice_address == 0 的 slice 数（≈ 帧数）
+    // 第一条"为什么没给出 QP"（只记第一条：后面的帧往往是同一个原因，
+    // 让最后一条覆盖会把最有信息量的那条冲掉）。
+    std::string first_qp_stop_reason_;
 
     model::SliceSeiSummary result_;
 };
