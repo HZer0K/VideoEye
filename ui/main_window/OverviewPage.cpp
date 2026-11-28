@@ -340,7 +340,9 @@ void OverviewPage::SetFileSummary(const model::StreamInfo& info) {
                                                        QString::fromStdString(info.video.height));
         }
         if (!info.video.frame_rate.empty()) {
-            video_text += QStringLiteral(" @ %1 fps").arg(QString::fromStdString(info.video.frame_rate));
+            // frame_rate 已是 "25.000 fps" 这种带单位的人类可读串（见 FormatFrameRate），
+            // 这里再补 " fps" 会拼成 "25.000 fps fps"。静图没有帧率时该字段为空，整段跳过。
+            video_text += QStringLiteral(" @ %1").arg(QString::fromStdString(info.video.frame_rate));
         }
         if (!info.video.bit_depth.empty()) {
             video_text += QStringLiteral(", %1 bit").arg(QString::fromStdString(info.video.bit_depth));

@@ -1,21 +1,26 @@
 #include "ui/player/PlayerPanel.h"
 
+#include "core/domain/io/ImageFolderScan.h"
+#include "core/domain/model/ImageOrientation.h"
 #include "core/player/AnalysisBus.h"
 #include "core/player/MediaPlayer.h"
 #include "infrastructure/logging/Logger.h"
 #include "ui/player/AudioVizRenderer.h"
 #include "ui/player/ControlBarWidget.h"
+#include "ui/player/ImageFileOrientation.h"
+#include "ui/player/ImageOrientationTransform.h"
+#include "ui/player/ImageSequencePlayer.h"
 #include "ui/player/RawImageSequence.h"
 #include "ui/theme/AppTheme.h"
 
 #include <chrono>
+#include <cstddef>
 
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QHBoxLayout>
-#include <QImageReader>
 #include <QInputDialog>
 #include <QLinearGradient>
 #include <QMessageBox>
@@ -49,35 +54,6 @@ constexpr int kSideBySideContentMinWidth = 560;
 // 上下模式下内容区再挤也要留一点：窗口被压得很矮时只按最小高度钳制会算出负数。
 constexpr int kMinContentHeight = 80;
 
-// EXIF 方向只影响"显示"：解码出来的像素本身不旋转（分析/导出仍拿原始像素）。
-// Qt 的 QImageReader 会从文件头读 EXIF orientation（JPEG 由部署的 qjpeg 插件提供），
-// 这里换算成一次性 QTransform，在把帧交给 VideoWidget 前应用。
-// 插件缺失 / 无 EXIF / 不在支持后缀内时返回单位变换，行为与改动前一致。
-QTransform ExifOrientationTransform(const QString& path) {
-    const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix != "jpg" && suffix != "jpeg" && suffix != "tif" && suffix != "tiff") {
-        return QTransform();
-    }
-    QImageReader reader(path);
-    switch (reader.transformation()) {
-    case QImageIOHandler::TransformationMirror:
-        return QTransform().scale(-1, 1);
-    case QImageIOHandler::TransformationFlip:
-        return QTransform().scale(1, -1);
-    case QImageIOHandler::TransformationRotate180:
-        return QTransform().rotate(180);
-    case QImageIOHandler::TransformationRotate90:
-        return QTransform().rotate(90);
-    case QImageIOHandler::TransformationRotate270:
-        return QTransform().rotate(270);
-    case QImageIOHandler::TransformationMirrorAndRotate90:
-        return QTransform().rotate(90).scale(1, -1);
-    case QImageIOHandler::TransformationFlipAndRotate90:
-        return QTransform().rotate(90).scale(-1, 1);
-    default:
-        return QTransform();
-    }
-}
 } // namespace
 
 PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
@@ -87,6 +63,10 @@ PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
     raw_seq_ = new RawImageSequence(this);
     raw_seq_->SetVideoWidget(video_widget_);
     raw_seq_->SetControlBar(control_bar_);
+    // 图片序列预览：同样要在 SetupConnections 之前就位（控制栏分派会用到它）。
+    image_seq_ = new ImageSequencePlayer(this);
+    image_seq_->SetVideoWidget(video_widget_);
+    image_seq_->SetControlBar(control_bar_);
     SetupConnections();
     // 音频可视化渲染器：自管计时器/状态，渲染目标在 SetupUI 之后注入（video_widget_ 已建好）。
     audio_vis_ = new AudioVizRenderer(this);
@@ -105,6 +85,20 @@ PlayerPanel::PlayerPanel(QWidget* parent) : QWidget(parent) {
             control_bar_->playPauseButton()->setIcon(
                 style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
         }
+    });
+    // 图片序列：状态栏文本直接转发；帧显示后由面板写叠加层的编码并刷新（与 Raw 同约定）。
+    connect(image_seq_, &ImageSequencePlayer::StatusMessage, this, &PlayerPanel::StatusMessage);
+    connect(image_seq_, &ImageSequencePlayer::FrameShown, this, [this](const QImage& frame, const QString& codec) {
+        last_overlay_codec_ = codec;
+        RefreshOverlayMediaInfo(&frame);
+    });
+    connect(image_seq_, &ImageSequencePlayer::PlaybackStateChanged, this, [this](bool playing) {
+        if (control_bar_ && control_bar_->playPauseButton()) {
+            control_bar_->playPauseButton()->setIcon(
+                style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+        }
+        last_status_text_ = playing ? tr("图片序列播放中") : tr("图片序列已暂停");
+        UpdateOverlay();
     });
 }
 
@@ -135,9 +129,37 @@ void PlayerPanel::SetupConnections() {
     // 音量 / 静音两个纯本地 handler 留在 ControlBarWidget 内部，不在此处连接。
     connect(control_bar_->playPauseButton(), &QPushButton::clicked, this, &PlayerPanel::OnPlayPause);
     connect(control_bar_->stopButton(), &QPushButton::clicked, this, &PlayerPanel::OnStop);
-    connect(control_bar_->prevFrameButton(), &QPushButton::clicked, raw_seq_, &RawImageSequence::OnPrevRawFrame);
-    connect(control_bar_->nextFrameButton(), &QPushButton::clicked, raw_seq_, &RawImageSequence::OnNextRawFrame);
+    // 上一帧/下一帧是多模态按钮：Raw 序列翻帧、静图翻同目录的上一张/下一张。
+    // 以前直接连 RawImageSequence 的槽，非 Raw 模式下点了什么也不会发生（按钮本来是
+    // 隐藏的，但一旦哪条路径忘了隐藏就成了死按钮）。改为在协调层分派，模式归属只有一处。
+    connect(control_bar_->prevFrameButton(), &QPushButton::clicked, this, [this]() {
+        if (raw_seq_->IsShowingRawImage()) {
+            raw_seq_->OnPrevRawFrame();
+        } else if (image_seq_ && image_seq_->IsShowing()) {
+            if (image_seq_->IsPlaying())
+                image_seq_->Stop();
+            image_seq_->ShowFrame(image_seq_->CurrentIndex() - 1);
+        } else {
+            StepImageFile(-1);
+        }
+    });
+    connect(control_bar_->nextFrameButton(), &QPushButton::clicked, this, [this]() {
+        if (raw_seq_->IsShowingRawImage()) {
+            raw_seq_->OnNextRawFrame();
+        } else if (image_seq_ && image_seq_->IsShowing()) {
+            if (image_seq_->IsPlaying())
+                image_seq_->Stop();
+            image_seq_->ShowFrame(image_seq_->CurrentIndex() + 1);
+        } else {
+            StepImageFile(+1);
+        }
+    });
     connect(control_bar_->mvOverlayButton(), &QPushButton::toggled, this, &PlayerPanel::OnMvOverlayToggled);
+    // 动图循环：开关状态直接交给播放引擎，EOF 处由解码线程决定是否回起点。
+    connect(control_bar_->loopButton(), &QPushButton::toggled, this, [this](bool on) {
+        if (player_)
+            player_->SetAnimatedImageLoop(on);
+    });
 
     connect(control_bar_->collapseButton(), &QPushButton::clicked, this, [this]() { SetPlayerAreaVisible(false); });
 
@@ -173,6 +195,13 @@ void PlayerPanel::SetupConnections() {
             raw_seq_->ShowRawFrame(v);
             return;
         }
+        if (image_seq_ && image_seq_->IsShowing()) {
+            // 每张都要真解一次（QPixmap 级别没有"预览帧"可跳），所以同样必须节流。
+            if (image_seq_->IsPlaying())
+                image_seq_->Stop();
+            image_seq_->ShowFrame(v);
+            return;
+        }
         if (player_)
             player_->Seek(v, model::SeekMode::NearestKeyframe);
     });
@@ -192,8 +221,27 @@ void PlayerPanel::SetupConnections() {
 void PlayerPanel::SetCurrentSource(const QString& source) {
     current_source_ = source;
     image_input_ = false;
+    is_animated_image_ = false;
     keep_finished_image_ = false;
+    last_displayed_frame_ = QImage();
     exif_transform_ = QTransform();
+    // 换源即回到"适应窗口"：上一份文件被放到 1:1 或放大看像素，下个文件不该继承。
+    if (video_widget_)
+        video_widget_->ResetZoom();
+    ClearImageFolderNav();
+    // 换源即退出"图片序列"：那是上一个目录的帧组，新源跟它没有任何关系。
+    if (image_seq_)
+        image_seq_->Reset();
+    // 换源即复位循环开关：新文件多半不是动图，留着勾选会让下一次开图莫名循环。
+    if (control_bar_) {
+        if (QPushButton* loop = control_bar_->loopButton()) {
+            QSignalBlocker blocker(loop); // 只改 UI，不要回调到播放引擎
+            loop->setChecked(false);
+            loop->setVisible(false);
+        }
+    }
+    if (player_)
+        player_->SetAnimatedImageLoop(false);
     // 换源: 清掉上一份文件的叠加层缓存与状态栏统计, 避免新文件沿用旧分辨率/编码。
     // 放在这里而不是 ResetVideoUI, 是因为后者经 queued 回调执行, 可能晚于新内容的显示。
     last_overlay_fps_.clear();
@@ -237,13 +285,20 @@ void PlayerPanel::UpdateOverlay() {
     if (!video_widget_)
         return;
 
-    const bool is_playing = (last_known_state_ == model::PlayerState::Playing);
+    // 图片序列不走播放器状态机：它的"在播"必须单独算进来，否则序列正在自动推进，
+    // 叠加层却按 Stopped 画中央播放按钮，看起来像卡住了。
+    const bool image_seq_playing = image_seq_ && image_seq_->IsShowing() && image_seq_->IsPlaying();
+    const bool is_playing = image_seq_playing || (last_known_state_ == model::PlayerState::Playing);
     ui::VideoOverlayInfo overlay;
     overlay.is_playing = is_playing;
     overlay.has_video = !audio_only_mode_ && !raw_seq_->IsShowingRawImage();
     overlay.status = last_status_text_;
     // 暂停时清掉 FPS: 统计值停在最后一帧会误导
-    overlay.fps = is_playing ? last_overlay_fps_ : QString();
+    if (image_seq_playing && image_seq_) {
+        overlay.fps = tr("%1 fps").arg(image_seq_->Fps());
+    } else {
+        overlay.fps = is_playing ? last_overlay_fps_ : QString();
+    }
     overlay.resolution = last_overlay_resolution_;
     overlay.codec = last_overlay_codec_;
     video_widget_->SetOverlayInfo(overlay);
@@ -505,7 +560,39 @@ void PlayerPanel::OnPlayPause() {
         return;
     }
 
+    if (image_seq_ && image_seq_->IsShowing()) {
+        if (image_seq_->IsPlaying()) {
+            image_seq_->Stop();
+            emit StatusMessage(tr("已暂停"), 0);
+        } else if (!image_seq_->Start()) {
+            emit StatusMessage(tr("图片序列无法播放"), 0);
+        }
+        return;
+    }
+
     const auto state = player_->GetState();
+
+    // ---- 图片重播：不重新打开文件 ----
+    // 打开时已经走过一轮探测 + 解码，播完再点播放没有理由再来一遍。
+    if (image_input_ && (state == model::PlayerState::Stopped || state == model::PlayerState::Error)) {
+        if (!is_animated_image_) {
+            // 静图：实测 image2 的 seek 回 0 读不出包，重新 OpenAsync 只是白等探测，
+            // 直接复用缓存帧 —— 内容完全相同，而且是瞬时的。
+            if (!last_displayed_frame_.isNull()) {
+                keep_finished_image_ = true;
+                video_widget_->SetFrame(last_displayed_frame_);
+                last_status_text_ = tr("图像已显示");
+                UpdateOverlay();
+                emit StatusMessage(last_status_text_, 0);
+                return;
+            }
+        } else if (player_->RestartFromStart()) {
+            // 动图：回到起点重新解码（gif/apng 的 seek 实测都能重读全部帧），
+            // 保留动画本身，也不重新打开文件。StateChanged(Playing) 会接手 UI。
+            return;
+        }
+        // 缓存缺失 / 重启失败时落回下面的"重新打开"，行为与改动前一致。
+    }
 
     // 如果处于Idle/Stopped/Error状态，先打开媒体
     if ((state == model::PlayerState::Idle || state == model::PlayerState::Stopped ||
@@ -533,8 +620,32 @@ void PlayerPanel::OnPlayerOpenFinished(bool ok) {
         return;
     }
     image_input_ = ok && player_->GetStreamInfo().is_image_input;
+    is_animated_image_ = image_input_ && player_->GetStreamInfo().is_animated_image;
+    // 每次打开都复位：循环是"这一份文件这一次看"的会话内选择，不跨文件继承。
+    last_displayed_frame_ = QImage();
+    if (player_)
+        player_->SetAnimatedImageLoop(false);
+    if (control_bar_) {
+        if (QPushButton* loop = control_bar_->loopButton()) {
+            QSignalBlocker blocker(loop);
+            loop->setChecked(false);
+            loop->setVisible(is_animated_image_);
+        }
+    }
     // 手机竖拍的 JPEG 靠 EXIF 声明方向，解码像素是横的：只影响显示，不影响分析与导出。
-    exif_transform_ = image_input_ ? ExifOrientationTransform(current_source_) : QTransform();
+    // 落一条日志：方向错了（照片躺着）时，先要能看出"到底读到了几"，而不是猜解析器有没有生效。
+    if (image_input_) {
+        const model::ImageOrientation orientation = ReadImageOrientationFromFile(current_source_);
+        exif_transform_ = OrientationToTransform(orientation);
+        if (orientation != model::ImageOrientation::None) {
+            LOG_INFO("图片方向: EXIF " + std::to_string(static_cast<int>(orientation)) + " -> " +
+                     current_source_.toStdString());
+        }
+    } else {
+        exif_transform_ = QTransform();
+    }
+    // 翻页列表只对图片有意义（视频的"上一帧/下一帧"是时间轴上的事，另有入口）。
+    RefreshImageFolderNav();
     // 打开收尾时把进度条的总量与可用性定下来：时长未知（直播流 / 估算失败的裸流）
     // 时禁用拖动并给出说明，而不是留一根拖了没反应的滑杆。
     UpdateSeekAvailability(ok ? player_->GetDuration() : 0);
@@ -548,6 +659,12 @@ void PlayerPanel::OnPlayerOpenFinished(bool ok) {
 }
 
 void PlayerPanel::ResetVideoUI() {
+    // 图片序列模式下画面归 ImageSequencePlayer 管：加载序列前那次 StopPlayback 会
+    // 把 ResetVideoUI 排进事件队列，延迟执行时首帧已经画上了 —— 这里清屏会把刚显示的
+    // 画面直接抹掉（表现为"打开图片序列后画面一片黑"）。
+    if (image_seq_ && image_seq_->IsShowing()) {
+        return;
+    }
     video_widget_->Clear();
     // 清除旧的运动矢量数据, 避免新文件打开前显示残留箭头
     video_widget_->SetMotionVectors(videoeye::model::MacroblockFrameAnalysis{});
@@ -572,6 +689,11 @@ void PlayerPanel::OnStop() {
     audio_only_mode_ = false;
     raw_seq_->Reset();
     raw_seq_->UpdateRawNavigationState();
+    // 停止 = 屏幕回到占位画面：翻页目标已经不在画面上了，按钮跟着收起来。
+    ClearImageFolderNav();
+    // 图片序列也一并退出：它的"播放"不属于播放器状态机，不主动停就会一直往下翻。
+    if (image_seq_)
+        image_seq_->Reset();
 
     // 停止播放器，会触发 OnStateChanged(Stopped) 来清理视频UI
     if (player_) {
@@ -587,6 +709,13 @@ void PlayerPanel::OnSeek(int value) {
     if (raw_seq_->IsShowingRawImage()) {
         raw_seq_->StopRawPlayback(); // 键盘/程序化定位同样打断连续播放
         raw_seq_->ShowRawFrame(value);
+        return;
+    }
+    if (image_seq_ && image_seq_->IsShowing()) {
+        // 序列模式下进度条就是帧号：定位即暂停并显示那一帧（与 Raw 序列同语义）。
+        if (image_seq_->IsPlaying())
+            image_seq_->Stop();
+        image_seq_->ShowFrame(value);
         return;
     }
     if (!player_)
@@ -625,6 +754,18 @@ void PlayerPanel::OnStepFrame(int direction) {
             raw_seq_->OnNextRawFrame();
         return;
     }
+    if (image_seq_ && image_seq_->IsShowing()) {
+        if (image_seq_->IsPlaying())
+            image_seq_->Stop();
+        image_seq_->ShowFrame(image_seq_->CurrentIndex() + direction);
+        return;
+    }
+    // 静图没有"下一帧"：Shift+←/→ 在这里翻到同目录的上一张/下一张。
+    // 动图例外 —— GIF/APNG 有真实时间轴，逐帧仍按时间戳定位（走下面的 seek）。
+    if (image_input_ && !is_animated_image_) {
+        StepImageFile(direction);
+        return;
+    }
     if (player_ == nullptr)
         return;
     // 视频模式没有独立的逐帧接口：按当前帧率折算一帧时长，再用精确帧定位。
@@ -645,6 +786,98 @@ void PlayerPanel::OnVolumeDelta(int delta_percent) {
     // 直接改滑块：ControlBarWidget::OnVolumeChanged 会同步 player_->SetVolume
     // 与静音图标，和用户拖音量条走同一条路径，不会出现两套音量状态。
     slider->setValue(std::clamp(slider->value() + delta_percent, slider->minimum(), slider->maximum()));
+}
+
+// ============================================================================
+// 图片翻页（同目录同族图片）
+// ============================================================================
+void PlayerPanel::RefreshImageFolderNav() {
+    image_folder_index_ = -1;
+    if (!image_input_ || current_source_.isEmpty()) {
+        ClearImageFolderNav();
+        return;
+    }
+
+    const QString dir = QFileInfo(current_source_).absolutePath();
+    // 同目录翻页：目录没变就复用上次的扫描结果，只在缓存里定位当前文件。
+    // 抽帧目录动辄几千上万张，每次翻页都重扫 + 排序会把"下一张"按出几百毫秒的迟滞。
+    if (!image_folder_dir_.isEmpty() && dir == image_folder_dir_ && !image_folder_files_.isEmpty()) {
+        const QString name = QFileInfo(current_source_).fileName();
+        for (int i = 0; i < image_folder_files_.size(); ++i) {
+            if (QFileInfo(image_folder_files_.at(i)).fileName().compare(name, Qt::CaseInsensitive) == 0) {
+                image_folder_index_ = i;
+                RefreshNavButtons();
+                return;
+            }
+        }
+        // 缓存里没有（文件被改名/删除）：落到下面重新扫一次。
+    }
+
+    const io::ImageFolderListing listing = io::ScanImageFolder(current_source_.toStdString());
+    if (!listing.contains_current || listing.files.empty()) {
+        // 当前文件不是可识别的图片（或目录读不了）：翻页按钮必须隐藏。
+        ClearImageFolderNav();
+        return;
+    }
+    image_folder_files_.clear();
+    image_folder_files_.reserve(static_cast<int>(listing.files.size()));
+    for (const std::string& path : listing.files) {
+        image_folder_files_.append(QString::fromStdString(path));
+    }
+    image_folder_dir_ = dir;
+    image_folder_index_ = static_cast<int>(listing.index);
+    // 落一条日志：翻页按钮没出现时，先要能看出"扫到了几张、当前算第几张"，
+    // 而不是猜到底是扫描失败还是按钮被判成不可用。
+    LOG_INFO("图片翻页: " + std::to_string(image_folder_index_ + 1) + "/" + std::to_string(image_folder_files_.size()) +
+             " -> " + current_source_.toStdString());
+    RefreshNavButtons();
+}
+
+void PlayerPanel::ClearImageFolderNav() {
+    image_folder_files_.clear();
+    image_folder_index_ = -1;
+    image_folder_dir_.clear();
+    RefreshNavButtons();
+}
+
+void PlayerPanel::StepImageFile(int direction) {
+    if (direction == 0 || image_folder_index_ < 0) {
+        return;
+    }
+    const int target = image_folder_index_ + direction;
+    if (target < 0 || target >= image_folder_files_.size()) {
+        return;
+    }
+    emit ImageNavigateRequested(image_folder_files_.at(target));
+}
+
+void PlayerPanel::RefreshNavButtons() {
+    QPushButton* prev = control_bar_ ? control_bar_->prevFrameButton() : nullptr;
+    QPushButton* next = control_bar_ ? control_bar_->nextFrameButton() : nullptr;
+    if (prev == nullptr || next == nullptr) {
+        return;
+    }
+    // Raw 序列自己维护这两个按钮（它的帧号边界与 total 一致，是另一套语义）：
+    // 两种模式互斥（SetRawImageMode(true) 会清掉图片翻页），所以这里直接让位。
+    if (raw_seq_->IsShowingRawImage()) {
+        return;
+    }
+    // 图片序列同样自管（帧号边界是目录里的图片数）。
+    if (image_seq_ && image_seq_->IsShowing()) {
+        return;
+    }
+    const bool nav = image_folder_index_ >= 0 && !image_folder_files_.isEmpty();
+    prev->setVisible(nav);
+    next->setVisible(nav);
+    prev->setEnabled(nav && image_folder_index_ > 0);
+    next->setEnabled(nav && image_folder_index_ + 1 < image_folder_files_.size());
+    if (nav) {
+        // 位置写进 tooltip：控制栏宽度紧张，塞不下"3/12"这种常驻文本，
+        // 但用户需要知道"还有几张、我在第几张"。
+        const QString where = tr("（%1/%2）").arg(image_folder_index_ + 1).arg(image_folder_files_.size());
+        prev->setToolTip(tr("上一张") + where);
+        next->setToolTip(tr("下一张") + where);
+    }
 }
 
 // 音量 / 静音 handler 已迁移至 ControlBarWidget::OnVolumeChanged / OnMuteClicked，
@@ -672,7 +905,9 @@ void PlayerPanel::OnStateChanged(model::PlayerState state) {
         break;
     case model::PlayerState::Stopped:
         if (keep_finished_image_) {
-            state_text = tr("预览完成");
+            // 图片收尾不叫"预览完成"：静图没有"播放"这回事（就是"已显示"），
+            // 动图是"播完了"。两者都保留最后画面、不清屏。
+            state_text = is_animated_image_ ? tr("动图已播放") : tr("图像已显示");
         } else {
             state_text = tr("已停止");
             QMetaObject::invokeMethod(this, [this]() { ResetVideoUI(); }, Qt::QueuedConnection);
@@ -727,6 +962,11 @@ void PlayerPanel::OnFrameReady(const QImage& frame) {
         displayed = frame.transformed(exif_transform_, Qt::SmoothTransformation);
     }
     video_widget_->SetFrame(displayed);
+    // 图片输入缓存最后一帧：静图重播直接复用（image2 的 seek 回 0 后读不出包，
+    // 重新 OpenAsync 又要整轮探测），动图则在 EOF 后作为"停在最后一帧"的兜底。
+    // 只对图片存 —— 视频每帧留一张 4K QImage 会白吃几十 MB，且没有任何用处。
+    if (image_input_)
+        last_displayed_frame_ = displayed;
 
     // 顺带刷新叠加层的分辨率/编码 (首帧或分辨率变化时才真正下发)
     RefreshOverlayMediaInfo(&displayed);
@@ -914,8 +1154,34 @@ bool PlayerPanel::LoadRawImageFile(const QString& filename) {
     return raw_seq_->LoadRawImageFile(filename);
 }
 
+bool PlayerPanel::LoadImageSequence(const QString& folder, int fps) {
+    if (!image_seq_) {
+        return false;
+    }
+    // 序列预览与 Raw 序列互斥：Raw 的"上一帧/下一帧"是同一文件的像素帧号。
+    raw_seq_->SetRawImageMode(false);
+    ClearImageFolderNav();
+    // 状态文本先写：Load 内部显示首帧时会用到叠加层的状态。
+    last_status_text_ = tr("图片序列");
+    if (!image_seq_->Load(folder, fps)) {
+        UpdateOverlay();
+        return false;
+    }
+    last_known_state_ = model::PlayerState::Stopped;
+    UpdateOverlay();
+    return true;
+}
+
+bool PlayerPanel::IsShowingImageSequence() const {
+    return image_seq_ != nullptr && image_seq_->IsShowing();
+}
+
 void PlayerPanel::SetRawImageMode(bool on) {
     raw_seq_->SetRawImageMode(on);
+    if (on) {
+        // Raw 序列与图片翻页互斥：Raw 的"上一帧/下一帧"是帧号，不是文件。
+        ClearImageFolderNav();
+    }
 }
 
 bool PlayerPanel::IsShowingRawImage() const {

@@ -1,6 +1,7 @@
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h"
 #include "core/analysis/detail/AnalysisTextUtil.h"      // Fixed / StrCat
 #include "core/analysis/orchestration/FormatDetector.h" // 清单入口识别（扩展名 + 内容嗅探）
+#include "core/domain/model/ImageDemuxer.h"             // 静图判定（不写占位帧率）
 #include "core/ffmpeg_io/AvOptions.h"                   // 共享 FFmpeg 输入选项构造
 #include "core/ffmpeg_io/FfmpegInterrupt.h"             // 共享 FFmpeg 中断回调
 #include "core/media/streaming/ManifestText.h"          // videoeye::manifest::FileSizeOf
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string_view>
 #include <vector>
 
 extern "C" {
@@ -24,6 +26,17 @@ extern "C" {
 namespace videoeye {
 
 namespace {
+
+// 从路径或 URL 里取扩展名（不含点，保留原大小写）。目录名里带点（/a.b/x）不能误取：
+// 点在最后一个分隔符之前时视为"没有扩展名"。
+std::string_view ExtensionOfPath(std::string_view path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash)) {
+        return {};
+    }
+    return path.substr(dot + 1);
+}
 
 // 把秒数格式化成 "1 h 23 min"、"4 min 5 s"、"678 ms" 这种短串
 std::string FormatDuration(double seconds) {
@@ -318,6 +331,13 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt, con
     std::string out;
     const std::string kIndent = "  ";
 
+    // 静图不写帧率：avg_frame_rate 是解复用器填的占位值（实测 jpg/png 恒 25/1，
+    // 是 image2 的默认 -framerate 25），写进媒体信息框等于把占位值当成事实。
+    // 判定与首页摘要共用 ShouldReportFrameRate，两处口径必须一致。
+    const std::string_view demuxer_name =
+        (fmt->iformat && fmt->iformat->name) ? fmt->iformat->name : std::string_view();
+    const bool image_input = model::IsImageInput(demuxer_name, ExtensionOfPath(filePath));
+
     // ===== General =====
     out += "General\n";
     out += kIndent + "Complete name              : " + filePath + '\n';
@@ -393,10 +413,13 @@ std::string MediaInfoAnalyzer::FormatFromContext(const AVFormatContext* fmt, con
                               static_cast<int64_t>(par->height) * dar.den, INT_MAX);
                     out += kIndent + "Display aspect ratio       : " + AspectRatioToString(dar) + '\n';
                 }
-                out += kIndent + "Frame rate                 : " + RationalToString(st->avg_frame_rate) + " fps" + '\n';
-                if (st->r_frame_rate.num > 0 && av_cmp_q(st->r_frame_rate, st->avg_frame_rate) != 0) {
-                    out +=
-                        kIndent + "Real frame rate            : " + RationalToString(st->r_frame_rate) + " fps" + '\n';
+                if (model::ShouldReportFrameRate(image_input, demuxer_name)) {
+                    out += kIndent + "Frame rate                 : " + RationalToString(st->avg_frame_rate) + " fps" +
+                           '\n';
+                    if (st->r_frame_rate.num > 0 && av_cmp_q(st->r_frame_rate, st->avg_frame_rate) != 0) {
+                        out += kIndent + "Real frame rate            : " + RationalToString(st->r_frame_rate) + " fps" +
+                               '\n';
+                    }
                 }
                 if (st->nb_frames > 0) {
                     out += kIndent + "Frame count                : " + std::to_string(st->nb_frames) + '\n';

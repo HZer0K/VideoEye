@@ -10,6 +10,7 @@
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <QTimer>
+#include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -25,6 +26,14 @@ constexpr int kCenterPlayDodge = 56;
 // 叠加层一帧最多画多少条矢量。大分辨率一帧可能有几千条分区，10Hz 全量重绘会拖慢
 // 每帧绘制；按记录顺序等距抽样，空间分布基本保持不变。
 constexpr std::size_t kMaxOverlayVectors = 1500;
+
+// 缩放倍率范围（相对"适应窗口"）。下限放宽到 1.0 以下是为了 1:1 查看小图：
+// 一张 640x480 的图在 1920 宽的控件里，"适应窗口"会把它放大 4 倍，而像素级
+// 核对恰恰需要不放大 —— 那时 1:1 的倍率是 0.25。上限按"最多放大 32 倍"封顶，
+// 再大也看不出更多信息，只会让绘制区域失控。
+constexpr double kZoomMin = 0.05;
+constexpr double kZoomMax = 32.0;
+constexpr double kZoomStep = 1.25;
 
 } // namespace
 
@@ -64,6 +73,11 @@ void VideoOverlayWidget::SetMvOverlayMode(MvOverlayMode mode) {
 }
 
 QRectF VideoOverlayWidget::ComputeVideoDisplayRect() const {
+    // 画面上有缩放/平移时（图片查看、像素级核对），几何由 VideoWidget 下发：
+    // 叠加层自己按 KeepAspectRatio 反算只会得到"未缩放"的矩形，箭头会整体跑偏。
+    if (display_rect_override_valid_) {
+        return display_rect_override_;
+    }
     const int fw = mv_analysis_.frame_width;
     const int fh = mv_analysis_.frame_height;
     if (fw <= 0 || fh <= 0)
@@ -75,6 +89,19 @@ QRectF VideoOverlayWidget::ComputeVideoDisplayRect() const {
     qreal x = (width() - scaled.width()) / 2.0;
     qreal y = (height() - scaled.height()) / 2.0;
     return QRectF(x, y, scaled.width(), scaled.height());
+}
+
+void VideoOverlayWidget::SetDisplayRectOverride(bool valid, const QRectF& rect) {
+    if (display_rect_override_valid_ == valid && display_rect_override_ == rect) {
+        return;
+    }
+    display_rect_override_valid_ = valid;
+    display_rect_override_ = rect;
+    update();
+}
+
+void VideoOverlayWidget::ClearDisplayRectOverride() {
+    SetDisplayRectOverride(false, QRectF());
 }
 
 void VideoOverlayWidget::paintEvent(QPaintEvent* /*event*/) {
@@ -391,7 +418,10 @@ VideoWidget::VideoWidget(QWidget* parent) : QWidget(parent) {
     // 播放器快捷键（空格/方向键/M）只在画面获得焦点时生效，避免抢分析表格的按键。
     setFocusPolicy(Qt::StrongFocus);
     setAccessibleName(tr("视频画面"));
-    setAccessibleDescription(tr("空格 播放/暂停；←/→ 快退/快进 5 秒；Shift+←/→ 逐帧；↑/↓ 音量；M 静音"));
+    setAccessibleDescription(tr("空格 播放/暂停；←/→ 快退/快进 5 秒；Shift+←/→ 逐帧；↑/↓ 音量；M 静音；"
+                                "滚轮 缩放；拖动 平移；双击 在适应窗口与 1:1 之间切换；Ctrl+0 适应窗口；Ctrl+1 1:1"));
+    // 鼠标跟踪只为"悬停时显示可拖动光标"，按下/拖动不依赖它。
+    setMouseTracking(true);
 
     // 创建叠加层 (子 widget, 透明背景)
     overlay_ = new VideoOverlayWidget(this);
@@ -405,10 +435,114 @@ VideoWidget::~VideoWidget() = default;
 void VideoWidget::mousePressEvent(QMouseEvent* event) {
     // 点一下画面就把焦点收过来，随后空格/方向键才作用于播放器。
     setFocus(Qt::MouseFocusReason);
+    // 播放中左键拖动的语义仍是"点画面收回焦点"；只有画面确实被放大到超出控件
+    // （还有看不到的部分）时才接管成平移，否则拖了也只会顶到边上、像卡住了。
+    if (event->button() == Qt::LeftButton && !frame_.isNull() && CanPan()) {
+        panning_ = true;
+        pan_anchor_ = event->pos();
+        UpdateCursorShape();
+        event->accept();
+        return;
+    }
     QWidget::mousePressEvent(event);
 }
 
+void VideoWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (!panning_) {
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+    const QPoint delta = event->pos() - pan_anchor_;
+    pan_anchor_ = event->pos();
+    if (!delta.isNull()) {
+        pan_ += QPointF(delta);
+        ClampPan();
+        scaled_valid_ = false;
+        SyncOverlayDisplayRect();
+        update();
+    }
+    event->accept();
+}
+
+void VideoWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (panning_ && event->button() == Qt::LeftButton) {
+        panning_ = false;
+        UpdateCursorShape();
+        event->accept();
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
+void VideoWidget::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && !frame_.isNull()) {
+        // 双击在"适应窗口"与"1:1 像素"之间来回：这是看图时最常用的两个视角，
+        // 比让用户自己去滚轮凑倍率快得多。
+        if (IsFitMode()) {
+            SetActualSize();
+        } else {
+            ResetZoom();
+        }
+        event->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
+void VideoWidget::wheelEvent(QWheelEvent* event) {
+    const int delta = event->angleDelta().y();
+    if (frame_.isNull() || delta == 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    // 以光标为锚点缩放：指向哪个像素，缩放后它还应该停在光标下。否则放大后画面
+    // 会从中心"漂走"，要连点十几次滚轮才能找回刚才看的那块。
+    const QRectF before = DisplayRect();
+    const QPointF pos = event->position();
+    const double nx = before.width() > 0 ? (pos.x() - before.left()) / before.width() : 0.5;
+    const double ny = before.height() > 0 ? (pos.y() - before.top()) / before.height() : 0.5;
+
+    const double next_zoom = std::clamp(zoom_ * (delta > 0 ? kZoomStep : 1.0 / kZoomStep), kZoomMin, kZoomMax);
+    if (qFuzzyCompare(next_zoom, zoom_)) {
+        event->accept();
+        return;
+    }
+    zoom_ = next_zoom;
+    // 反解平移：让 (nx, ny) 这个归一化画面点仍落在 pos 上。
+    const QRectF unscaled = DisplayRect(); // 此时 pan_ 还是旧值，先拿尺寸
+    const QPointF center(width() / 2.0, height() / 2.0);
+    pan_ = pos - center + QPointF(unscaled.width(), unscaled.height()) / 2.0 -
+           QPointF(nx * unscaled.width(), ny * unscaled.height());
+    ClampPan();
+    scaled_valid_ = false;
+    UpdateCursorShape();
+    SyncOverlayDisplayRect();
+    update();
+    emit ZoomChanged(zoom_);
+    event->accept();
+}
+
 void VideoWidget::keyPressEvent(QKeyEvent* event) {
+    // 缩放快捷键先处理：Ctrl+0/1 与 Ctrl+=/- 都是常见看图约定，且不与播放控制冲突。
+    if (event->modifiers() & Qt::ControlModifier) {
+        switch (event->key()) {
+        case Qt::Key_0:
+            ResetZoom();
+            return;
+        case Qt::Key_1:
+            SetActualSize();
+            return;
+        case Qt::Key_Plus:
+        case Qt::Key_Equal:
+            ZoomIn();
+            return;
+        case Qt::Key_Minus:
+            ZoomOut();
+            return;
+        default:
+            break;
+        }
+    }
     switch (event->key()) {
     case Qt::Key_Space:
         emit TogglePlayRequested();
@@ -444,8 +578,17 @@ void VideoWidget::keyPressEvent(QKeyEvent* event) {
 }
 
 void VideoWidget::SetFrame(const QImage& image) {
+    const bool size_changed = frame_.size() != image.size();
     frame_ = image;
     scaled_valid_ = false;
+    if (size_changed) {
+        // 换了一幅不同尺寸的画面（换文件 / 序列翻页）：旧平移量是按旧尺寸算的，
+        // 不钳制的话画面会以"边缘露底"的姿态出现。缩放倍率保留 —— 用户刚调到
+        // 1:1 看像素，翻到下一张还想按同样倍率看。
+        ClampPan();
+        UpdateCursorShape();
+    }
+    SyncOverlayDisplayRect();
     update();
 }
 
@@ -454,6 +597,15 @@ void VideoWidget::Clear() {
     scaled_frame_ = QImage();
     scaled_rect_ = QRect();
     scaled_valid_ = false;
+    // 清屏即退出"看图"状态：倍率/平移留着没有意义，而且下次打开会以放大状态
+    // 出现，用户会以为画面被裁了。
+    zoom_ = 1.0;
+    pan_ = QPointF();
+    panning_ = false;
+    UpdateCursorShape();
+    if (overlay_)
+        overlay_->ClearDisplayRectOverride();
+    last_synced_display_rect_ = QRectF();
     update();
 }
 
@@ -477,11 +629,117 @@ void VideoWidget::SetMvOverlayMode(MvOverlayMode mode) {
         overlay_->SetMvOverlayMode(mode);
 }
 
+// ============================================================================
+// 缩放 / 平移
+// ============================================================================
+QRectF VideoWidget::DisplayRect() const {
+    if (frame_.isNull() || width() <= 0 || height() <= 0) {
+        return QRectF();
+    }
+    const double fit =
+        std::min(static_cast<double>(width()) / frame_.width(), static_cast<double>(height()) / frame_.height());
+    const double scale = fit * zoom_;
+    const QSizeF size(frame_.width() * scale, frame_.height() * scale);
+    const QPointF center(width() / 2.0, height() / 2.0);
+    return QRectF(center + pan_ - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+}
+
+bool VideoWidget::IsFitMode() const {
+    return qFuzzyCompare(zoom_, 1.0) && pan_.isNull();
+}
+
+bool VideoWidget::CanPan() const {
+    const QRectF r = DisplayRect();
+    return r.width() > width() + 0.5 || r.height() > height() + 0.5;
+}
+
+void VideoWidget::SetZoom(double factor) {
+    ApplyZoom(std::clamp(factor, kZoomMin, kZoomMax));
+}
+
+void VideoWidget::ZoomIn() {
+    ApplyZoom(std::clamp(zoom_ * kZoomStep, kZoomMin, kZoomMax));
+}
+
+void VideoWidget::ZoomOut() {
+    ApplyZoom(std::clamp(zoom_ / kZoomStep, kZoomMin, kZoomMax));
+}
+
+void VideoWidget::SetActualSize() {
+    if (frame_.isNull() || width() <= 0 || height() <= 0) {
+        return;
+    }
+    // 一个源像素对一个屏幕像素：适应倍率是 fit，"1:1" 就是 1/fit 倍。
+    const double fit =
+        std::min(static_cast<double>(width()) / frame_.width(), static_cast<double>(height()) / frame_.height());
+    if (fit <= 0.0) {
+        return;
+    }
+    pan_ = QPointF();
+    ApplyZoom(std::clamp(1.0 / fit, kZoomMin, kZoomMax));
+}
+
+void VideoWidget::ResetZoom() {
+    if (IsFitMode()) {
+        return; // 已经是适应窗口且没平移：不必让整帧重新缩放一次
+    }
+    pan_ = QPointF();
+    ApplyZoom(1.0);
+}
+
+void VideoWidget::ApplyZoom(double factor) {
+    // 不做"值没变就早退"的判断：调用方（ResetZoom / SetActualSize）可能已经改过 pan_，
+    // 早退会把"平移归零"这件事一起吞掉，画面停在旧偏移上直到下一次重绘。
+    zoom_ = factor;
+    // 缩回"整幅可见"时平移量必须归零，否则画面会被旧的偏移推到一边（看起来像裁切）。
+    ClampPan();
+    scaled_valid_ = false;
+    UpdateCursorShape();
+    SyncOverlayDisplayRect();
+    update();
+    emit ZoomChanged(zoom_);
+}
+
+void VideoWidget::ClampPan() {
+    if (frame_.isNull() || width() <= 0 || height() <= 0) {
+        pan_ = QPointF();
+        return;
+    }
+    const QRectF r = DisplayRect();
+    const double max_dx = std::max(0.0, (r.width() - width()) / 2.0);
+    const double max_dy = std::max(0.0, (r.height() - height()) / 2.0);
+    pan_.setX(std::clamp(pan_.x(), -max_dx, max_dx));
+    pan_.setY(std::clamp(pan_.y(), -max_dy, max_dy));
+}
+
+void VideoWidget::UpdateCursorShape() {
+    if (panning_) {
+        setCursor(Qt::ClosedHandCursor);
+    } else if (CanPan()) {
+        setCursor(Qt::OpenHandCursor);
+    } else {
+        unsetCursor();
+    }
+}
+
+void VideoWidget::SyncOverlayDisplayRect() {
+    if (!overlay_ || frame_.isNull()) {
+        return;
+    }
+    const QRectF rect = DisplayRect();
+    if (rect == last_synced_display_rect_) {
+        return;
+    }
+    last_synced_display_rect_ = rect;
+    // 叠加层只在"有覆盖说明"时才需要被推矩形；适应窗口模式下它的默认推算与这里
+    // 的结果完全一致，仍然下发（浮点误差内一致，不会额外重绘）。
+    overlay_->SetDisplayRectOverride(true, rect);
+}
+
 void VideoWidget::paintEvent(QPaintEvent* event) {
     QWidget::paintEvent(event);
 
     QPainter painter(this);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     if (frame_.isNull()) {
         painter.fillRect(rect(), QColor("#01060E"));
@@ -497,12 +755,38 @@ void VideoWidget::paintEvent(QPaintEvent* event) {
         return;
     }
 
-    // 缩放并居中显示（缩放结果缓存在 scaled_frame_ 里，重复重绘不再重算）
-    EnsureScaledFrame();
     painter.fillRect(rect(), QColor("#01060E"));
-    if (!scaled_frame_.isNull()) {
-        painter.drawImage(scaled_rect_.topLeft(), scaled_frame_);
+
+    if (IsFitMode()) {
+        // 适应窗口：缩放结果缓存在 scaled_frame_ 里，重复重绘不再重算
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        EnsureScaledFrame();
+        if (!scaled_frame_.isNull()) {
+            painter.drawImage(scaled_rect_.topLeft(), scaled_frame_);
+        }
+        return;
     }
+
+    // 缩放/平移：只把真正落在控件里的那一块源像素放大到控件上。
+    // 不先渲染整幅大图再裁 —— 32 倍的 4K 画面是几十 GB 的中间位图，必然 OOM。
+    const QRectF target = DisplayRect();
+    const QRectF visible = target.intersected(QRectF(rect()));
+    if (visible.isEmpty() || target.width() <= 0 || target.height() <= 0) {
+        return;
+    }
+    const double sx = frame_.width() / target.width();
+    const double sy = frame_.height() / target.height();
+    QRectF source((visible.left() - target.left()) * sx, (visible.top() - target.top()) * sy, visible.width() * sx,
+                  visible.height() * sy);
+    // 取整误差可能让源矩形比画面多出零点几个像素，Qt 会补浅色边；钳一下。
+    source = source.intersected(QRectF(0, 0, frame_.width(), frame_.height()));
+    if (source.isEmpty()) {
+        return;
+    }
+    // 放大时用最近邻：像素级核对要看到"这一个像素"，插值会把边界糊掉。
+    // 缩小时仍走平滑，否则缩小后的画面全是锯齿。
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, sx > 1.0 || sy > 1.0);
+    painter.drawImage(visible, frame_, source);
 }
 
 void VideoWidget::EnsureScaledFrame() {
@@ -531,6 +815,11 @@ void VideoWidget::resizeEvent(QResizeEvent* event) {
     scaled_valid_ = false;
     if (overlay_)
         overlay_->setGeometry(0, 0, width(), height());
+    // 控件尺寸变了，"适应"的基准也变了：平移量按新的可见范围重新钳制，
+    // 否则从大窗口缩小后画面会被推出边界，露出一片背景色。
+    ClampPan();
+    UpdateCursorShape();
+    SyncOverlayDisplayRect();
 }
 
 void VideoWidget::showEvent(QShowEvent* event) {

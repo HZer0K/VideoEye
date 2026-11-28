@@ -64,6 +64,10 @@ public:
     QPushButton* collapseButton() const {
         return collapse_player_button_;
     }
+    // 动图循环开关：默认隐藏，只有打开动图（GIF/APNG）时才由 PlayerPanel 显示。
+    QPushButton* loopButton() const {
+        return loop_button_;
+    }
     QSlider* seekSlider() const {
         return seek_slider_;
     }
@@ -97,6 +101,7 @@ private:
     QSlider* volume_slider_ = nullptr;
     QLabel* timecode_label_ = nullptr;
     QPushButton* mv_overlay_button_ = nullptr;
+    QPushButton* loop_button_ = nullptr;
     QPushButton* collapse_player_button_ = nullptr;
     QSlider* seek_slider_ = nullptr;
     QLabel* time_label_ = nullptr;

@@ -143,6 +143,23 @@ public:
     void Stop(bool notify_state_change = true);
     void Seek(int position_ms, model::SeekMode mode);
 
+    // 从起点重新播放（复用已打开的 demux 上下文，不重新探测、不重新打开文件）。
+    // 与 Seek(0) 的差别：不做"有没有时长/能不能定位"的检查 —— 动图的容器时长
+    // 常常是 NOPTS（实测 APNG），但"回到起点"对任何可解复用的流都成立。
+    // 返回 false 表示当前没有已打开的媒体。
+    bool RestartFromStart();
+
+    // 动图循环：EOF 排空后回到起点继续，不宣布"播放完成"。
+    // 只对**动图**（gif / apng）生效，静图请求也无效 —— 单帧图片循环等于反复解码
+    // 同一帧，纯烧 CPU 且画面完全没变化。判定放在解码线程里按真实解复用器做，
+    // 不信任调用方传进来的"这是动图"。
+    void SetAnimatedImageLoop(bool enable) {
+        image_loop_.store(enable, std::memory_order_relaxed);
+    }
+    bool animated_image_loop() const {
+        return image_loop_.load(std::memory_order_relaxed);
+    }
+
     // 暂停中请求用"解码器缓存的最后一帧"补一次分析（见 Hooks::on_refresh_frame）。
     // 只负责唤醒解码线程，分析语义仍由 hook 决定；播放中调用无意义（帧本来就在流动）。
     void RequestFrameRefresh();
@@ -210,6 +227,8 @@ private:
     std::atomic<double> drop_until_sec_{-1.0}; // 精确帧: 丢弃此秒数之前的帧; <0 表示不丢弃
     std::atomic<bool> drag_seeking_{false};
     std::atomic<bool> rendering_suppressed_{false};
+    // 动图循环开关（见 SetAnimatedImageLoop）；解码线程在 EOF 处读取
+    std::atomic<bool> image_loop_{false};
     double last_video_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
     double last_audio_sync_ts_ = std::numeric_limits<double>::quiet_NaN();
 

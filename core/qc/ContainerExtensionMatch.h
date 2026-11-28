@@ -123,6 +123,9 @@ inline const std::multimap<std::string, std::string>& ExtensionAliasMap() {
         {"pbm", "pbm_pipe"},
         // AVIF 是 ISOBMFF 里的单帧图片，解复用器是 mov 家族。
         {"avif", "mov"},
+        // HEIC / HEIF 同样落在 mov 家族（实测 iformat 名为 "mov,mp4,m4a,3gp,3g2,mj2"）。
+        {"heic", "mov"},
+        {"heif", "mov"},
         // --- 流媒体清单：container_format 由 StreamingManifestScan 直接写 "hls" / "dash" ---
         {"m3u8", "hls"},
         {"m3u", "hls"},

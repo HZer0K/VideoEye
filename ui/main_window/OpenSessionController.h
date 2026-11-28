@@ -68,6 +68,13 @@ public:
     // 继续与否。异步路径（通用媒体 / 裸 PCM）已受理即返回 true，最终成败走 OpenFinished。
     bool Open(const QString& source, bool autoplay);
 
+    // 打开一个"图片序列"（目录下的图片按帧率播放）。
+    //
+    // 与 Open() 并列而不是它的一个分支：这里没有"源文件"可登记（current_media_url
+    // 会清空，导出入口因此查不到当前文件），分析面板/FFmpeg 页的"当前文件"也要
+    // 一起清掉 —— 图片序列只做预览，不产生可分析的媒体。处置方式与裸图像预览一致。
+    bool OpenImageSequence(const QString& folder, int fps);
+
     // 当前登记的媒体源（导出入口的「当前文件」查询读它）。
     // 裸图像模式下为空：那一类没有可导出的媒体流。
     const QString& current_media_url() const {

@@ -7,6 +7,7 @@
 #include <QSlider>
 #include <QSplitter>
 #include <QString>
+#include <QStringList>
 #include <QTransform>
 #include <QVector>
 #include <QWidget>
@@ -27,9 +28,10 @@
 namespace videoeye {
 namespace ui {
 
-class ControlBarWidget; // 前向声明：控制栏独立组件 (见 ui/player/ControlBarWidget.{h,cpp})
-class AudioVizRenderer; // 前向声明：音频可视化渲染器 (见 ui/player/AudioVizRenderer.{h,cpp})
-class RawImageSequence; // 前向声明：Raw 图像序列 (见 ui/player/RawImageSequence.{h,cpp})
+class ControlBarWidget;    // 前向声明：控制栏独立组件 (见 ui/player/ControlBarWidget.{h,cpp})
+class AudioVizRenderer;    // 前向声明：音频可视化渲染器 (见 ui/player/AudioVizRenderer.{h,cpp})
+class RawImageSequence;    // 前向声明：Raw 图像序列 (见 ui/player/RawImageSequence.{h,cpp})
+class ImageSequencePlayer; // 前向声明：图片序列预览 (见 ui/player/ImageSequencePlayer.{h,cpp})
 
 // 播放区模块 (视频显示 + 控制栏 + 音频可视化 + Raw 序列)。
 //
@@ -93,8 +95,16 @@ public:
     // 按总时长设置进度条范围与可拖动状态：duration<=0（未知）时禁用并给出提示。
     void UpdateSeekAvailability(int duration_ms);
     bool LoadRawImageFile(const QString& filename);
-    void SetRawImageMode(bool on);          // 打开 raw/pcm/媒体时同步模式
-    bool IsShowingRawImage() const;         // 委托 RawImageSequence
+    void SetRawImageMode(bool on);  // 打开 raw/pcm/媒体时同步模式
+    bool IsShowingRawImage() const; // 委托 RawImageSequence
+    // === 图片序列预览 ===
+    // 把 folder 下的图片按自然序当成一组帧（fps 默认 25）。返回 false 表示没加载
+    // （目录空 / 只有 1 张 / Qt 解不了这个格式），原因已经用 StatusMessage 报出。
+    //
+    // ⚠️ 这条路径**没有**可分析的媒体：调用方必须先清空分析面板/首页的"当前文件"
+    //    （与裸图像预览同约定，见 OpenSessionController::OpenImageSequence）。
+    bool LoadImageSequence(const QString& folder, int fps = 25);
+    bool IsShowingImageSequence() const;
     void SetMvOverlayEnabled(bool enabled); // 宏块分析关闭时联动取消勾选
     // 当前媒体源: 停止后再次点播放需要重新 Open, 由 MainWindow 在 OpenMedia 时同步。
     // 同时负责换源时清掉上一份文件的叠加层缓存与状态栏统计。
@@ -119,6 +129,12 @@ signals:
     // 不用 StatusMessage 是因为后者走 showMessage 会被临时提示冲掉, 而统计需要常驻。
     // 传空串表示清空 (停止/换源)。
     void StreamStatsDisplayReady(const QString& text);
+    // 图片翻页：请求打开同目录的上一张/下一张（空路径不会发出）。
+    //
+    // 播放模块**不自己换源**：换一张图要连带把分析面板、首页摘要、FFmpeg 页的
+    // 「当前文件」一起换掉，那条链只有 OpenSessionController 有。这里只把"用户想看
+    // 哪一张"翻译成路径，真打开走主窗口的统一入口。
+    void ImageNavigateRequested(const QString& path);
 
 public slots:
     void OnMacroblockInfoForOverlay(const model::MacroblockFrameAnalysis& analysis);
@@ -176,6 +192,15 @@ private:
     void RefreshTimecodeFps();
     static bool ParseFrameRateText(const std::string& text, double& fps_out);
 
+    // === 图片翻页（同目录同族图片的上一张/下一张）===
+    // 打开收尾时刷新：非图片输入 / 当前文件不在列表里时清空（翻页按钮随即隐藏）。
+    void RefreshImageFolderNav();
+    void ClearImageFolderNav();
+    // 按偏移发布翻页请求（越界不动）。direction = -1 上一张, +1 下一张。
+    void StepImageFile(int direction);
+    // 上一帧/下一帧按钮的可见与可用状态：Raw 序列自己维护，其余模式由这里统一决定。
+    void RefreshNavButtons();
+
     // === 非拥有依赖 ===
     player::MediaPlayer* player_ = nullptr;
     QSplitter* splitter_ = nullptr; // 非拥有: 由 MainWindow 创建的 content_splitter_
@@ -204,10 +229,25 @@ private:
     // 模式标志
     bool audio_only_mode_ = false;
     bool image_input_ = false;
+    // 动图（GIF/APNG）：有真实时间轴，可循环、重播需重新解码。
+    // 静图只有一帧 —— 重播直接复用下面缓存的帧，不重新打开文件。
+    bool is_animated_image_ = false;
     bool keep_finished_image_ = false;
     bool mv_overlay_enabled_ = false;
+    // 最后显示出去的那一帧（仅图片输入时保存）。
+    // 静图重播走它：实测 image2 的 seek 回 0 后读不出包，重新 OpenAsync 又要整轮探测，
+    // 缓存这一帧是唯一既准确又便宜的"再显示一次"。
+    QImage last_displayed_frame_;
     // 静图的 EXIF 显示方向（解码像素不旋转，只在交给 VideoWidget 前应用）。
     QTransform exif_transform_;
+
+    // 当前图片所在目录里的同族图片（自然序，含当前文件）。
+    // 只在"打开了单张图片"时非空；video/raw 模式下恒为空 —— 翻页按钮的可用性由它决定。
+    QStringList image_folder_files_;
+    int image_folder_index_ = -1;
+    // 上次扫描的目录。翻页时目录没变就只在缓存里定位，不必重扫整个目录
+    // （一个几万帧的抽帧目录，每次翻页都重扫并排序会明显迟滞）。
+    QString image_folder_dir_;
 
     // 叠加层缓存
     QString last_overlay_fps_;
@@ -220,6 +260,8 @@ private:
     AudioVizRenderer* audio_vis_ = nullptr;
     // Raw 图像序列：加载与逐帧浏览逻辑已抽到 RawImageSequence（Panel 仅做委托 + overlay 收口）。
     RawImageSequence* raw_seq_ = nullptr;
+    // 图片序列预览：一目录的成品图片按帧率播放（见 ui/player/ImageSequencePlayer）。
+    ImageSequencePlayer* image_seq_ = nullptr;
 
     // 显隐状态
     QList<int> saved_splitter_sizes_;

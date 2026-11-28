@@ -35,6 +35,7 @@ MenuBarActions BuildMenuBar(QMenuBar* bar, const MenuBarDeps& deps) {
     QMenu* file_menu = bar->addMenu(QObject::tr("文件"));
     file_menu->addAction(QObject::tr("打开本地文件"), QKeySequence::Open, Guard(deps.open_file));
     file_menu->addAction(QObject::tr("打开URL"), QKeySequence(QStringLiteral("Ctrl+U")), Guard(deps.open_url));
+    file_menu->addAction(QObject::tr("打开图片序列..."), Guard(deps.open_image_sequence));
     // 导出 子菜单
     QMenu* export_menu = file_menu->addMenu(QObject::tr("导出"));
     actions.export_frames = export_menu->addAction(QObject::tr("导出视频帧..."), Guard(deps.export_video_frames));

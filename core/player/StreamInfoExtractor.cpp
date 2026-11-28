@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <string_view>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -53,7 +54,7 @@ std::string FormatFrameRate(double fps) {
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
     oss.precision(3);
-    oss << fps << " FPS";
+    oss << fps << " fps";
     return oss.str();
 }
 
@@ -447,6 +448,9 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
             // AVIF 落在 mov 解复用器里，解复用器名看不出"这是张图"，扩展名才是依据。
             const std::string extension = QFileInfo(url).suffix().toLower().toStdString();
             info.is_image_input = model::IsImageInput(format_ctx->iformat->name, extension);
+            // 动图判定只认解复用器（gif / apng），不看扩展名：.png 可能是 APNG，
+            // 但扩展名分不出来，解复用器才是事实。
+            info.is_animated_image = info.is_image_input && model::IsAnimatedImageDemuxer(format_ctx->iformat->name);
         }
         if (format_ctx->iformat->long_name)
             info.extractor.format = format_ctx->iformat->long_name;
@@ -496,7 +500,14 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
         AVStream* vs = format_ctx->streams[video_stream_index];
         AVCodecParameters* vp = vs->codecpar;
         const double fps = av_q2d(vs->avg_frame_rate);
-        info.extractor.frame_rate = FormatFrameRate(fps);
+        // 静图没有帧率：image2 / png_pipe 等解复用器会填 25 fps 的占位值（实测 jpg/png
+        // 恒 25/1），照抄会在首页摘要与媒体信息里写成"静图 @ 25 fps"，把占位值当成事实。
+        // 动图（gif / apng）的帧率是按帧延时算出的真值，必须保留（见 ShouldReportFrameRate）。
+        const std::string_view demuxer_name =
+            (format_ctx->iformat && format_ctx->iformat->name) ? format_ctx->iformat->name : std::string_view();
+        const std::string frame_rate_text =
+            model::ShouldReportFrameRate(info.is_image_input, demuxer_name) ? FormatFrameRate(fps) : std::string();
+        info.extractor.frame_rate = frame_rate_text;
 
         info.video.id = std::to_string(video_stream_index + 1);
         const AVCodecDescriptor* vdesc = avcodec_descriptor_get(vp->codec_id);
@@ -536,7 +547,7 @@ StreamInfoExtractor::ExtractResult StreamInfoExtractor::Extract(AVFormatContext*
                 info.video.display_aspect_ratio = oss.str();
             }
         }
-        info.video.frame_rate = FormatFrameRate(fps);
+        info.video.frame_rate = frame_rate_text;
         if (vp->color_space != AVCOL_SPC_UNSPECIFIED) {
             info.video.color_space = FriendlyColorSpace(vp->color_space);
             info.video.matrix_coefficients = FriendlyColorSpace(vp->color_space);

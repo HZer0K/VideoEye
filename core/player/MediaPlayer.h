@@ -60,6 +60,14 @@ public:
     void Stop();
     void Seek(int position_ms, model::SeekMode mode = model::SeekMode::NearestKeyframe);
 
+    // 动图（GIF/APNG）循环：播到结尾回到起点继续，不发 PlaybackFinished。
+    // 对静图无效果（单帧循环没有意义），由 PlaybackSession 按真实解复用器判定。
+    void SetAnimatedImageLoop(bool enable);
+    bool GetAnimatedImageLoop() const;
+    // 从起点重播已打开的媒体（不重新探测）。动图重播走这条路：
+    // 动图容器时长常为 NOPTS，Seek(0) 会被"不可定位"挡掉。
+    bool RestartFromStart();
+
     // 定位方式 (进度条拖动策略)
     void SetSeekMode(model::SeekMode mode);
     model::SeekMode GetSeekMode() const;

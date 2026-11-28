@@ -534,6 +534,7 @@ void MainWindow::SetupMenuBar() {
     // 需要反向同步勾选状态的那几个动作（播放区显隐 / 两个布局预设）由它返回。
     ui::MenuBarDeps deps;
     deps.open_file = [this]() { OnOpenFile(); };
+    deps.open_image_sequence = [this]() { OnOpenImageSequence(); };
     deps.open_url = [this]() { OnOpenURL(); };
     deps.exit_app = [this]() { OnExit(); };
     deps.show_format_support = [this]() { OnShowFormatSupport(); };
@@ -731,6 +732,15 @@ void MainWindow::SetupConnections() {
     connect(player_panel_, &PlayerPanel::RawImageInfoReady, this, [this](const QString& info) {
         if (overview_page_)
             overview_page_->SetMediaInfoText(info);
+    });
+    // 图片翻页（上一张/下一张）：走和菜单一样的入口，不在这里另写换源逻辑 ——
+    // 换一张图要连带换掉分析面板/首页摘要/FFmpeg 页的"当前文件"，那条链只有
+    // OpenSessionController 有。autoplay=true 让这一张立刻显示出来。
+    connect(player_panel_, &PlayerPanel::ImageNavigateRequested, this, [this](const QString& path) {
+        if (path.isEmpty())
+            return;
+        if (!OpenMedia(path, true) && statusBar())
+            statusBar()->showMessage(tr("打不开这张图: %1").arg(path), 8000);
     });
     connect(analysis_panel_, &ui::AnalysisPanel::StatusMessage, this, [this](const QString& text) {
         if (statusBar())
@@ -962,6 +972,34 @@ void MainWindow::OnOpenFile() {
         return;
     }
     OpenMedia(filename, true);
+}
+
+void MainWindow::OnOpenImageSequence() {
+    if (!open_session_) {
+        return;
+    }
+    // 起始目录沿用当前文件所在目录：抽帧输出通常就在它旁边（out/ 之类）。
+    QString start_dir;
+    const QString current = open_session_->current_media_url();
+    if (!current.isEmpty()) {
+        start_dir = QFileInfo(current).absolutePath();
+    }
+    const QString folder = QFileDialog::getExistingDirectory(this, tr("选择图片序列所在目录"), start_dir);
+    if (folder.isEmpty()) {
+        statusBar()->showMessage(tr("已取消打开图片序列"), 3000);
+        return;
+    }
+    bool ok = false;
+    // 默认 25fps 与抽帧导出的默认帧率一致；上限 120 只是防止手滑输入天文数字把
+    // 定时器压成 0ms（1fps 下限保证看得清每张）。
+    const int fps = QInputDialog::getInt(this, tr("图片序列帧率"), tr("每秒播放多少张（1-120）："), 25, 1, 120, 1, &ok);
+    if (!ok) {
+        statusBar()->showMessage(tr("已取消打开图片序列"), 3000);
+        return;
+    }
+    if (!open_session_->OpenImageSequence(folder, fps)) {
+        statusBar()->showMessage(tr("无法打开图片序列: %1").arg(folder), 8000);
+    }
 }
 
 void MainWindow::OnOpenURL() {

@@ -137,6 +137,27 @@ void ControlBarWidget::SetupUI() {
                                   "}");
     control_layout->addWidget(volume_slider_);
 
+    // 动图循环开关（仅 GIF/APNG 打开时可见）。默认关闭 = 沿用"播一遍停在最后一帧"，
+    // 不给静图显示：单帧循环在语义上就是"什么都没有发生"。
+    loop_button_ = new QPushButton(tr("循环"), this);
+    loop_button_->setObjectName("LoopButton");
+    loop_button_->setCheckable(true);
+    loop_button_->setToolTip(tr("循环播发动图（关闭时播一遍停在最后一帧）"));
+    loop_button_->setAccessibleName(tr("循环播放"));
+    loop_button_->setFixedSize(40, 28);
+    loop_button_->setVisible(false);
+    loop_button_->setStyleSheet("QPushButton#LoopButton {"
+                                "  background-color: #21262D; border: 1px solid #30363D;"
+                                "  border-radius: 4px; color: #8B949E; font-size: 11px; font-weight: bold;"
+                                "}"
+                                "QPushButton#LoopButton:hover {"
+                                "  border-color: #58A6FF; color: #C9D1D9;"
+                                "}"
+                                "QPushButton#LoopButton:checked {"
+                                "  background-color: #1F6FEB; border-color: #58A6FF; color: #FFFFFF;"
+                                "}");
+    control_layout->addWidget(loop_button_);
+
     // 运动矢量叠加开关
     mv_overlay_button_ = new QPushButton(tr("MV"), this);
     mv_overlay_button_->setObjectName("MvOverlayButton");

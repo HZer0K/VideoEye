@@ -163,6 +163,51 @@ bool OpenSessionController::OpenPcm(const QString& source, bool autoplay) {
     return true;
 }
 
+bool OpenSessionController::OpenImageSequence(const QString& folder, int fps) {
+    if (!deps_.player_panel || !deps_.player) {
+        return false;
+    }
+    // 新的打开会取代上一次的异步收尾：先撤掉未触发的自动扫描与待收尾登记。
+    if (auto_scan_timer_) {
+        auto_scan_timer_->stop();
+    }
+    ClearOpenTicket(ticket_);
+    if (deps_.hide_export_progress) {
+        deps_.hide_export_progress();
+    }
+    deps_.player->CancelAllExports();
+    deps_.player_panel->StopPlayback();
+    deps_.player_panel->SetRawImageMode(false);
+    // 序列没有单一"当前文件"：与裸图像一致，把下游的"当前文件"清空，
+    // 否则分析页/首页会继续展示上一个视频的结论，而那跟这组图片毫无关系。
+    deps_.player_panel->SetCurrentSource(QString());
+    current_media_url_.clear();
+    if (deps_.analysis_panel) {
+        deps_.analysis_panel->SetCurrentVideoPath(QString());
+    }
+    if (deps_.ffmpeg_panel) {
+        deps_.ffmpeg_panel->SetCurrentFile(QString());
+    }
+    if (deps_.conversion_panel) {
+        deps_.conversion_panel->SetCurrentFile(QString());
+    }
+
+    if (!deps_.player_panel->LoadImageSequence(folder, fps)) {
+        // 失败原因已由组件经 StatusMessage 报出（空目录 / 只有一张 / 解不了）。
+        emit CurrentMediaLabelChanged(QString());
+        if (deps_.overview_page) {
+            deps_.overview_page->ClearFileSummary();
+            deps_.overview_page->SetMediaInfoText(tr("请打开一个媒体文件以查看详细信息"));
+        }
+        return false;
+    }
+    emit CurrentMediaLabelChanged(tr("%1 (图片序列)").arg(folder));
+    if (deps_.overview_page) {
+        deps_.overview_page->SetOpenedFileWithoutSummary(folder);
+    }
+    return true;
+}
+
 bool OpenSessionController::OpenMediaAsync(const QString& source, bool autoplay) {
     if (!deps_.player_panel || !deps_.analysis_panel)
         return false;

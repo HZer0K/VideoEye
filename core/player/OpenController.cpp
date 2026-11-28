@@ -20,6 +20,8 @@ extern "C" {
 }
 
 #include "core/analysis/orchestration/MediaInfoAnalyzer.h" // FormatFromContext（复用本次探测）
+#include "core/domain/model/ImageBudget.h"                 // 静图渲染预算（打开期拒绝）
+#include "core/domain/model/ImageDemuxer.h"                // IsImageInput
 #include "core/ffmpeg_io/AvOptions.h"                      // ChannelLayoutOption（裸 PCM 声道选项）
 #include "core/media/probe/FileProbe.h"
 #include "core/player/AudioOutput.h"
@@ -257,6 +259,29 @@ OpenResult OpenController::Prepare(const OpenPrepareParams& params) {
         result.error = QStringLiteral("无法播放该 WebP：未能解析出有效画面尺寸。动图 WebP 在当前 FFmpeg 构建中不受支持"
                                       "（仅支持静态 WebP），也可能是文件已损坏；可先转成 GIF/APNG 再打开。");
         return result;
+    }
+
+    // 静图必须在打开阶段就判尺寸：渲染侧一次要按 4 B/px 分配 QImage(ARGB32)，
+    // 30000x30000 的图就是 3.6 GiB —— 分配失败后 isNull() 只会安静地跳过绘制，
+    // 用户看到纯黑画面，和"文件损坏"无法区分。渲染线程还有一道兜底
+    // （PlaybackSession 的像素预算），这里负责给出可行动的原因。
+    // 视频不走这条：正常视频的尺寸远低于上限，畸形流交给渲染侧兜底即可。
+    if (result.video_stream_index >= 0 && fmt->streams) {
+        const AVCodecParameters* vpar = fmt->streams[result.video_stream_index]->codecpar;
+        const std::string extension = QFileInfo(params.url).suffix().toLower().toStdString();
+        const bool image_input =
+            fmt->iformat && fmt->iformat->name && model::IsImageInput(fmt->iformat->name, extension);
+        if (image_input && vpar && model::ExceedsImagePixelBudget(vpar->width, vpar->height)) {
+            result.error = QStringLiteral("图片分辨率过大：%1，超出显示上限（%2 Mi 像素）。"
+                                          "请先用外部工具缩小后再打开。")
+                               .arg(QString::fromStdString(model::FormatPixelBudget(vpar->width, vpar->height)))
+                               .arg(static_cast<qint64>(model::kMaxRenderImagePixels / (1024 * 1024)));
+            // 打开失败的原因只有这一处能落盘：UI 侧只把它写进状态栏，用户报障时看不到。
+            LOG_ERROR("Open rejected: oversized image " + std::to_string(vpar->width) + "x" +
+                      std::to_string(vpar->height) + " exceeds render budget (" +
+                      std::to_string(model::kMaxRenderImagePixels) + " px)");
+            return result;
+        }
     }
 
     if (result.video_stream_index >= 0 && !PrepareVideoDecoder(params, fmt, result.video_stream_index, best_video_codec,

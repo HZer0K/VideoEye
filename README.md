@@ -21,7 +21,7 @@ VideoEye 是一款开源的视频流分析软件，支持 HTTP、RTMP、RTSP 网
 - **容器结构分析**: 统一调度解析 MP4/MOV、MKV/WebM、AVI、FLV、MPEG-TS、ASF/WMV、OGG；MP4 树到字段级（`ftyp`/`mvhd`/`tkhd`/`stsd` 入口 + `avcC`/`hvcC`/`av1C`/`esds`/`colr`/`pasp`/`btrt`/`sidx`/`moof`），MPEG-TS 支持 188/192/204 包长自适应、失步重同步、PAT/PMT 跨包组装、描述符与 SDT 服务名、PCR 与连续计数统计；MKV/WebM 除元素树外另跑一遍**只读元素头的顺序扫描**（内存 O(1)、覆盖到片尾），给出 Cues 索引 / Cluster 时间轴 / CodecPrivate / unknown-size 等体检结论。EBML 元素树只读开头 32 MiB 建树（`scan_truncated` 显式声明尾部未覆盖，不再整份读入内存），树内块节点封顶 2 万但 `total_simpleblocks`/`total_blockgroups` 仍按全量计数
 - **媒体信息**: 基于 FFmpeg `libavformat` 展示完整元数据（容器 / 视频 / 音频 / 字幕 / 章节）
 - **RealMedia**: 支持选择和识别 RM/RMVB 文件，媒体信息与容器结构走 FFmpeg 通用分析；RealVideo 系列由 FFmpeg 软件解码
-- **图片与动图**可在「打开媒体文件」中选择 GIF、APNG（含 `.png` 后缀的动图）、PNG、JPEG、BMP、TIFF 和静态 WebP。动图播放一遍，结束后保留最后一帧。随包 FFmpeg 暂不支持动态 WebP。
+- **图片与动图**可在「打开媒体文件」中选择 GIF、APNG（含 `.png` 后缀的动图）、PNG、JPEG、BMP、TIFF、静态 WebP、AVIF、HEIC / HEIF、JPEG XL、JPEG 2000、TGA、EXR、QOI 与 PNM 家族。动图默认播放一遍并保留最后一帧，控制栏可勾选「循环」反复播放；静图播完保留画面，再点播放直接复用已解码的帧（不重新读文件）。随包 FFmpeg 暂不支持动态 WebP。照片方向（EXIF `Orientation` / HEIF `irot`）在显示时自动纠正，分析与导出仍使用原始像素。
 - **码流参数集**: H.264 / HEVC / AV1 按能力矩阵解析；VVC 为实验性部分支持，字段仅供参考、不参与严格容器一致性判定。extradata 为空的封装（TS / 裸流 / fMP4 分片）走**带内参数集**：扫前 8 MiB 视频包抽 SPS/VPS/序列头
 - **硬件加速**: VAAPI/CUDA/D3D11VA/QSV 等硬件解码（解码后统一转 CPU 图像渲染）
 - **音频可视化**: 波形快照、FFT 频谱、纯音频律动
@@ -299,12 +299,12 @@ TSan 会报 Qt6 自身的数据竞争（Qt 不是 TSan-clean 的库），真红�
 <!-- BEGIN GENERATED TEST SUMMARY -->
 | 指标 | 数量 |
 |---|---|
-| 测试可执行文件 | 176 |
-| ctest 用例组（gtest 可执行文件） | 176 |
+| 测试可执行文件 | 184 |
+| ctest 用例组（gtest 可执行文件） | 184 |
 | python 脚本用例组（非 gtest） | 19 |
-| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 2507 |
+| gtest 用例声明（含 `TEST` / `TEST_F` / `TEST_P`） | 2579 |
 
-启用测试且找到 Python 时，静态注册的 ctest 用例组共 **195 = 176 + 19**。
+启用测试且找到 Python 时，静态注册的 ctest 用例组共 **203 = 184 + 19**。
 这里统计源码中的测试声明，不代表本次已运行通过的数量；参数化测试运行时可能展开成多个用例。
 <!-- END GENERATED TEST SUMMARY -->
 

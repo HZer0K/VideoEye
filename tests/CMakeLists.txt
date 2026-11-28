@@ -599,6 +599,21 @@ target_link_libraries(test_playback_session PRIVATE
 )
 add_test(NAME PlaybackSessionTests COMMAND test_playback_session)
 
+# ============================================================
+# 测试 4d-2: 动图循环 / 重播 / 静图不循环
+#
+# 与上一条不同，这里**真的跑解码线程**：语料是现场用 gif/png 编码器生成的 3 帧动图，
+# 图片没有音频轨，不碰声卡。覆盖 EOF 回起点、PlaybackFinished 次数、静图拒绝循环，
+# 以及 RestartFromStart 的重播语义（动图容器时长常为 NOPTS，Seek(0) 走不通）。
+# ============================================================
+videoeye_add_test(test_animated_image_loop unit/test_animated_image_loop.cpp)
+target_link_libraries(test_animated_image_loop PRIVATE
+    VideoEyePlayback
+    videoeye_test_media_factory
+    Qt6::Core Qt6::Gui
+)
+add_test(NAME AnimatedImageLoopTests COMMAND test_animated_image_loop)
+
 # =================================================
 # 测试 4e：OpenController 封面图判定的边界（评审 P0-1）
 # 说明: 旧实现先取 streams[video_index] 再判 video_index < 0，音频-only 文件里
@@ -1128,6 +1143,120 @@ videoeye_add_test(test_container_extension_mismatch
 )
 target_link_libraries(test_container_extension_mismatch PRIVATE VideoEyeQcRules Qt6::Core)
 add_test(NAME ContainerExtensionMismatchTests COMMAND test_container_extension_mismatch)
+
+# =================================================
+# 测试 19d-2：图片解复用器白名单的可解码性守护
+# 说明: core/domain/model/ImageDemuxer.h 的白名单靠一条人工约定活着 ——
+#       「只登记既有 demuxer 又有 decoder 的格式」。没有守护时，换一版 FFmpeg
+#       （裁掉 jxl / exr / qoi 解码器）的后果是：仍被判成图片输入、QC 豁免照旧，
+#       但画面永远出不来，且没有任何测试会红。
+#       这里遍历白名单逐个断言解复用器与代表性解码器齐备，并钉住
+#       静图/动图判定（静图不能显示占位帧率）与渲染预算边界。
+# =================================================
+videoeye_add_test(test_image_demuxer_whitelist
+    unit/test_image_demuxer_whitelist.cpp
+)
+target_link_libraries(test_image_demuxer_whitelist PRIVATE
+    FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil)
+add_test(NAME ImageDemuxerWhitelistTests COMMAND test_image_demuxer_whitelist)
+
+# =================================================
+# 测试 19d-2：图片方向元数据解析（JPEG / TIFF / PNG / WebP / HEIF）
+# 说明: 只读元数据，样本在内存里手工构造。方向值错一位就是"竖拍照片横着显示"，
+#       而这种错误在界面测试里几乎看不出来（像素是对的、朝向是错的）。
+# =================================================
+videoeye_add_test(test_image_orientation
+    unit/test_image_orientation.cpp
+)
+target_link_libraries(test_image_orientation PRIVATE VideoEyeDomain)
+add_test(NAME ImageOrientationTests COMMAND test_image_orientation)
+
+# =================================================
+# 测试 19d-3：EXIF 方向 → QTransform 的像素级换算
+# 说明: 3x2 唯一色图，按 EXIF 定义逐像素核对"源点落到哪个目标点"。
+#       5/7（转置/反转置）与 6/8 都交换宽高，只测尺寸区分不出来。
+# =================================================
+videoeye_add_test(test_image_orientation_transform
+    unit/test_image_orientation_transform.cpp
+)
+target_link_libraries(test_image_orientation_transform PRIVATE
+    VideoEyeDomain Qt6::Gui)
+add_test(NAME ImageOrientationTransformTests COMMAND test_image_orientation_transform)
+
+# =================================================
+# 测试 19d-4：目录内同族图片枚举（图片翻页 / 图片序列的底座）
+# 说明: 自然序、成员判定、UTF-8 文件名、整目录枚举。最后一条把
+#       kImageFileExtensions 与 FormatDetector 的扩展名表钉在一起 ——
+#       "序列里列出来、打开对话框里却选不中"这种错配只能在这里判红。
+#       临时目录现场创建，不依赖仓库样本。
+# =================================================
+videoeye_add_test(test_image_folder_scan
+    unit/test_image_folder_scan.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/analysis/orchestration/FormatDetector.cpp
+)
+target_link_libraries(test_image_folder_scan PRIVATE
+    VideoEyeDomain Qt6::Core)
+add_test(NAME ImageFolderScanTests COMMAND test_image_folder_scan)
+
+# =================================================
+# 测试 19d-5：画面缩放 / 1:1 / 平移（VideoWidget）
+# 说明: 倍率是"相对适应窗口"的倍数，1:1 是反算出来的 1/适应比例。
+#       锚点缩放、平移边界、真实绘制（放大后四边不许露背景）都在这里钉住。
+#       需要 QApplication + 真实 QWidget 几何，用 offscreen 平台跑。
+# =================================================
+# AUTOMOC: 这里直接编 ui/main_window/VideoWidget.cpp，两个 Q_OBJECT 类的 moc 必须
+# 由本目标自己生成（名单制不认新目标，不加这个关键字就会 LNK2019 staticMetaObject）。
+videoeye_add_test(test_video_widget_zoom AUTOMOC
+    unit/test_video_widget_zoom.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/VideoWidget.cpp
+)
+target_link_libraries(test_video_widget_zoom PRIVATE
+    VideoEyePlayback
+    VideoEyeInfrastructure
+    Qt6::Widgets)
+add_test(NAME VideoWidgetZoomTests COMMAND test_video_widget_zoom)
+set_tests_properties(VideoWidgetZoomTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 19d-6：图片序列预览（一个目录的成品图片按帧率播放）
+# 说明: 这条路径不走 FFmpeg（一帧一次 QImageReader + 方向变换），所以重点在
+#       "什么时候拒绝打开 / 帧号边界 / 控制栏契约"，而不是解码正确性。
+#       图片用 QImage::save 现场生成，不依赖样本与图片插件（png 是 Qt 内置）。
+# =================================================
+videoeye_add_test(test_image_sequence_player AUTOMOC
+    unit/test_image_sequence_player.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/ImageSequencePlayer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/player/ControlBarWidget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../ui/main_window/VideoWidget.cpp
+)
+target_link_libraries(test_image_sequence_player PRIVATE
+    VideoEyePlayback
+    VideoEyeInfrastructure
+    Qt6::Widgets)
+add_test(NAME ImageSequencePlayerTests COMMAND test_image_sequence_player)
+set_tests_properties(ImageSequencePlayerTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 19d-7：PlayerPanel 的「图片序列」接线
+# 说明: 序列组件自己的边界已由 19d-6 覆盖；这里只验证协调层把它接上了 ——
+#       打开后进入序列模式、停止后退出、点「下一帧」进度条真的走（跨组件端到端）。
+#       被测对象是 PlayerPanel 本体，链 VideoEyeUi（moc 也只有那一份）。
+# =================================================
+videoeye_add_test(test_player_panel_image_mode unit/test_player_panel_image_mode.cpp)
+target_link_libraries(test_player_panel_image_mode PRIVATE
+    VideoEyeUi
+    VideoEyeUiTheme
+    VideoEyePlayback
+    VideoEyeAnalysis
+    VideoEyeMedia
+    VideoEyeDomain
+    VideoEyeInfrastructure
+    Qt6::Widgets Qt6::Gui Qt6::Core)
+add_test(NAME PlayerPanelImageModeTests COMMAND test_player_panel_image_mode)
+set_tests_properties(PlayerPanelImageModeTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
 # 测试 19e：MKV / WebM 容器级体检与 QC 规则（container.mkv.*）

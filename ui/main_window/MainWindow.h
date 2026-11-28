@@ -60,6 +60,9 @@ private slots:
     // 文件菜单
     void OnOpenFile();
     void OnOpenURL();
+    // 打开图片序列（选目录 + 帧率）。序列只有预览，没有可分析的媒体 ——
+    // 所以走 OpenSessionController::OpenImageSequence 而不是 OpenMedia。
+    void OnOpenImageSequence();
     void OnExit();
 
     // 帮助菜单: 支持的格式与编解码器（现场枚举本进程链接的 FFmpeg 能力）

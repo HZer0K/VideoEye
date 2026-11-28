@@ -932,4 +932,145 @@ ConcealmentMedia CreateConcealmentMedia(const std::string& directory, const std:
     return result;
 }
 
+// ---- 图片语料 ----
+//
+// 单独写一套编码流程（而不是复用 CreateTestMedia）：图片既无音频、也用不着
+// H.264 那套降级链，硬塞进去只会让"生成 MP4"那条路多出几个 if。
+//
+// 编码器选择是实测结论而不是猜测：本仓库自带的 FFmpeg 62 里 gif / apng / png
+// 三个编码器都在（avcodec_find_encoder 均非空）。若将来换构建去掉某个编码器，
+// 这里的 error 会带着 rc 返回，测试直接判红而不是静默跳过。
+static TestImage WriteImageFrames(const std::string& directory, const std::string& file_name, const char* muxer_name,
+                                  AVCodecID codec_id, int width, int height, int frame_count, int delay_cs) {
+    TestImage image;
+    image.path = JoinPath(directory, file_name);
+    image.width = width;
+    image.height = height;
+    image.frame_count = frame_count;
+    std::error_code ec;
+    std::filesystem::remove(image.path, ec);
+
+    AVFormatContext* fmt = nullptr;
+    if (avformat_alloc_output_context2(&fmt, nullptr, muxer_name, image.path.c_str()) < 0 || !fmt) {
+        image.error = std::string("无法创建输出上下文: ") + muxer_name;
+        return image;
+    }
+
+    AVCodecContext* enc = nullptr;
+    AVFrame* frame = nullptr;
+    AVPacket* packet = nullptr;
+    auto finish = [&](bool ok, const std::string& error) {
+        if (packet)
+            av_packet_free(&packet);
+        if (frame)
+            av_frame_free(&frame);
+        if (enc)
+            avcodec_free_context(&enc);
+        if (fmt) {
+            if (fmt->pb)
+                avio_closep(&fmt->pb);
+            avformat_free_context(fmt);
+        }
+        image.ok = ok;
+        image.error = error;
+        return image;
+    };
+
+    const AVCodec* codec = avcodec_find_encoder(codec_id);
+    if (!codec)
+        return finish(false, "缺少编码器: " + std::to_string(static_cast<int>(codec_id)));
+
+    enc = avcodec_alloc_context3(codec);
+    if (!enc)
+        return finish(false, "无法分配编码器上下文");
+    enc->width = width;
+    enc->height = height;
+    // GIF 与 APNG 都用厘秒时基：delay_cs 的语义因此统一（GIF 的 GCE 延时与
+    // APNG 的 fcTL 延时都按这个粒度写），帧间隔 = delay_cs 个时间基单位。
+    const bool is_gif = (codec_id == AV_CODEC_ID_GIF);
+    enc->time_base = AVRational{1, 100};
+    enc->framerate = AVRational{100, std::max(1, delay_cs)};
+    // GIF 编码器只吃调色板索引格式（RGB8 由它自己生成系统调色板）；
+    // PNG 用最常见的 RGB24。
+    enc->pix_fmt = is_gif ? AV_PIX_FMT_RGB8 : AV_PIX_FMT_RGB24;
+
+    AVStream* stream = avformat_new_stream(fmt, nullptr);
+    if (!stream)
+        return finish(false, "无法创建输出流");
+    stream->time_base = enc->time_base;
+
+    int rc = avcodec_open2(enc, codec, nullptr);
+    if (rc < 0)
+        return finish(false, "打开编码器失败 rc=" + std::to_string(rc));
+    rc = avcodec_parameters_from_context(stream->codecpar, enc);
+    if (rc < 0)
+        return finish(false, "拷贝编码参数失败 rc=" + std::to_string(rc));
+
+    if (!(fmt->oformat->flags & AVFMT_NOFILE)) {
+        rc = avio_open(&fmt->pb, image.path.c_str(), AVIO_FLAG_WRITE);
+        if (rc < 0)
+            return finish(false, "打开输出文件失败 rc=" + std::to_string(rc));
+    }
+    rc = avformat_write_header(fmt, nullptr);
+    if (rc < 0)
+        return finish(false, "写文件头失败 rc=" + std::to_string(rc));
+
+    frame = av_frame_alloc();
+    packet = av_packet_alloc();
+    if (!frame || !packet)
+        return finish(false, "无法分配帧/包");
+    frame->format = enc->pix_fmt;
+    frame->width = width;
+    frame->height = height;
+    if ((rc = av_frame_get_buffer(frame, 32)) < 0)
+        return finish(false, "分配帧缓冲失败 rc=" + std::to_string(rc));
+
+    auto write_all_packets = [&]() {
+        while (avcodec_receive_packet(enc, packet) >= 0) {
+            av_packet_rescale_ts(packet, enc->time_base, stream->time_base);
+            packet->stream_index = stream->index;
+            av_interleaved_write_frame(fmt, packet);
+            av_packet_unref(packet);
+        }
+    };
+
+    for (int i = 0; i < frame_count; ++i) {
+        if ((rc = av_frame_make_writable(frame)) < 0)
+            return finish(false, "帧不可写 rc=" + std::to_string(rc));
+        // 每帧一个不同亮度：解码回来的帧内容因此可区分，"播了几轮"不是靠计数猜的。
+        const uint8_t value = static_cast<uint8_t>(16 + (i * 37) % 200);
+        for (int y = 0; y < height; ++y)
+            std::memset(frame->data[0] + static_cast<std::ptrdiff_t>(y) * frame->linesize[0], value, width);
+        // pts 必须按"厘秒"推进（time_base = 1/100）：写成 frame->pts = i 会得到
+        // 10ms/帧而不是 delay_cs 厘秒/帧 —— 播放器按时间戳 pacing 时整段一闪而过，
+        // 循环类断言会因此变成"瞬间跑完 N 轮"，看着通过但测的不是真实节奏。
+        frame->pts = static_cast<int64_t>(i) * std::max(1, delay_cs);
+        if ((rc = avcodec_send_frame(enc, frame)) < 0)
+            return finish(false, "送帧失败 rc=" + std::to_string(rc));
+        write_all_packets();
+    }
+    avcodec_send_frame(enc, nullptr);
+    write_all_packets();
+
+    rc = av_write_trailer(fmt);
+    if (rc < 0)
+        return finish(false, "写文件尾失败 rc=" + std::to_string(rc));
+    return finish(true, "");
+}
+
+TestImage CreateAnimatedImage(const std::string& directory, const std::string& name, const char* format,
+                              int frame_count, int delay_cs) {
+    const std::string muxer = format ? format : "gif";
+    const bool apng = (muxer == "apng");
+    // APNG 走 png 封装，扩展名必须是 .png，否则 avformat 按扩展名选不到 apng muxer。
+    const std::string file_name = name + (apng ? ".png" : ".gif");
+    return WriteImageFrames(directory, file_name, apng ? "apng" : "gif", apng ? AV_CODEC_ID_APNG : AV_CODEC_ID_GIF, 32,
+                            24, frame_count, delay_cs);
+}
+
+TestImage CreateStillImage(const std::string& directory, const std::string& name) {
+    // image2：按扩展名写单帧文件，不需要 %d 模板。
+    return WriteImageFrames(directory, name + ".png", "image2", AV_CODEC_ID_PNG, 32, 24, 1, 0);
+}
+
 } // namespace videoeye_test

@@ -50,7 +50,8 @@ struct ExtensionFamily {
 // 「不在默认打开清单里、但批量 QC 一定会遇到」的音频/容器扩展名。
 const std::vector<ExtensionFamily>& Families() {
     static const std::vector<ExtensionFamily> kFamilies = {
-        {kMovName, {"mp4", "m4v", "m4a", "m4b", "m4p", "m4r", "f4v", "mov", "mj2", "3gp", "3g2", "avif"}},
+        {kMovName,
+         {"mp4", "m4v", "m4a", "m4b", "m4p", "m4r", "f4v", "mov", "mj2", "3gp", "3g2", "avif", "heic", "heif"}},
         {"matroska,webm", {"mkv", "mka", "mk3d", "webm"}},
         {"mpegts", {"ts", "mts", "m2ts", "tts", "m2t"}},
         {"avi", {"avi"}},
@@ -211,6 +212,12 @@ TEST(ContainerExtensionMismatchTest, ImageDemuxerWhitelistCoversRealImageDemuxer
 TEST(ContainerExtensionMismatchTest, IsobmffStillImageIsDetectedByExtension) {
     EXPECT_TRUE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "avif"));
     EXPECT_TRUE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", ".AVIF"));
+    // HEIC / HEIF 与 AVIF 同理：mov 家族的解复用器名看不出"这是一张图"，
+    // 必须靠扩展名判图片，否则播到 EOF 会把画面清掉、QC 还会报缺音频。
+    EXPECT_TRUE(model::IsImageInput(kMovName, "heic"));
+    EXPECT_TRUE(model::IsImageInput(kMovName, ".HEIC"));
+    EXPECT_TRUE(model::IsImageInput(kMovName, "heif"));
+    EXPECT_TRUE(model::IsImageInput(kMovName, ".HEIF"));
     // 普通视频 / 音频扩展名不能被误判成图片
     EXPECT_FALSE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "mp4"));
     EXPECT_FALSE(model::IsImageInput("mov,mp4,m4a,3gp,3g2,mj2", "m4a"));

@@ -617,6 +617,19 @@ void MediaPlayer::Seek(int position_ms, model::SeekMode mode) {
     impl_->playback_session_.Seek(position_ms, mode);
 }
 
+void MediaPlayer::SetAnimatedImageLoop(bool enable) {
+    impl_->playback_session_.SetAnimatedImageLoop(enable);
+    LOG_INFO(std::string("SetAnimatedImageLoop: ") + (enable ? "on" : "off"));
+}
+
+bool MediaPlayer::GetAnimatedImageLoop() const {
+    return impl_->playback_session_.animated_image_loop();
+}
+
+bool MediaPlayer::RestartFromStart() {
+    return impl_->playback_session_.RestartFromStart();
+}
+
 void MediaPlayer::SetVolume(int volume) {
     impl_->volume_ = std::max(0, std::min(100, volume));
     if (impl_->playback_session_.audio_output())

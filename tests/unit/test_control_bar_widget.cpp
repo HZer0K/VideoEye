@@ -89,6 +89,12 @@ TEST(ControlBarWidgetTests, InitialControlsMatchLayoutContract) {
     EXPECT_TRUE(bar.mvOverlayButton()->isCheckable());
     EXPECT_FALSE(bar.mvOverlayButton()->isChecked());
 
+    // 循环按钮：动图专用，默认隐藏且不勾选（静图不该看到"循环"这个选项）
+    ASSERT_TRUE(bar.loopButton() != nullptr);
+    EXPECT_TRUE(bar.loopButton()->isCheckable());
+    EXPECT_FALSE(bar.loopButton()->isChecked());
+    EXPECT_TRUE(bar.loopButton()->isHidden());
+
     ASSERT_TRUE(bar.timeLabel() != nullptr);
     EXPECT_EQ(QStringLiteral("00:00:00 / 00:00:00"), bar.timeLabel()->text());
     ASSERT_TRUE(bar.timecodeLabel() != nullptr);
@@ -197,6 +203,7 @@ TEST(ControlBarWidgetTests, IconButtonsExposeAccessibleNames) {
     EXPECT_FALSE(bar.seekSlider()->accessibleName().isEmpty());
     EXPECT_FALSE(bar.volumeSlider()->accessibleName().isEmpty());
     EXPECT_FALSE(bar.mvOverlayButton()->accessibleName().isEmpty());
+    EXPECT_FALSE(bar.loopButton()->accessibleName().isEmpty());
     EXPECT_FALSE(bar.collapseButton()->accessibleName().isEmpty());
     EXPECT_FALSE(bar.timeLabel()->accessibleName().isEmpty());
     EXPECT_FALSE(bar.timecodeLabel()->accessibleName().isEmpty());
@@ -295,6 +302,41 @@ TEST(ControlBarWidgetTests, OverflowMenuKeepsWorkingAfterRepeatedResizes) {
         QApplication::processEvents();
         EXPECT_TRUE(bar->volumeSlider()->isVisible());
         EXPECT_TRUE(bar->mvOverlayButton()->isVisible());
+    }
+}
+
+// 打开动图时循环按钮会出现：多一个控件不能把控制栏挤爆。
+// 这里把按钮显式显示出来走同样的紧凑/全宽两档，验证"可见控件都在栏内且互不重叠"。
+TEST(ControlBarWidgetTests, LoopButtonVisibleKeepsControlsInsideTheBar) {
+    EnsureApp();
+    QWidget host;
+    auto* layout = new QVBoxLayout(&host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* bar = new ControlBarWidget(&host);
+    layout->addWidget(bar);
+    bar->loopButton()->setVisible(true); // 模拟"打开的是 GIF/APNG"
+    host.resize(1600, 100);
+    host.show();
+    QApplication::processEvents();
+
+    const int compact_width = bar->minimumSizeHint().width() + 8;
+    for (const int width : {compact_width, 1600}) {
+        host.resize(width, 100);
+        QApplication::processEvents();
+        QApplication::processEvents();
+        ASSERT_EQ(bar->width(), width);
+        EXPECT_TRUE(bar->loopButton()->isVisible());
+
+        QList<QWidget*> visible;
+        for (int index = 0; index < bar->layout()->count(); ++index) {
+            QWidget* widget = bar->layout()->itemAt(index)->widget();
+            if (!widget || !widget->isVisible())
+                continue;
+            EXPECT_TRUE(bar->rect().contains(widget->geometry())) << widget->objectName().toStdString();
+            for (QWidget* previous : visible)
+                EXPECT_FALSE(previous->geometry().intersects(widget->geometry())) << widget->objectName().toStdString();
+            visible.append(widget);
+        }
     }
 }
 

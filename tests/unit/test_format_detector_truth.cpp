@@ -212,3 +212,12 @@ TEST(FormatDetectorTruthTest, AvifCompatibleBrandGoesGeneric) {
     bytes.resize(1024, '\0');
     EXPECT_EQ(Detect(WriteBytes(dir, "still.bin", bytes)), ContainerFormat::FFmpeg_Generic);
 }
+
+// HEIC 与 AVIF 同属"ftyp 里的图片"：iPhone 照片改名/无扩展名时不能被送进
+// MP4 Box 解析器（没有 moov/trak，只会得到"结构无效"）。
+TEST(FormatDetectorTruthTest, HeicFtypGoesGenericNotMp4) {
+    const fs::path dir = ScratchDir("heic_ftyp");
+    std::string bytes = Box32(24, "ftyp") + "heic" + Bytes({0, 0, 2, 0}) + "mif1" + "heic";
+    bytes.resize(1024, '\0');
+    EXPECT_EQ(Detect(WriteBytes(dir, "photo.bin", bytes)), ContainerFormat::FFmpeg_Generic);
+}

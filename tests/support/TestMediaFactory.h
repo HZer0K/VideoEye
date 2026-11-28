@@ -165,4 +165,26 @@ struct ConcealmentMedia {
 
 ConcealmentMedia CreateConcealmentMedia(const std::string& directory, const std::string& name);
 
+// ---- 图片语料（动图 / 静图）----
+//
+// 不往仓库里存二进制图片：用自带的 gif / png 编码器现场生成，内容确定性（只有颜色不同）。
+// 动图用来验证"循环播放：EOF 回起点继续"；静图用来验证"静图不会被当成动图循环"
+// —— 后者是 SetAnimatedImageLoop 的防御，没有样本就只能靠读代码相信它。
+struct TestImage {
+    std::string path;
+    int width = 0;
+    int height = 0;
+    int frame_count = 0;
+    bool ok = false;
+    std::string error;
+};
+
+// 生成 32x24 的动图：format 取 "gif" 或 "apng"（apng 的扩展名必须是 .png）。
+// delay_cs 是每帧延时（厘秒），10 = 100ms/帧。
+TestImage CreateAnimatedImage(const std::string& directory, const std::string& name, const char* format,
+                              int frame_count, int delay_cs = 10);
+
+// 生成 32x24 的单帧 PNG（image2 封装 + png 编码器）。
+TestImage CreateStillImage(const std::string& directory, const std::string& name);
+
 } // namespace videoeye_test

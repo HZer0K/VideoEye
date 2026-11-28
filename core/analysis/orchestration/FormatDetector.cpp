@@ -83,6 +83,11 @@ const std::vector<ExtensionEntry>& ExtensionTable() {
         // mov 家族，靠扩展名识别为静图）。.ico 有解复用器但没有 ico 解码器，
         // 登记进来只会得到黑屏，故不列。
         {"avif", ContainerFormat::FFmpeg_Generic},
+        // HEIC / HEIF 同样落在 mov 家族（iformat 名字是 "mov,mp4,m4a,3gp,3g2,mj2"），
+        // 实测 8 位 HEVC 单图能正常解出一帧（640x480 / yuvj420p）。不登记的话，
+        // 打开对话框的过滤器（由本表派生）里根本看不到 iPhone 照片。
+        {"heic", ContainerFormat::FFmpeg_Generic},
+        {"heif", ContainerFormat::FFmpeg_Generic},
         {"jp2", ContainerFormat::FFmpeg_Generic},
         {"j2k", ContainerFormat::FFmpeg_Generic},
         {"j2c", ContainerFormat::FFmpeg_Generic},
@@ -346,6 +351,12 @@ model::ContainerFormat FormatDetector::DetectByMagic(const std::string& file_pat
         // 直接归到 FFmpeg 通用路径（播放走 mov 解复用器，QC 按静图规则处理）。
         const std::string major_brand = header.substr(8, 4);
         if (major_brand == "avif" || major_brand == "avis" || FtypDeclaresBrand(header, "avif")) {
+            return model::ContainerFormat::FFmpeg_Generic;
+        }
+        // HEIC / HEIF 同理：没有 moov/trak，交给 MP4 Box 解析器只会报结构无效。
+        // 只认 heic/heix（纯静图品牌）；mif1/msf1 是通用 HEIF 品牌，也可能出现在
+        // 带轨道的图像序列里，不在这里一刀切成图片 —— 这类文件靠扩展名兜底。
+        if (major_brand == "heic" || major_brand == "heix" || FtypDeclaresBrand(header, "heic")) {
             return model::ContainerFormat::FFmpeg_Generic;
         }
         // 区分 MP4 vs MOV: major_brand 或 compatible_brands 里带 "qt  "

@@ -112,3 +112,51 @@ TEST(MediaInfoFormatTest, FormatsGeneralAndStreamSectionsFromContext) {
     EXPECT_TRUE(Contains(text, "Height                     : 1080"));
     EXPECT_TRUE(Contains(text, "Sample rate                : 48000 Hz"));
 }
+
+// 静图不写帧率行：png_pipe / image2 的 avg_frame_rate 是解复用器填的 25/1 占位值
+// （image2 的默认 -framerate 25），写进媒体信息框等于把占位值当成事实。
+// 动图（gif）的帧率按帧延时算出，是真值，必须保留 —— 两者不能一刀切。
+TEST(MediaInfoFormatTest, StillImageOmitsPlaceholderFrameRateWhileAnimatedKeepsIt) {
+    {
+        AVFormatContextGuard format;
+        ASSERT_NE(format.get(), nullptr);
+        format.get()->iformat = av_find_input_format("png_pipe");
+        ASSERT_NE(format.get()->iformat, nullptr);
+
+        AVStream* video = avformat_new_stream(format.get(), nullptr);
+        ASSERT_NE(video, nullptr);
+        ASSERT_NE(video->codecpar, nullptr);
+        video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+        video->codecpar->codec_id = AV_CODEC_ID_PNG;
+        video->codecpar->width = 1920;
+        video->codecpar->height = 1080;
+        video->avg_frame_rate = AVRational{25, 1}; // 解复用器给的占位值
+
+        const std::string text = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "D:/media/still.png");
+        ASSERT_FALSE(text.empty());
+        EXPECT_FALSE(Contains(text, "Frame rate")) << "静图不该输出解复用器的占位帧率";
+        EXPECT_FALSE(Contains(text, "Real frame rate"));
+        // 尺寸仍然要有：少的是帧率这一行，不是整段视频信息。
+        EXPECT_TRUE(Contains(text, "Width                      : 1920"));
+        EXPECT_TRUE(Contains(text, "Height                     : 1080"));
+    }
+    {
+        AVFormatContextGuard format;
+        ASSERT_NE(format.get(), nullptr);
+        format.get()->iformat = av_find_input_format("gif");
+        ASSERT_NE(format.get()->iformat, nullptr);
+
+        AVStream* video = avformat_new_stream(format.get(), nullptr);
+        ASSERT_NE(video, nullptr);
+        ASSERT_NE(video->codecpar, nullptr);
+        video->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+        video->codecpar->codec_id = AV_CODEC_ID_GIF;
+        video->codecpar->width = 320;
+        video->codecpar->height = 240;
+        video->avg_frame_rate = AVRational{10, 1};
+
+        const std::string text = videoeye::MediaInfoAnalyzer::FormatFromContext(format.get(), "D:/media/anim.gif");
+        ASSERT_FALSE(text.empty());
+        EXPECT_TRUE(Contains(text, "Frame rate")) << "动图帧率是真值，不能被静图规则吃掉";
+    }
+}

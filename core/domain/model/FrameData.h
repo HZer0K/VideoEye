@@ -16,6 +16,9 @@ enum class PlayerState { Idle, Loading, Playing, Paused, Stopped, Error };
 struct StreamInfo {
     std::string filename;
     bool is_image_input = false;
+    // 图片输入里"有真实时间轴"的那一类（GIF / APNG）：可以循环播放、可以重播。
+    // 静图（JPEG/PNG/HEIC…）只有一帧，循环等于反复解码同一帧，必须在 UI 侧挡掉。
+    bool is_animated_image = false;
 
     struct ExtractorFormat {
         std::string complete_name;

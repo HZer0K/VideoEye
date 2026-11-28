@@ -36,6 +36,9 @@ struct MenuBarActions {
 struct MenuBarDeps {
     std::function<void()> open_file;
     std::function<void()> open_url;
+    // 打开图片序列（选目录 + 帧率）：抽帧导出产出的是一组图片，一次只能开一个文件
+    // 的老行为等于"看不到整组"，所以单列一条入口。
+    std::function<void()> open_image_sequence;
     std::function<void()> exit_app;
     std::function<void()> show_format_support;
     std::function<void()> export_video_frames;

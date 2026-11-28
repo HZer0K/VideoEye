@@ -16,6 +16,8 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "core/domain/model/ImageBudget.h"
+#include "core/domain/model/ImageDemuxer.h"
 #include "core/player/BareStreamUtils.h"
 #include "infrastructure/logging/Logger.h"
 
@@ -219,6 +221,19 @@ void PlaybackSession::Stop(bool notify_state_change) {
     }
 }
 
+bool PlaybackSession::RestartFromStart() {
+    if (!format_ctx_)
+        return false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // 只投递"回到 0"的请求，真正执行 av_seek_frame 的仍是解码线程。
+        pending_seek_mode_.store(model::SeekMode::NearestKeyframe);
+        seek_request_ms_ = 0.0;
+        pending_seek_.store(true);
+    }
+    return Play();
+}
+
 void PlaybackSession::Seek(int position_ms, model::SeekMode mode) {
     const int target_ms = duration_ms_ > 0 ? std::clamp(position_ms, 0, duration_ms_) : std::max(0, position_ms);
     {
@@ -300,6 +315,9 @@ void PlaybackSession::DecodeThread() {
         const bool frame_paced_video = (clock_stream_index >= 0 && clock_stream_index == video_stream_index_);
         PlaybackClock playback_clock;
         playback_clock.Reset();
+        // 本轮（含每次循环重启）已读到的包数。动图循环重启后若仍是 0，说明这个
+        // demuxer 的 seek 只返回成功但读不出数据，继续循环就是空转。
+        std::int64_t packets_since_restart = 0;
 
         auto process_pending_seek = [&]() {
             double target_ms = 0.0;
@@ -374,6 +392,8 @@ void PlaybackSession::DecodeThread() {
         //
         // out_size 提到 lambda 外面: 解码器输出与 swr 冲刷都写它，交付逻辑只认它。
         int out_size = 0;
+        // 渲染预算只在首次越界时记一条日志: 畸形流每帧都超限，逐帧刷日志会淹没有用信息。
+        bool render_budget_reported = false;
         auto deliver_video_frame = [&](const AVPacket* pkt) {
             double frame_ts = frame_data.timestamp;
             if (format_ctx_ && video_stream_index_ >= 0) {
@@ -411,18 +431,35 @@ void PlaybackSession::DecodeThread() {
                 // 与 OnVideoFrame 的判空保持一致: 格式合法但像素平面为空 /
                 // 宽高为 0 的帧(畸形帧或异常像素格式)不能交给 sws_scale,
                 // 否则会拿空 src_data[0] 段错误, 且不在 try/catch 内 -> 整进程崩。
+                //
+                // 还要先过像素预算：这里是要按 4 B/px 分配 QImage 的地方，畸形流或
+                // 超大静图能一次要几 GiB。正常图片在打开阶段就被拒了（见
+                // OpenController::Prepare），这条只是渲染线程的最后一道内存防线。
+                bool render_budget_ok = true;
                 if (frame_data.format >= 0 && frame_data.data[0] && frame_data.width > 0 && frame_data.height > 0) {
-                    if (sws_src_w != frame_data.width || sws_src_h != frame_data.height ||
-                        sws_src_fmt != frame_data.format) {
+                    if (model::ExceedsImagePixelBudget(frame_data.width, frame_data.height)) {
+                        render_budget_ok = false;
+                        // 不 emit Error: 那条路径会弹模态框，逐帧弹会把界面直接锁死。
+                        if (!render_budget_reported) {
+                            render_budget_reported = true;
+                            LOG_ERROR("Render skipped: frame " + std::to_string(frame_data.width) + "x" +
+                                      std::to_string(frame_data.height) + " exceeds render budget (" +
+                                      std::to_string(model::kMaxRenderImagePixels) + " px)");
+                        }
+                    } else if (sws_src_w != frame_data.width || sws_src_h != frame_data.height ||
+                               sws_src_fmt != frame_data.format) {
                         sws_src_w = frame_data.width;
                         sws_src_h = frame_data.height;
                         sws_src_fmt = frame_data.format;
                     }
-                    sws_ctx = sws_getCachedContext(
-                        sws_ctx, frame_data.width, frame_data.height, static_cast<AVPixelFormat>(frame_data.format),
-                        frame_data.width, frame_data.height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+                    if (render_budget_ok) {
+                        sws_ctx = sws_getCachedContext(sws_ctx, frame_data.width, frame_data.height,
+                                                       static_cast<AVPixelFormat>(frame_data.format), frame_data.width,
+                                                       frame_data.height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr,
+                                                       nullptr, nullptr);
+                    }
                 }
-                if (sws_ctx) {
+                if (render_budget_ok && sws_ctx) {
                     QImage qimage(frame_data.width, frame_data.height, QImage::Format_ARGB32);
                     if (!qimage.isNull()) {
                         std::uint8_t* dst_slices[4] = {qimage.bits(), nullptr, nullptr, nullptr};
@@ -557,6 +594,8 @@ void PlaybackSession::DecodeThread() {
             }
 
             int ret = av_read_frame(format_ctx_, packet);
+            if (ret >= 0)
+                ++packets_since_restart;
             if (ret < 0) {
                 // ❗ 三种"读不出包"必须分开，旧实现一律当"播到结尾"：
                 //   * 用户停止 / avio 中断（AVERROR_EXIT）→ 静默退出，不算播完
@@ -605,6 +644,42 @@ void PlaybackSession::DecodeThread() {
                 // 通知分析侧闭合还开着的缺陷段, 否则最后一条要等下次播放才出现
                 if (hooks_.on_end_of_stream)
                     hooks_.on_end_of_stream();
+
+                // ---- 动图循环（GIF / APNG）----
+                // 位置在排空之后：本轮最后一帧必须先交付出去，接缝才不会缺帧。
+                // 判定用真实解复用器而不是调用方标记：静图（image2 / png_pipe）也走
+                // 这条 EOF 路径，但它们只有一帧，循环等于反复解码同一帧（纯烧 CPU）。
+                const bool animated_image = format_ctx_ && format_ctx_->iformat && format_ctx_->iformat->name &&
+                                            model::IsAnimatedImageDemuxer(format_ctx_->iformat->name);
+                if (image_loop_.load(std::memory_order_relaxed) && animated_image) {
+                    if (packets_since_restart == 0) {
+                        // 上一轮重启后一个包都没读到：seek 与 demuxer 不兼容。
+                        // 此时继续循环就是无限空转，关掉开关按"播完"收尾。
+                        LOG_WARN("DecodeThread: 动图循环重启后仍无数据，停止循环");
+                        image_loop_.store(false, std::memory_order_relaxed);
+                    } else {
+                        av_packet_unref(packet);
+                        const int rewind_ret = av_seek_frame(format_ctx_, -1, 0, AVSEEK_FLAG_BACKWARD);
+                        if (rewind_ret >= 0) {
+                            if (video_decoder_)
+                                video_decoder_->Flush();
+                            if (audio_decoder_)
+                                audio_decoder_->Flush();
+                            // 时钟必须一起回零：不清的话 PaceTo 认为整段时长已过，
+                            // 第二轮所有帧会全速冲出去（画面一闪到底）。
+                            playback_clock.Reset();
+                            drop_until_sec_.store(-1.0);
+                            current_position_ms_.store(0);
+                            last_emitted_position_ms = 0;
+                            packets_since_restart = 0;
+                            emit PositionChanged(0, duration_ms_);
+                            LOG_INFO("DecodeThread: 动图循环 -> 回到起点");
+                            continue;
+                        }
+                        LOG_WARN("DecodeThread: 动图循环回到起点失败，按播放结束处理 err=" +
+                                 std::to_string(rewind_ret));
+                    }
+                }
                 emit PlaybackFinished();
                 break;
             }
