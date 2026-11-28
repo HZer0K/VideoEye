@@ -12,7 +12,9 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <string>
 
+#include "core/player/RawFrameConverter.h"
 #include "ui/main_window/VideoWidget.h"
 #include "ui/player/ControlBarWidget.h"
 
@@ -43,6 +45,8 @@ RawImageSequence::RawImageSequence(QWidget* parent) : QObject(parent), dialog_pa
     playback_timer_->setTimerType(Qt::PreciseTimer);
     connect(playback_timer_, &QTimer::timeout, this, &RawImageSequence::AdvancePlaybackFrame);
 }
+
+RawImageSequence::~RawImageSequence() = default;
 
 void RawImageSequence::SetVideoWidget(VideoWidget* widget) {
     video_widget_ = widget;
@@ -136,40 +140,21 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
         return false;
     }
 
-    // 4:2:0 家族需要偶数宽高；packed 4:2:2 只需要偶数宽度；RGB/GRAY 任意尺寸。
-    const bool is_420_8bit =
-        selected == "YUV420P(I420)" || selected == "NV12" || selected == "NV21" || selected == "YV12";
-    const bool is_420_10bit = selected == "P010" || selected == "YUV420P10LE";
-    const bool is_422_packed = selected == "YUY2" || selected == "UYVY";
-
-    qint64 frame_size = 0;
-    if (selected == "RGB24" || selected == "BGR24") {
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3;
-    } else if (selected == "GRAY8") {
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height);
-    } else if (is_420_8bit) {
-        if ((width % 2) != 0 || (height % 2) != 0) {
-            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), tr("%1 仅支持偶数宽高。").arg(selected));
-            return false;
-        }
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3 / 2;
-    } else if (is_420_10bit) {
-        if ((width % 2) != 0 || (height % 2) != 0) {
-            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), tr("%1 仅支持偶数宽高。").arg(selected));
-            return false;
-        }
-        // 每个样本 2 字节：Y(w*h) + U/V 各(w*h/4) → 3*w*h 字节
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 3;
-    } else if (is_422_packed) {
-        if ((width % 2) != 0) {
-            QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), tr("%1 仅支持偶数宽度。").arg(selected));
-            return false;
-        }
-        frame_size = static_cast<qint64>(width) * static_cast<qint64>(height) * 2;
+    // 帧大小与"这个尺寸合不合法"交给 core/player 判：与转换器共用同一份口径，
+    // 免得这里放过、转换器那边又拒绝（表现成"打开了但一片黑"）。
+    player::RawPixelFormat format_kind = player::RawPixelFormat::I420;
+    if (!player::ParseRawPixelFormatLabel(selected.toStdString(), format_kind)) {
+        return false;
+    }
+    std::string size_reason;
+    const qint64 frame_size = static_cast<qint64>(player::RawFrameSizeBytes(width, height, format_kind, &size_reason));
+    if (frame_size <= 0) {
+        QMessageBox::warning(dialog_parent_, tr("尺寸不支持"), QString::fromStdString(size_reason));
+        return false;
     }
 
     const qint64 file_size = QFileInfo(filename).size();
-    if (frame_size <= 0 || file_size < frame_size) {
+    if (file_size < frame_size) {
         QMessageBox::warning(
             dialog_parent_, tr("打开失败"),
             tr("文件大小不足以组成一帧。\n单帧大小: %1 字节\n文件大小: %2 字节").arg(frame_size).arg(file_size));
@@ -188,17 +173,61 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
         }
     }
 
-    // 换文件时先停掉上一段序列的连续播放，避免旧定时器继续推进新文件。
-    StopRawPlayback();
+    return OpenRawSequence(filename, width, height, selected, fps);
+}
 
-    raw_image_path_ = filename;
-    raw_pixel_format_ = selected;
+bool RawImageSequence::OpenRawSequence(const QString& path, int width, int height, const QString& format_label,
+                                       int fps) {
+    player::RawPixelFormat format_kind = player::RawPixelFormat::I420;
+    if (!player::ParseRawPixelFormatLabel(format_label.toStdString(), format_kind)) {
+        emit StatusMessage(tr("不支持的像素格式: %1").arg(format_label), 0);
+        return false;
+    }
+
+    std::string size_reason;
+    const qint64 frame_size = static_cast<qint64>(player::RawFrameSizeBytes(width, height, format_kind, &size_reason));
+    if (frame_size <= 0) {
+        emit StatusMessage(QString::fromStdString(size_reason), 0);
+        return false;
+    }
+
+    const qint64 file_size = QFileInfo(path).size();
+    if (file_size < frame_size) {
+        emit StatusMessage(tr("文件大小不足以组成一帧（单帧 %1 字节，文件 %2 字节）。").arg(frame_size).arg(file_size),
+                           0);
+        return false;
+    }
+
+    // 上下文建不起来 = 这台机器的 FFmpeg 用不了该像素格式。宁可当场报错，
+    // 也别先上屏再说 —— 那样用户看到的是一片黑，分不清是格式选错还是文件坏了。
+    auto converter = std::make_unique<player::RawFrameConverter>(width, height, format_kind, height >= 720);
+    if (!converter->Valid()) {
+        emit StatusMessage(tr("无法为该尺寸与像素格式建立色彩转换: %1x%2 %3").arg(width).arg(height).arg(format_label),
+                           0);
+        return false;
+    }
+
+    // 换序列：旧句柄、旧上下文一起换掉（旧定时器也不能继续推进新文件）。
+    StopRawPlayback();
+    CloseRawFile();
+    // 画面上的 QImage 只是转换器内部缓冲的视图，缓冲要换掉之前必须先清屏，
+    // 否则 paintEvent 会读到已经释放的内存。
+    if (video_widget_ != nullptr) {
+        video_widget_->Clear();
+    }
+    converter_ = std::move(converter);
+
+    raw_image_path_ = path;
+    raw_pixel_format_ = format_label;
     raw_width_ = width;
     raw_height_ = height;
     raw_frame_size_ = frame_size;
-    raw_total_frames_ = total_frames;
+    raw_total_frames_ = std::max(1, static_cast<int>(file_size / frame_size));
     raw_current_frame_ = 0;
-    raw_fps_ = fps;
+    raw_fps_ = std::max(1, fps);
+    // 弹窗路径是 PlayerPanel::SetRawImageMode(true) 先进模式；直接调本函数（测试 /
+    // 将来的"最近打开"）时也得进，否则 ShowRawFrame 的第一道守卫会把它挡回去。
+    showing_raw_image_ = true;
 
     const qint64 remain = file_size % frame_size;
     emit RawImageInfoReady(tr("Raw Image Sequence\n"
@@ -210,8 +239,8 @@ bool RawImageSequence::LoadRawImageFile(const QString& filename) {
                               "Frame Size: %7 bytes\n"
                               "Total Frames: %8\n"
                               "Ignored Tail Bytes: %9")
-                               .arg(filename)
-                               .arg(selected)
+                               .arg(path)
+                               .arg(format_label)
                                .arg(width)
                                .arg(height)
                                .arg(height >= 720 ? QStringLiteral("BT.709") : QStringLiteral("BT.601"))
@@ -231,178 +260,51 @@ bool RawImageSequence::ShowRawFrame(int frame_index) {
 
     // 三处失败都不弹模态框了：原始帧是逐帧/拖动连续到达的，弹窗会把 UI 直接卡死
     // （拖动滑块时一个 MessageBox 叠一个，窗口再也点不动）。原因统一走状态栏。
-    QFile file(raw_image_path_);
-    if (!file.open(QIODevice::ReadOnly)) {
-        emit StatusMessage(tr("无法读取文件: %1").arg(raw_image_path_), 0);
+    if (!EnsureRawFileOpen()) {
         return false;
     }
 
     const qint64 offset = static_cast<qint64>(frame_index) * raw_frame_size_;
-    if (!file.seek(offset)) {
-        emit StatusMessage(tr("无法定位到第 %1 帧。").arg(frame_index + 1), 0);
-        return false;
+    // 顺序读（下一帧 / 连续播放）时游标本来就在这一帧开头，那次 seek 是白送的系统调用。
+    if (raw_next_offset_ != offset) {
+        if (!raw_file_->seek(offset)) {
+            // 游标位置已经不可信，关掉让下次重开 —— 别在错位置上继续读出一堆垃圾像素。
+            CloseRawFile();
+            emit StatusMessage(tr("无法定位到第 %1 帧。").arg(frame_index + 1), 0);
+            return false;
+        }
+        raw_next_offset_ = -1;
     }
 
-    const QByteArray data = file.read(raw_frame_size_);
-    file.close();
-    if (data.size() != raw_frame_size_) {
+    frame_buffer_.resize(static_cast<std::size_t>(raw_frame_size_));
+    const qint64 read_bytes = raw_file_->read(reinterpret_cast<char*>(frame_buffer_.data()), raw_frame_size_);
+    if (read_bytes != raw_frame_size_) {
+        CloseRawFile();
         emit StatusMessage(tr("读取第 %1 帧失败，期望 %2 字节，实际 %3 字节。")
                                .arg(frame_index + 1)
                                .arg(raw_frame_size_)
-                               .arg(data.size()),
+                               .arg(read_bytes),
                            0);
         return false;
     }
+    raw_next_offset_ = offset + raw_frame_size_;
 
-    auto clamp_to_u8 = [](int value) -> uchar { return static_cast<uchar>(qBound(0, value, 255)); };
-    // 裸流没有容器级色彩元数据。按分辨率自动选择矩阵（业界默认约定，swscale 亦如此）：
-    // 高度 >= 720 视为 HD 走 BT.709，其余走 BT.601。选错只会偏色，不会崩。
-    const bool bt709 = raw_height_ >= 720;
-    auto yuv_to_rgb = [&](int Y, int U, int V, uchar* dst) {
-        const int u = U - 128;
-        const int v = V - 128;
-        int r = 0;
-        int g = 0;
-        int b = 0;
-        if (bt709) {
-            r = Y + static_cast<int>(1.5748 * v);
-            g = Y - static_cast<int>(0.1873 * u + 0.4681 * v);
-            b = Y + static_cast<int>(1.8556 * u);
-        } else {
-            r = Y + static_cast<int>(1.402 * v);
-            g = Y - static_cast<int>(0.344136 * u + 0.714136 * v);
-            b = Y + static_cast<int>(1.772 * u);
-        }
-        dst[0] = clamp_to_u8(r);
-        dst[1] = clamp_to_u8(g);
-        dst[2] = clamp_to_u8(b);
-    };
-
-    QImage img(raw_width_, raw_height_, QImage::Format_RGB888);
-    if (img.isNull()) {
+    // 裸字节 -> RGB888 交给 core/player/RawFrameConverter（sws_scale）。原先这里逐像素
+    // 手写 BT.601/709 系数：1080p 一帧两百万次浮点乘法，而且把 Y 当**全范围**处理，
+    // 16/235 的黑白电平该压的地方没压（黑电平发灰）。范围与矩阵现在由 sws 显式设置，
+    // 口径与 `ffmpeg -i in.yuv -f rawvideo out.rgb` 一致。
+    if (converter_ == nullptr || !converter_->Convert(frame_buffer_.data(), frame_buffer_.size())) {
+        emit StatusMessage(tr("第 %1 帧色彩转换失败。").arg(frame_index + 1), 0);
         return false;
     }
 
-    const uchar* src = reinterpret_cast<const uchar*>(data.constData());
-    if (raw_pixel_format_ == "RGB24" || raw_pixel_format_ == "BGR24") {
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const uchar* src_row = src + static_cast<qint64>(j) * raw_width_ * 3;
-            for (int i = 0; i < raw_width_; ++i) {
-                const int src_idx = i * 3;
-                if (raw_pixel_format_ == "RGB24") {
-                    row[src_idx + 0] = src_row[src_idx + 0];
-                    row[src_idx + 1] = src_row[src_idx + 1];
-                    row[src_idx + 2] = src_row[src_idx + 2];
-                } else {
-                    row[src_idx + 0] = src_row[src_idx + 2];
-                    row[src_idx + 1] = src_row[src_idx + 1];
-                    row[src_idx + 2] = src_row[src_idx + 0];
-                }
-            }
-        }
-    } else if (raw_pixel_format_ == "GRAY8") {
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const uchar* src_row = src + static_cast<qint64>(j) * raw_width_;
-            for (int i = 0; i < raw_width_; ++i) {
-                const uchar y = src_row[i];
-                row[i * 3 + 0] = y;
-                row[i * 3 + 1] = y;
-                row[i * 3 + 2] = y;
-            }
-        }
-    } else if (raw_pixel_format_ == "YUV420P(I420)" || raw_pixel_format_ == "NV12" || raw_pixel_format_ == "NV21" ||
-               raw_pixel_format_ == "YV12") {
-        const qint64 y_size = static_cast<qint64>(raw_width_) * static_cast<qint64>(raw_height_);
-        const uchar* y_plane = src;
-        const uchar* uv_plane = y_plane + y_size;
-        const int chroma_w = raw_width_ / 2;
-        const int chroma_h = raw_height_ / 2;
-        const qint64 chroma_plane_size = static_cast<qint64>(chroma_w) * chroma_h;
-        // 三种排布：I420(U 平面, V 平面) / YV12(V 平面, U 平面) / NV12(UV 交织) / NV21(VU 交织)
-        const bool interleaved = raw_pixel_format_ == "NV12" || raw_pixel_format_ == "NV21";
-        const bool vu_first = raw_pixel_format_ == "YV12" || raw_pixel_format_ == "NV21";
-
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            for (int i = 0; i < raw_width_; ++i) {
-                const int Y = static_cast<int>(y_plane[static_cast<qint64>(j) * raw_width_ + i]);
-                int c0 = 0;
-                int c1 = 0;
-                if (interleaved) {
-                    const qint64 uv_idx = static_cast<qint64>(j / 2) * raw_width_ + (i / 2) * 2;
-                    c0 = static_cast<int>(uv_plane[uv_idx]);
-                    c1 = static_cast<int>(uv_plane[uv_idx + 1]);
-                } else {
-                    const qint64 uv_idx = static_cast<qint64>(j / 2) * chroma_w + (i / 2);
-                    c0 = static_cast<int>(uv_plane[uv_idx]);
-                    c1 = static_cast<int>(uv_plane[chroma_plane_size + uv_idx]);
-                }
-                const int U = vu_first ? c1 : c0;
-                const int V = vu_first ? c0 : c1;
-                yuv_to_rgb(Y, U, V, row + i * 3);
-            }
-        }
-    } else if (raw_pixel_format_ == "P010" || raw_pixel_format_ == "YUV420P10LE") {
-        const bool p010 = raw_pixel_format_ == "P010";
-        const qint64 y_bytes = static_cast<qint64>(raw_width_) * static_cast<qint64>(raw_height_) * 2;
-        const uchar* y_plane = src;
-        const uchar* uv_plane = y_plane + y_bytes;
-        const qint64 chroma_samples = static_cast<qint64>(raw_width_ / 2) * (raw_height_ / 2);
-        // 10bit 存放在 16bit 小端样本的高 10 位（低 6 位为填充），>>2 归一到 8bit。
-        auto sample10 = [](const uchar* p) -> int {
-            return (static_cast<int>(p[0]) | (static_cast<int>(p[1]) << 8)) >> 2;
-        };
-
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            for (int i = 0; i < raw_width_; ++i) {
-                const int Y = sample10(y_plane + (static_cast<qint64>(j) * raw_width_ + i) * 2);
-                int U = 0;
-                int V = 0;
-                if (p010) {
-                    // UV 交织：半高行，每行 w 个样本（U/V 成对），每个样本 2 字节
-                    const qint64 uv_idx = (static_cast<qint64>(j / 2) * raw_width_ + (i / 2) * 2) * 2;
-                    U = sample10(uv_plane + uv_idx);
-                    V = sample10(uv_plane + uv_idx + 2);
-                } else {
-                    const qint64 uv_idx = static_cast<qint64>(j / 2) * (raw_width_ / 2) + (i / 2);
-                    U = sample10(uv_plane + uv_idx * 2);
-                    V = sample10(uv_plane + (chroma_samples + uv_idx) * 2);
-                }
-                yuv_to_rgb(Y, U, V, row + i * 3);
-            }
-        }
-    } else if (raw_pixel_format_ == "YUY2" || raw_pixel_format_ == "UYVY") {
-        const bool uyvy = raw_pixel_format_ == "UYVY";
-        for (int j = 0; j < raw_height_; ++j) {
-            uchar* row = img.scanLine(j);
-            const uchar* src_row = src + static_cast<qint64>(j) * raw_width_ * 2;
-            for (int i = 0; i < raw_width_; i += 2) {
-                const int idx = i * 2;
-                int y0 = 0;
-                int y1 = 0;
-                int u = 0;
-                int v = 0;
-                if (uyvy) {
-                    u = static_cast<int>(src_row[idx + 0]);
-                    y0 = static_cast<int>(src_row[idx + 1]);
-                    v = static_cast<int>(src_row[idx + 2]);
-                    y1 = static_cast<int>(src_row[idx + 3]);
-                } else {
-                    y0 = static_cast<int>(src_row[idx + 0]);
-                    u = static_cast<int>(src_row[idx + 1]);
-                    y1 = static_cast<int>(src_row[idx + 2]);
-                    v = static_cast<int>(src_row[idx + 3]);
-                }
-                yuv_to_rgb(y0, u, v, row + i * 3);
-                if (i + 1 < raw_width_) {
-                    yuv_to_rgb(y1, u, v, row + (i + 1) * 3);
-                }
-            }
-        }
-    } else {
+    // QImage 只在这里包一层视图，不拷贝：缓冲归转换器（常驻，尾部带 sws 需要的余量），
+    // 下一次 Convert 会覆盖它。上屏链路上的消费者都不长期持有这份像素 —— VideoWidget
+    // 存 QImage 后立刻按控件尺寸缩放，叠加层只读宽高（见 RawFrameShown 的接收方）。
+    QImage img(converter_->RgbData(), raw_width_, raw_height_, static_cast<int>(converter_->Stride()),
+               QImage::Format_RGB888);
+    if (img.isNull()) {
+        emit StatusMessage(tr("无法封装 %1x%2 的图像。").arg(raw_width_).arg(raw_height_), 0);
         return false;
     }
 
@@ -514,15 +416,45 @@ void RawImageSequence::AdvancePlaybackFrame() {
     ShowRawFrame(raw_current_frame_ + 1);
 }
 
+bool RawImageSequence::EnsureRawFileOpen() {
+    if (raw_file_ != nullptr && raw_file_->isOpen()) {
+        return true;
+    }
+    auto file = std::make_unique<QFile>(raw_image_path_);
+    if (!file->open(QIODevice::ReadOnly)) {
+        emit StatusMessage(tr("无法读取文件: %1").arg(raw_image_path_), 0);
+        return false;
+    }
+    raw_file_ = std::move(file);
+    raw_next_offset_ = -1; // 新句柄的游标在 0，别让上一段序列的位置假设留下来
+    return true;
+}
+
+void RawImageSequence::CloseRawFile() {
+    if (raw_file_ != nullptr) {
+        raw_file_->close();
+        raw_file_.reset();
+    }
+    raw_next_offset_ = -1;
+}
+
 void RawImageSequence::SetRawImageMode(bool on) {
     if (!on) {
         StopRawPlayback();
+        // 退出 Raw 模式后不会再读这个文件，句柄留着只会挡住删除/改名（Windows 上是独占的）。
+        CloseRawFile();
     }
     showing_raw_image_ = on;
 }
 
 void RawImageSequence::Reset() {
     StopRawPlayback();
+    CloseRawFile();
+    if (video_widget_ != nullptr) {
+        video_widget_->Clear(); // 同上：先撤掉视图，再释放它引用的缓冲
+    }
+    converter_.reset();
+    frame_buffer_.clear();
     showing_raw_image_ = false;
     raw_image_path_.clear();
     raw_pixel_format_.clear();

@@ -2320,6 +2320,16 @@ set_tests_properties(RawImageSequenceTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
+# 裸帧 → RGB888（core/player/RawFrameConverter）
+# 说明: 四种 4:2:0 排布的平面顺序、limited range、BT.601/709、10bit 采样位布局，
+#      写错都只会"静默偏色"。纯计算、无 Qt 界面、无需 offscreen。
+# =================================================
+videoeye_add_test(test_raw_frame_converter unit/test_raw_frame_converter.cpp)
+target_link_libraries(test_raw_frame_converter PRIVATE
+    VideoEyePlayback)
+add_test(NAME RawFrameConverterTests COMMAND test_raw_frame_converter)
+
+# =================================================
 # 测试 53：音频帧表子页（脏标志 + 增量刷新 + 单元格 + 汇总聚合）
 # 说明: 组件自身的记录缓存/脏标志/同步游标三者对不上时，只会静默少行或汇总错。
 #       AnalysisPageSupport.h（header-only）里带 MetricChartWidget.h 的 Q_OBJECT，

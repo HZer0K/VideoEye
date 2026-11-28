@@ -16,15 +16,23 @@
 //
 // 裸流参数对话框（QInputDialog）路径**不覆盖**：它必须有人工输入宽度/高度/像素格式，
 // 硬闯只会得到一个永远等不到输入的模态框。见测试报告里的覆盖盲点说明。
+// 但"弹窗之后"的整条链路（帧尺寸校验 → 常驻句柄 → 顺序/随机读 → 像素转换）走
+// OpenRawSequence 这个不弹窗的入口，见文件末尾第 7 节。
 //
 // 用 offscreen 平台跑，不需要显示器。
 
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QImage>
 #include <QLabel>
 #include <QPushButton>
 #include <QSlider>
+#include <QTemporaryDir>
+
+#include <vector>
 
 #include "ui/player/ControlBarWidget.h"
 #include "ui/player/RawImageSequence.h"
@@ -183,6 +191,252 @@ TEST(RawImageSequenceTests, PlaybackRequiresLoadedSequence) {
     EXPECT_FALSE(sequence.IsRawPlaying());
 
     sequence.Reset();
-    EXPECT_FALSE(sequence.IsRawPlaying());
     EXPECT_FALSE(sequence.IsShowingRawImage());
+    EXPECT_FALSE(sequence.IsRawPlaying());
+}
+// ---------------------------------------------------------------------------
+// 7. 加载与逐帧读盘（绕过对话框的 OpenRawSequence 入口）
+//
+// 这一节覆盖的是"读盘 + 转像素"的真链路：
+//   * 常驻文件句柄：连续读时不该重新 open/close（靠顺序读与随机读结果一致来判）；
+//   * 顺序读快路径：跳过 seek 之后读到的必须仍是"下一帧"，不是上一帧；
+//   * 帧号越界 / 序列复位后重开：既不能读到脏数据，也不能把句柄留在失效位置上。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 一帧 I420：Y 取 luma，色度中性（128）—— 结果是灰度，便于按亮度判帧号。
+QByteArray BuildI420Frame(int width, int height, int luma) {
+    const int y_size = width * height;
+    QByteArray frame(y_size * 3 / 2, '\0');
+    for (int i = 0; i < y_size; ++i) {
+        frame[i] = static_cast<char>(luma);
+    }
+    for (int i = y_size; i < frame.size(); ++i) {
+        frame[i] = static_cast<char>(128);
+    }
+    return frame;
+}
+
+// 三帧 I420 序列（8x8）：亮度 16 / 126 / 235，对应 limited range 的黑 / 中灰 / 白。
+QString WriteThreeFrameSequence(const QTemporaryDir& dir, const std::vector<int>& luma) {
+    const QString path = dir.filePath(QStringLiteral("seq.yuv"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        return QString();
+    }
+    for (const int value : luma) {
+        file.write(BuildI420Frame(8, 8, value));
+    }
+    file.close();
+    return path;
+}
+
+// 收集最后一次上屏的帧（RawFrameShown 是组件的对外出口）。
+struct FrameSink {
+    QImage last;
+    int count = 0;
+
+    void Attach(RawImageSequence& sequence) {
+        QObject::connect(&sequence, &RawImageSequence::RawFrameShown, [this](const QImage& frame, const QString&) {
+            last = frame;
+            ++count;
+        });
+    }
+
+    int GrayAt(int x, int y) const {
+        return last.isNull() ? -1 : qGray(last.pixel(x, y));
+    }
+};
+
+} // namespace
+
+TEST(RawImageSequenceTests, OpenRawSequenceRejectsBadInput) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    // 标签必须是格式表里的名字（不做模糊匹配）。
+    EXPECT_FALSE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("I420"), 25));
+    // 4:2:0 的奇数宽高装不下色度平面。
+    EXPECT_FALSE(sequence.OpenRawSequence(path, 7, 8, QStringLiteral("YUV420P(I420)"), 25));
+    // 文件里连一帧都不够。
+    EXPECT_FALSE(sequence.OpenRawSequence(path, 64, 64, QStringLiteral("YUV420P(I420)"), 25));
+    // 路径不存在。
+    EXPECT_FALSE(sequence.OpenRawSequence(dir.filePath(QStringLiteral("missing.yuv")), 8, 8,
+                                          QStringLiteral("YUV420P(I420)"), 25));
+
+    // 全部失败：不能进 Raw 模式、不能上屏、也不能留下半个序列状态。
+    EXPECT_FALSE(sequence.IsShowingRawImage());
+    EXPECT_EQ(sink.count, 0);
+    EXPECT_FALSE(sequence.ShowRawFrame(0));
+}
+
+TEST(RawImageSequenceTests, OpenRawSequenceShowsFirstFrameAndStepsInOrder) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    EXPECT_TRUE(sequence.IsShowingRawImage());
+    ASSERT_EQ(sink.count, 1);
+    EXPECT_EQ(sink.last.width(), 8);
+    EXPECT_EQ(sink.last.height(), 8);
+    // 打开即显示第 0 帧：limited range 的 16 应压到黑。
+    EXPECT_LE(sink.GrayAt(4, 4), 4);
+
+    // 顺序推进：每帧的亮度必须跟着变（若"跳过 seek"的游标算错，会反复读到同一帧）。
+    ASSERT_TRUE(sequence.ShowRawFrame(1));
+    const int middle = sink.GrayAt(4, 4);
+    EXPECT_GE(middle, 118);
+    EXPECT_LE(middle, 138);
+
+    ASSERT_TRUE(sequence.ShowRawFrame(2));
+    EXPECT_GE(sink.GrayAt(4, 4), 250);
+
+    // 越界帧号一律拒绝，且不改变当前画面。
+    EXPECT_FALSE(sequence.ShowRawFrame(3));
+    EXPECT_FALSE(sequence.ShowRawFrame(-1));
+    EXPECT_GE(sink.GrayAt(4, 4), 250);
+}
+
+TEST(RawImageSequenceTests, RandomAccessReadsTheRequestedFrame) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+
+    // 往前跳（跳过 seek 的快路径不适用），再往回跳（必须重新 seek）。
+    ASSERT_TRUE(sequence.ShowRawFrame(2));
+    EXPECT_GE(sink.GrayAt(0, 0), 250);
+    ASSERT_TRUE(sequence.ShowRawFrame(1));
+    const int middle = sink.GrayAt(0, 0);
+    EXPECT_GE(middle, 118);
+    EXPECT_LE(middle, 138);
+    ASSERT_TRUE(sequence.ShowRawFrame(0));
+    EXPECT_LE(sink.GrayAt(0, 0), 4);
+
+    // 顺序读与随机读必须得到同一帧：先顺序走一遍，再单独打开直接跳到第 1 帧对照。
+    ASSERT_TRUE(sequence.ShowRawFrame(1));
+    const int sequential = sink.GrayAt(2, 2);
+
+    RawImageSequence fresh;
+    FrameSink fresh_sink;
+    fresh_sink.Attach(fresh);
+    ASSERT_TRUE(fresh.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    ASSERT_TRUE(fresh.ShowRawFrame(1));
+    EXPECT_EQ(sequential, fresh_sink.GrayAt(2, 2));
+}
+
+TEST(RawImageSequenceTests, ResetClosesSequenceAndAllowsReopen) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    EXPECT_TRUE(sequence.IsShowingRawImage());
+
+    sequence.Reset();
+    EXPECT_FALSE(sequence.IsShowingRawImage());
+    // 复位后一切读操作都必须被挡住（句柄已关，帧长/总帧数已清零）。
+    EXPECT_FALSE(sequence.ShowRawFrame(0));
+    EXPECT_FALSE(sequence.StartRawPlayback());
+
+    // 复位只清状态，不破坏"还能再打开同一份文件"这件事（句柄要能被重新建立）。
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    EXPECT_LE(sink.GrayAt(4, 4), 4);
+}
+
+TEST(RawImageSequenceTests, ResetReleasesTheFileHandle) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+
+    sequence.Reset();
+    // 常驻句柄的意义是"序列活着的时候不反复 open/close"，但复位/换源之后必须放开：
+    // Windows 上句柄不关就删不掉也改不了名（共享冲突），用户会看到"文件被占用"。
+    // Linux 上 unlink 本来就允许带打开句柄，这条只在 Windows 有判别力。
+    EXPECT_TRUE(QFile::remove(path)) << "Reset 之后文件仍被占用（常驻句柄没关）";
+}
+
+TEST(RawImageSequenceTests, ReopenSwitchesToTheNewFile) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    const QString black_path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(black_path.isEmpty());
+
+    // 另一份：单帧纯白（16 帧长 → 只要一帧的字节）。
+    QFile white_file(dir.filePath(QStringLiteral("white.yuv")));
+    ASSERT_TRUE(white_file.open(QIODevice::WriteOnly));
+    white_file.write(BuildI420Frame(8, 8, 235));
+    white_file.close();
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    ASSERT_TRUE(sequence.OpenRawSequence(black_path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    EXPECT_LE(sink.GrayAt(4, 4), 4);
+
+    // 换源：旧句柄必须让位，读到的必须是新文件的第 0 帧（不是旧文件残留在缓存里的帧）。
+    ASSERT_TRUE(sequence.OpenRawSequence(white_file.fileName(), 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    EXPECT_GE(sink.GrayAt(4, 4), 250);
+}
+
+TEST(RawImageSequenceTests, PlaybackAdvancesToLastFrameAndStops) {
+    EnsureApp();
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = WriteThreeFrameSequence(dir, {16, 126, 235});
+    ASSERT_FALSE(path.isEmpty());
+
+    RawImageSequence sequence;
+    FrameSink sink;
+    sink.Attach(sequence);
+
+    ASSERT_TRUE(sequence.OpenRawSequence(path, 8, 8, QStringLiteral("YUV420P(I420)"), 25));
+    // 直接驱动"下一个 / 上一个"（定时器只是它的节拍器，这里省掉等待时间）。
+    sequence.OnNextRawFrame();
+    sequence.OnNextRawFrame();
+    EXPECT_GE(sink.GrayAt(4, 4), 250);
+    // 末帧之后不再前进（不循环、不越界读）。
+    sequence.OnNextRawFrame();
+    EXPECT_GE(sink.GrayAt(4, 4), 250);
+    sequence.OnPrevRawFrame();
+    const int middle = sink.GrayAt(4, 4);
+    EXPECT_GE(middle, 118);
+    EXPECT_LE(middle, 138);
 }
