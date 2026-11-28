@@ -8,39 +8,12 @@
 namespace videoeye {
 namespace reporting {
 
+using detail::CsvField;
 using detail::Fixed;
 using detail::SingleLine;
 using detail::WriteUtf8File;
 
 namespace {
-
-// CSV 转义（RFC 4180）：字段整体用双引号包住，内部的双引号翻倍。
-//
-// 另外对以 = + - @ 开头的字段前置一个单引号：Excel / LibreOffice / Google Sheets
-// 会把这样的单元格当成公式执行（=cmd|'/c ...、@SUM(...) 等），导出的报告会被
-// 打开它的表格软件执行的载荷，前置 ' 之后它只是普通文本。
-//
-// ❗ 单引号必须落在**引号之内**。写在引号外面（先上 ' 再上 "）会让字段的第一个
-// 字符变成 '，RFC 4180 解析器据此判定"这个字段没有加引号"，于是把后面那对引号
-// 当成普通字符原样保留 —— 实测占位符 "-" 会被读成 "'-"，值里带引号时更乱。
-std::string CsvField(const std::string& text) {
-    std::string out = "\"";
-    if (!text.empty()) {
-        const char first = text.front();
-        if (first == '=' || first == '+' || first == '-' || first == '@')
-            out += '\'';
-    }
-    for (char c : text) {
-        if (c == '"')
-            out += "\"\"";
-        else
-            out += c; // 逗号/换行/CR 本来就落在引号里面，属于 RFC 4180 的合法转义
-    }
-    out += '"';
-    return out;
-}
-
-} // namespace
 
 // ===========================================================================
 // CSV —— 元数据头（# 行）+ 每个 issue 一行
@@ -59,8 +32,6 @@ std::string CsvField(const std::string& text) {
 //   '#<节>,<键>,<值>,<键>,<值>,...'   单值事实（报告 / 结论 / 统计）
 //   '#覆盖,维度,执行,能力,...'        覆盖表的列名行，紧随其后每个维度一行、列对齐
 // ===========================================================================
-
-namespace {
 
 // 把"#节 + 若干键值对"拼成一行。值一律走 CsvField（含公式注入中和与引号转义），
 // 只有已经格式化好的数字例外 —— 否则负数会被前置单引号，"'-18.5" 读回来就不是数了。

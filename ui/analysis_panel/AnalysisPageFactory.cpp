@@ -16,6 +16,7 @@
 #include "ui/analysis_panel/FileStructureMapPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/ReferenceQualityPage.h"
 #include "ui/analysis_panel/SceneChangePage.h"
 #include "ui/analysis_panel/StreamOverviewView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
@@ -195,6 +196,13 @@ QWidget* BuildReportBatchQcPage(AnalysisPages& pages, const PageBuildDeps& deps,
     return pages.reporting;
 }
 
+QWidget* BuildReferenceQualityPage(AnalysisPages& pages, const PageBuildDeps& deps, const QString& path) {
+    pages.reference_quality = new ReferenceQualityPage(deps.parent);
+    // 当前文件默认当「待测视频」；参考视频留给用户选（基准通常不是当前文件）。
+    pages.reference_quality->SetSourcePath(path);
+    return pages.reference_quality;
+}
+
 struct PageBuilderEntry {
     const char* id;
     PageBuilder build;
@@ -218,6 +226,7 @@ const PageBuilderEntry kPageBuilders[] = {
     {"quality_diagnostics", &BuildQualityDiagnosticsPage},
     {"report_batch_qc", &BuildReportBatchQcPage},
     {"file_structure_map", &BuildFileStructureMapPage},
+    {"reference_quality", &BuildReferenceQualityPage},
 };
 
 PageBuilder FindPageBuilder(const QString& id) {

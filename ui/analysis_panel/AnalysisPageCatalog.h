@@ -54,6 +54,9 @@ inline const std::vector<AnalysisPageDescriptor>& AnalysisPageCatalog() {
         {"report_batch_qc", "报告与批量 QC", "report_tools", 0, ""},
         // 表尾追加：插在中间会让后续页的 stack 下标整体 +1，而那些下标是 ctest 的硬契约。
         {"file_structure_map", "文件结构图谱", "file_parse", 4, "全文件"},
+        // 「全片质量」组第 4 项：组内排序由 order 决定，与表格行序无关（见上面 quality_diagnostics 的说明）。
+        // 这一页要两个输入（参考 + 待测），不共用那次全文件扫描，但结论仍然是"全文件"口径。
+        {"reference_quality", "参考帧质量对比", "full_quality", 4, "全文件"},
     };
     return kCatalog;
 }

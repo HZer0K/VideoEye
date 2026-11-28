@@ -269,9 +269,15 @@ TEST(AnalysisPageHeader, AnalysisEntryAndExportSitOnTheSameHeaderRow) {
         QStringLiteral("file_structure_map"),
     };
     const QSet<QString> full_file_pages = {
-        QStringLiteral("bitrate_gop"),         QStringLiteral("audio_qc"),          QStringLiteral("color_hdr"),
-        QStringLiteral("codec_parameters"),    QStringLiteral("streaming_packets"), QStringLiteral("subtitle_aux"),
+        QStringLiteral("bitrate_gop"),
+        QStringLiteral("audio_qc"),
+        QStringLiteral("color_hdr"),
+        QStringLiteral("codec_parameters"),
+        QStringLiteral("streaming_packets"),
+        QStringLiteral("subtitle_aux"),
         QStringLiteral("quality_diagnostics"),
+        // 参考帧质量对比自己起一次双视频后台任务，页头同样是「开始分析」+「导出」。
+        QStringLiteral("reference_quality"),
     };
 
     const auto& catalog = AnalysisPageCatalog();

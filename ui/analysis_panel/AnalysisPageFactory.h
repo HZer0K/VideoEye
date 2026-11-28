@@ -43,6 +43,7 @@ class EventTimelineView;
 class FileStructureMapPage;
 class FramePacketView;
 class MacroblockView;
+class ReferenceQualityPage;
 class SceneChangePage;
 class StreamOverviewView;
 class SubtitleAuxPage;
@@ -99,6 +100,8 @@ struct AnalysisPages {
     SubtitleAuxPage* subtitle_aux = nullptr;
     DiagnosticsPage* diagnostics = nullptr;
     ReportingPanel* reporting = nullptr;
+    // 参考帧质量对比：两个输入（参考 + 待测），自己起一次后台任务，不共用全文件扫描
+    ReferenceQualityPage* reference_quality = nullptr;
 };
 
 // 按目录顺序建页。返回的每一页都已经过 add_page 登记（顺序 == stack 页序号）。

@@ -19,6 +19,7 @@
 #include "ui/analysis_panel/FileStructureMapPage.h"
 #include "ui/analysis_panel/FramePacketView.h"
 #include "ui/analysis_panel/MacroblockView.h"
+#include "ui/analysis_panel/ReferenceQualityPage.h"
 #include "ui/analysis_panel/SceneChangePage.h"
 #include "ui/analysis_panel/StreamOverviewView.h"
 #include "ui/analysis_panel/SubtitleAuxPage.h"
@@ -102,6 +103,9 @@ void AnalysisPanel::SetCurrentVideoPath(const QString& path) {
     // 图谱页消费同一份结果，换文件必须一起清 —— 否则旧文件的字节布局会留在图上
     if (pages_.structure_map)
         pages_.structure_map->Clear();
+    // 参考帧质量对比：当前文件默认当「待测视频」，并作废上一文件的对比结果
+    if (pages_.reference_quality)
+        pages_.reference_quality->SetSourcePath(path);
     // 换文件 = 上一文件的分析结论全部作废：通知首页重置「分析状态」区
     emit DiagnosticsStateChanged();
 }

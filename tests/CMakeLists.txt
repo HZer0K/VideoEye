@@ -738,6 +738,38 @@ target_link_libraries(test_quality_analyzer PRIVATE
 add_test(NAME QualityAnalyzerTests COMMAND test_quality_analyzer)
 
 # =================================================
+# 测试 7b：ReferenceQualityAnalyzer（双视频对齐 + 逐帧 PSNR/SSIM，纯逻辑）
+# =================================================
+videoeye_add_test(test_reference_quality_analyzer
+    unit/test_reference_quality_analyzer.cpp
+)
+target_link_libraries(test_reference_quality_analyzer PRIVATE VideoEyeAnalysis)
+add_test(NAME ReferenceQualityAnalyzerTests COMMAND test_reference_quality_analyzer)
+
+# =================================================
+# 测试 7c：ReferenceQualityRunner（真实解码 + 双文件对齐，端到端）
+# =================================================
+videoeye_add_test(test_reference_quality_runner
+    unit/test_reference_quality_runner.cpp
+)
+target_link_libraries(test_reference_quality_runner PRIVATE
+    VideoEyeAnalysis
+    videoeye_test_media_factory)
+add_test(NAME ReferenceQualityRunnerTests COMMAND test_reference_quality_runner)
+
+# =================================================
+# 测试 7d：ReferenceQualityExporter（CSV / JSON 导出，不依赖 Qt / FFmpeg）
+# 说明: 钉住四件事 —— UTF-8 BOM、NaN 不落 0、无损帧的 +inf（CSV 写
+#       inf / JSON 用 lossless 补语义）、失败原因进元数据。导出器只吃
+#       domain 结果类型，所以只链 VideoEyeReporting。
+# =================================================
+videoeye_add_test(test_reference_quality_exporter
+    unit/test_reference_quality_exporter.cpp
+)
+target_link_libraries(test_reference_quality_exporter PRIVATE VideoEyeReporting)
+add_test(NAME ReferenceQualityExporterTests COMMAND test_reference_quality_exporter)
+
+# =================================================
 # 测试 8：AudioQcAnalyzer (不依赖 FFmpeg / Qt，喂合成 PCM)
 # =================================================
 videoeye_add_test(test_audio_qc_analyzer
@@ -2536,6 +2568,25 @@ target_link_libraries(test_color_hdr_page PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets)
 add_test(NAME ColorHdrPageTests COMMAND test_color_hdr_page)
 set_tests_properties(ColorHdrPageTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# =================================================
+# 测试 61b：参考帧质量对比页（汇总 / 逐帧表 / 空态 / 表格上限）
+# 说明: 这一页自己起一次双视频后台任务（不共用全文件扫描），页面测试只喂
+#       SetResult —— 解码与对齐由 test_reference_quality_runner 覆盖。
+#       钉的是显示口径：无损帧的 +inf 要显示成「∞（无损）」而不是空白、
+#       失败帧要显示错误原因、几千帧时表格有上限且报出总帧数、换文件即作废。
+# =================================================
+videoeye_add_test(test_reference_quality_page
+    unit/test_reference_quality_page.cpp
+)
+target_link_libraries(test_reference_quality_page PRIVATE
+    VideoEyeUiAnalysisPages
+    VideoEyeDomain
+    VideoEyeUiCharts
+    Qt6::Core Qt6::Gui Qt6::Widgets)
+add_test(NAME ReferenceQualityPageTests COMMAND test_reference_quality_page)
+set_tests_properties(ReferenceQualityPageTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # =================================================
