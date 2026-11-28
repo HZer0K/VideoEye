@@ -428,8 +428,10 @@ TEST(AudioOutputStabilityTest, StopClearsBacklogAndAllowsReopen) {
     const PcmFormat actual = MakeFormat(48000, 2, PcmSampleFormat::F32);
     FakeBackend* first = nullptr;
     FakeBackend* second = nullptr;
+    int created = 0;
     BackendInjection injection([&](AudioOutput::PullFn pull) -> std::unique_ptr<AudioOutput::Backend> {
         auto b = std::make_unique<FakeBackend>(actual, std::move(pull));
+        ++created;
         if (first == nullptr)
             first = b.get();
         else
@@ -451,7 +453,10 @@ TEST(AudioOutputStabilityTest, StopClearsBacklogAndAllowsReopen) {
 
     ASSERT_TRUE(output.Open(kSrcRate, kSrcChannels)) << "Stop 之后必须能重新打开";
     ASSERT_NE(nullptr, second);
-    EXPECT_NE(first, second) << "重新打开必须换一个新后端";
+    // 不能比裸指针：first 指向的对象在 Stop() 里已经释放，分配器完全可以把新后端
+    // 放在同一个地址上（实测会偶发，与产品质量无关）。真正要钉的是"重新打开走了
+    // 一次新的后端创建"，所以数工厂调用次数。
+    EXPECT_EQ(created, 2) << "重新打开必须新建一个后端，而不是复用已 Stop 的实例";
     EXPECT_EQ(Src(), second->requested());
 }
 
