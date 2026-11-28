@@ -7,6 +7,10 @@
 #include "core/analysis/codec/Av1BitstreamParser.h"
 #include "core/analysis/codec/H264BitstreamParser.h"
 #include "core/analysis/codec/HevcBitstreamParser.h"
+#include "core/analysis/codec/VvcBitstreamParser.h"
+#include "core/analysis/codec/VvcNalTypes.h"
+#include "core/analysis/codec/VvcSliceHeader.h"
+#include "core/media/codec/BitReader.h"
 #include "core/media/codec/ExtradataParser.h"
 
 extern "C" {
@@ -34,6 +38,21 @@ bool IsHevcSlice(int nal_type) {
 
 bool IsHevcIrap(int nal_type) {
     return nal_type >= 16 && nal_type <= 23;
+}
+
+// VvcBitstreamParser 的入口要的是 NalUnit（拥有 data），而扫包路径拿到的是
+// 零拷贝的 NalView。参数集与 PH 每份流只有几个，这点拷贝远小于"为省一次
+// 拷贝而再抄一套 VVC 解析"的代价。
+NalUnit OwnedNalUnit(const NalView& view) {
+    NalUnit nal;
+    nal.type = view.type;
+    nal.is_idr = view.is_idr;
+    nal.is_keyframe = view.is_keyframe;
+    nal.nal_ref_idc = view.nal_ref_idc;
+    if (view.payload != nullptr && view.size > 0)
+        nal.data.assign(view.payload, view.payload + view.size);
+    nal.size = static_cast<uint32_t>(nal.data.size());
+    return nal;
 }
 
 // 极简 RBSP 位读取（只需要 ue(v) 与定长位）
@@ -166,9 +185,21 @@ void ParameterSetTracker::Reset(int codec_id, int stream_index, const Options& o
         enabled_ = true;
         timeline_.codec_name = "av1";
         break;
+    case AV_CODEC_ID_VVC:
+        enabled_ = true;
+        timeline_.codec_name = "vvc";
+        break;
+    case AV_CODEC_ID_VP9:
+        // VP9 的序列/帧信息内联在关键帧的 uncompressed header 里，没有独立的
+        // 参数集单元可以"逐份比对内容是否被替换"。"参数集中途变了"在它身上
+        // 没有可对齐的语义，硬记只会把每帧都算成一次变化。
+        // 帧级信息由 BitstreamAnalyzer 的带内解析负责，不在本类。
+        enabled_ = false;
+        disabled_reason_ = "VP9 的参数内联在关键帧头里，没有可逐份比对的参数集单元";
+        break;
     default:
         enabled_ = false;
-        disabled_reason_ = "该编码未实现参数变化追踪（当前覆盖 H.264 / HEVC / AV1）";
+        disabled_reason_ = "该编码未实现参数变化追踪（当前覆盖 H.264 / HEVC / VVC / AV1）";
         break;
     }
 }
@@ -216,6 +247,9 @@ void ParameterSetTracker::Feed(const uint8_t* data, size_t size, double pts_seco
         break;
     case AV_CODEC_ID_AV1:
         FeedAv1(data, size, pts_seconds, packet_index, file_offset);
+        break;
+    case AV_CODEC_ID_VVC:
+        FeedVvc(data, size, pts_seconds, packet_index, file_offset);
         break;
     default:
         break;
@@ -327,6 +361,48 @@ void ParameterSetTracker::FeedHevc(const uint8_t* data, size_t size, double pts,
     }
 }
 
+// VVC 的参数集引用关系与 HEVC 有一处结构差异：PPS id **不在** slice_header 里，
+// 而在 picture_header（ph_pic_parameter_set_id）。所以 AddReference 记在 PH 上；
+// 记在 slice 上会得到一张永远空着的引用表，而报告里"引用了哪些参数集"就变成
+// 一句无证据的"没有引用"。
+void ParameterSetTracker::FeedVvc(const uint8_t* data, size_t size, double pts, int64_t packet_index,
+                                  int64_t file_offset) {
+    int width = 0;
+    const bool length_prefixed = DecideFraming(data, size, width);
+    if (length_prefixed && width <= 0)
+        return;
+
+    auto visit = [&](const NalView& nal) {
+        const int type = static_cast<int>(nal.type);
+        if (type == kVvcNutVps) {
+            RegisterVvcVps(nal, pts, packet_index, file_offset);
+        } else if (type == kVvcNutSps) {
+            RegisterVvcSps(nal, pts, packet_index, file_offset);
+        } else if (type == kVvcNutPps) {
+            RegisterVvcPps(nal, pts, packet_index, file_offset);
+        } else if (type == kVvcNutPh) {
+            // PH 前缀（几个标志 + ue(v) 的 pps_id）够定位引用关系。读不出来就
+            // 跳过这一幅图——参数集本身的登记不依赖它，不必整包放弃。
+            const std::vector<uint8_t> rbsp = VvcBitstreamParser::GetRbsp(OwnedNalUnit(nal));
+            if (rbsp.empty())
+                return;
+            BitReader reader;
+            reader.Reset(rbsp.data(), rbsp.size());
+            VvcPhPrefix ph;
+            if (!VvcSliceHeaderParser::ReadPhPrefix(reader, ph) || ph.pps_id < 0)
+                return;
+            // PH 就是"一幅图像的头"，按图像首片记（与 HEVC 的 first_slice 同口径）。
+            AddReference(model::ParameterSetKind::Pps, ph.pps_id, true, pts, packet_index);
+        }
+    };
+
+    if (length_prefixed) {
+        ExtradataParser::ForEachLengthPrefixedNalUnit(data, size, NalSyntax::Vvc, width, nullptr, visit);
+    } else {
+        ExtradataParser::ForEachAnnexBNalUnit(data, size, NalSyntax::Vvc, visit);
+    }
+}
+
 // ---- 单个参数集 NAL 的登记（扫包与扫 extradata 共用）----
 
 bool ParameterSetTracker::RegisterH264Sps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
@@ -381,6 +457,45 @@ bool ParameterSetTracker::RegisterHevcPps(const NalView& nal, double pts, int64_
     return true;
 }
 
+// ---- VVC（H.266）----
+// 只跟踪 VPS / SPS / PPS 三类。理由写在这里而不是散在注释里：
+//   * OPI / DCI 是"整份流的能力声明"，不会在播放中途按图像变化，
+//     登记它们只会给时间线加噪声；
+//   * APS（ALF / LMCS / 缩放列表的系数集）确实是参数集，但它逐图就可能换一份，
+//     而且不影响分辨率 / 位深 / QP 基准这三件报告真正回答的事 —— 记进来会让
+//     "参数集中途变了"这条结论被工具参数刷新淹没。
+bool ParameterSetTracker::RegisterVvcVps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    const model::VvcVpsInfo vps = VvcBitstreamParser::ParseVpsFromNalUnit(OwnedNalUnit(nal));
+    if (!vps.present)
+        return false;
+    RegisterSet(model::ParameterSetKind::Vps, vps.vps_video_parameter_set_id,
+                "VPS id=" + std::to_string(vps.vps_video_parameter_set_id), nal.payload, nal.size, pts, packet_index,
+                file_offset);
+    return true;
+}
+
+bool ParameterSetTracker::RegisterVvcSps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    const model::VvcSpsInfo sps = VvcBitstreamParser::ParseSpsFromNalUnit(OwnedNalUnit(nal));
+    if (!sps.present)
+        return false;
+    // 摘要口径与 H.264 / HEVC 一致（ConfigText）：分辨率 + 位深 + 色度格式。
+    // 这三项任一变化都会让"借用参考时基"和"像素格式选择"失效，是必须报的。
+    const std::string summary = ConfigText(sps.width(), sps.height(), sps.BitDepthLuma(), sps.sps_chroma_format_idc);
+    RegisterSet(model::ParameterSetKind::Sps, sps.sps_seq_parameter_set_id, summary, nal.payload, nal.size, pts,
+                packet_index, file_offset);
+    return true;
+}
+
+bool ParameterSetTracker::RegisterVvcPps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset) {
+    const model::VvcPpsInfo pps = VvcBitstreamParser::ParsePpsFromNalUnit(OwnedNalUnit(nal));
+    if (!pps.present)
+        return false;
+    RegisterSet(model::ParameterSetKind::Pps, pps.pps_pic_parameter_set_id,
+                "引用 SPS(id=" + std::to_string(pps.pps_seq_parameter_set_id) + ")", nal.payload, nal.size, pts,
+                packet_index, file_offset);
+    return true;
+}
+
 bool ParameterSetTracker::FeedExtradata(const uint8_t* data, size_t size) {
     if (!enabled_ || data == nullptr || size == 0)
         return false;
@@ -416,6 +531,21 @@ bool ParameterSetTracker::FeedExtradata(const uint8_t* data, size_t size) {
                     ++registered;
             } else if (type == kHevcPps) {
                 if (RegisterHevcPps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
+                    ++registered;
+            }
+        }
+    } else if (codec_id_ == AV_CODEC_ID_VVC) {
+        // 与 HEVC 同形：vvcC 里按 VPS / SPS / PPS 的顺序带参数集（也可能一个都不带）。
+        for (const NalUnit& nal : parsed.nal_units) {
+            const int type = static_cast<int>(nal.type);
+            if (type == kVvcNutVps) {
+                if (RegisterVvcVps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
+                    ++registered;
+            } else if (type == kVvcNutSps) {
+                if (RegisterVvcSps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
+                    ++registered;
+            } else if (type == kVvcNutPps) {
+                if (RegisterVvcPps(ToNalView(nal), kNoPts, kNoPosition, kNoPosition))
                     ++registered;
             }
         }

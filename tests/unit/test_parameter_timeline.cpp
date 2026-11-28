@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "core/analysis/codec/ParameterSetTracker.h"
+#include "tests/unit/VvcTestBitstream.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -145,6 +146,35 @@ std::vector<uint8_t> AnnexB(int nal_type, int nal_ref_idc, const std::vector<uin
 }
 
 constexpr int kH264 = AV_CODEC_ID_H264;
+
+// ---- VVC（H.266）辅助 ----
+//
+// VVC 的 NAL header 是 2 字节：byte0 = forbidden|reserved|layer_id 高 6 位，
+// byte1 = nal_unit_type(5) | nuh_temporal_id_plus1(3)。
+// ⚠️ 别沿用 H.264 的 1 字节封装（(nal_ref_idc<<5)|type）——那样 type 会整体错。
+std::vector<uint8_t> VvcAnnexB(int nal_type, const std::vector<uint8_t>& rbsp) {
+    std::vector<uint8_t> out = {0x00, 0x00, 0x00, 0x01};
+    out.push_back(0x00); // forbidden_zero_bit | nuh_reserved_zero_bit | layer_id(6)=0
+    out.push_back(static_cast<uint8_t>(((nal_type & 0x1F) << 3) | 1)); // type | tid_plus1=1
+    out.insert(out.end(), rbsp.begin(), rbsp.end());
+    return out;
+}
+
+// 一个只包含到 pps_id 的 picture_header（NAL 19）。
+// ReadPhPrefix 只读前 5 位标志 + ue(v) 的 pps_id，后面的字段不需要。
+std::vector<uint8_t> MakeVvcPh(int pps_id) {
+    BitWriter w;
+    w.U(0, 1);                           // ph_gdr_or_irap_pic_flag（0 时没有 ph_gdr_pic_flag）
+    w.U(0, 1);                           // ph_non_ref_pic_flag
+    w.U(1, 1);                           // ph_inter_slice_allowed_flag
+    w.U(1, 1);                           // ph_intra_slice_allowed_flag
+    w.Ue(static_cast<uint32_t>(pps_id)); // ph_pic_parameter_set_id
+    w.Trailing();
+    return w.Bytes();
+}
+
+constexpr int kVvc = AV_CODEC_ID_VVC;
+constexpr int kVvcNutPh = 19;
 
 } // namespace
 
@@ -456,4 +486,84 @@ TEST(ParameterSetTrackerTest, FinishIsIdempotent) {
     const int64_t first = tracker.result().missing_reference_count;
     tracker.Finish();
     EXPECT_EQ(tracker.result().missing_reference_count, first) << "重复 Finish 不能把缺失计数翻倍";
+}
+
+// ---------------------------------------------------------------------------
+// VVC（H.266）接入
+//
+// 起点：Reset() 对 VVC 走 default 分支 → enabled_=false，整条参数时间线零产出。
+// 也就是说 VVC 文件"参数集中途被换了一套"这件事在报告里完全看不到 —— 不是
+// "没变化"，是"没看过"。这里守三件：能启用、真实 vvcC 能登记、PH 的 PPS
+// 引用关系记在 PH 上（VVC 的 pps_id 不在 slice 里）。
+// ---------------------------------------------------------------------------
+
+TEST(ParameterSetTrackerTest, VvcIsEnabled) {
+    ParameterSetTracker tracker;
+    tracker.Reset(kVvc, 0);
+    EXPECT_TRUE(tracker.enabled()) << "VVC 必须启用参数变化追踪，否则整条时间线是空的";
+    EXPECT_TRUE(tracker.disabled_reason().empty());
+    EXPECT_EQ(tracker.result().codec_name, "vvc");
+}
+
+TEST(ParameterSetTrackerTest, Vp9IsDisabledWithAReason) {
+    // VP9 的参数内联在关键帧头里，没有可逐份比对的参数集单元。
+    // 关键是"禁用要带理由"，不能静默留空。
+    ParameterSetTracker tracker;
+    tracker.Reset(AV_CODEC_ID_VP9, 0);
+    EXPECT_FALSE(tracker.enabled());
+    EXPECT_NE(tracker.disabled_reason().find("关键帧头"), std::string::npos) << tracker.disabled_reason();
+}
+
+TEST(ParameterSetTrackerTest, VvcExtradataRegistersSpsAndPps) {
+    ParameterSetTracker tracker;
+    tracker.Reset(kVvc, 0);
+    const std::vector<uint8_t>& vvcC = VvcTestRealLibvvencVvcC();
+    ASSERT_TRUE(tracker.FeedExtradata(vvcC.data(), vvcC.size()));
+    tracker.Finish();
+
+    const auto& timeline = tracker.result();
+    // analyzed 只由"扫过包"置位；这里只喂了 extradata，所以不判它。
+    ASSERT_EQ(timeline.parameter_sets.size(), 2u) << "真实 vvcC 带 SPS + PPS 两组";
+    EXPECT_EQ(timeline.parameter_sets[0].kind, videoeye::model::ParameterSetKind::Sps);
+    EXPECT_EQ(timeline.parameter_sets[0].summary, "640x360 / 10 bit / 4:2:0")
+        << "摘要口径必须与 H.264 / HEVC 一致（分辨率 / 位深 / 色度）";
+    EXPECT_EQ(timeline.parameter_sets[1].kind, videoeye::model::ParameterSetKind::Pps);
+}
+
+TEST(ParameterSetTrackerTest, VvcPhRecordsPpsReference) {
+    ParameterSetTracker tracker;
+    tracker.Reset(kVvc, 0);
+    const std::vector<uint8_t>& vvcC = VvcTestRealLibvvencVvcC();
+    ASSERT_TRUE(tracker.FeedExtradata(vvcC.data(), vvcC.size()));
+
+    const std::vector<uint8_t> ph = VvcAnnexB(kVvcNutPh, MakeVvcPh(0));
+    tracker.Feed(ph.data(), ph.size(), 0.5, 1, 400);
+    tracker.Finish();
+
+    const auto& timeline = tracker.result();
+    EXPECT_EQ(timeline.missing_reference_count, 0) << "PPS 0 在 vvcC 里传过，不该算缺失";
+    ASSERT_FALSE(timeline.references.empty()) << "PPS 引用必须记在 PH 上，否则引用表永远是空的";
+    const auto& ref = timeline.references[0];
+    EXPECT_EQ(ref.kind, videoeye::model::ParameterSetKind::Pps);
+    EXPECT_EQ(ref.id, 0);
+    EXPECT_TRUE(ref.transmitted);
+    EXPECT_FALSE(ref.referenced_before_transmit);
+    EXPECT_EQ(ref.frame_count, 1) << "一个 PH 就是一幅图像";
+}
+
+TEST(ParameterSetTrackerTest, VvcPhReferencingUntransmittedPpsIsMissing) {
+    ParameterSetTracker tracker;
+    tracker.Reset(kVvc, 0);
+    // 只喂 PH，不喂任何参数集：解码必然失败，这是硬证据，不能被吞掉。
+    const std::vector<uint8_t> ph = VvcAnnexB(kVvcNutPh, MakeVvcPh(3));
+    tracker.Feed(ph.data(), ph.size(), 0.0, 0, 0);
+    tracker.Finish();
+
+    const auto& timeline = tracker.result();
+    EXPECT_EQ(timeline.missing_reference_count, 1);
+    ASSERT_FALSE(timeline.references.empty());
+    EXPECT_EQ(timeline.references[0].id, 3);
+    EXPECT_FALSE(timeline.references[0].transmitted);
+    // 注意：referenced_before_transmit 专门表示"传输晚于引用"（先引用后补传），
+    // 从未传输的情形由 missing_reference_count 承担，别把两者混成一个判据。
 }

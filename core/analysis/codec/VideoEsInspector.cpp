@@ -10,6 +10,7 @@ extern "C" {
 
 #include "core/analysis/codec/H264BitstreamParser.h"
 #include "core/analysis/codec/VvcBitstreamParser.h"
+#include "core/analysis/codec/VvcNalTypes.h"
 #include "core/media/codec/BitReader.h"
 #include "core/media/codec/ExtradataParser.h"
 
@@ -52,15 +53,9 @@ constexpr int kH264NalPps = 8;
 // 按"淘汰最旧"处理，避免包内垃圾数据把表撑大。
 constexpr size_t kParamSetCapacity = 32;
 
-// VVC NAL 类型（H.266 7.4.1 Table 5）。VCL 是 0..11，其余只有这四种与巡检有关。
+// VVC 的 NAL 类型定义在 VvcNalTypes.h（唯一事实源）。
 // ❗ 千万别沿用 HEVC 的编号（HEVC 的 SPS=33 / PPS=34 / SEI=39/40）；
 //    按 HEVC 的判据，VVC 的 SPS(15) 会被当成 VCL 去解 slice header。
-constexpr int kVvcNalSps = 15;
-constexpr int kVvcNalPps = 16;
-constexpr int kVvcNalPh = 19;
-constexpr int kVvcNalSeiPrefix = 23;
-constexpr int kVvcNalSeiSuffix = 24;
-constexpr int kVvcNalVclLast = 11;
 
 // Dolby Vision RPU：HEVC 里挂在 NAL type 62（unspecified）上，
 // RPU payload 首字节恒为 0x19。
@@ -536,21 +531,21 @@ void VideoEsInspector::InspectVvc(const uint8_t* data, size_t size) {
     ForEachNalUnit(data, size, NalSyntax::Vvc, [this](const NalView& nal) {
         const int type = static_cast<int>(nal.type);
 
-        if (type == kVvcNalSps || type == kVvcNalPps) {
+        if (type == kVvcNutSps || type == kVvcNutPps) {
             // 带内参数集：TS / 裸流 / 中途切参数集只有这条通路能把当前参数补进表。
             // 复用码流解析器，不在巡检器里再写一份 SPS/PPS 语法（两份迟早分叉）。
             NalUnit unit;
             unit.type = nal.type;
             unit.size = nal.size;
             unit.data.assign(nal.payload, nal.payload + nal.size);
-            if (type == kVvcNalSps)
+            if (type == kVvcNutSps)
                 StoreVvcSps(VvcBitstreamParser::ParseSpsFromNalUnit(unit));
             else
                 StoreVvcPps(VvcBitstreamParser::ParsePpsFromNalUnit(unit));
             return;
         }
 
-        if (type == kVvcNalPh) {
+        if (type == kVvcNutPh) {
             const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);
             VvcPhPrefix ph;
             if (!rbsp.empty()) {
@@ -565,14 +560,14 @@ void VideoEsInspector::InspectVvc(const uint8_t* data, size_t size) {
             return;
         }
 
-        if (type == kVvcNalSeiPrefix || type == kVvcNalSeiSuffix) {
+        if (type == kVvcNutPrefixSei || type == kVvcNutSuffixSei) {
             // VVC 的 SEI payload 结构与 HEVC 完全相同（都由 H.274 定义），
             // 复用同一条通路；MDCV(137) / CLL(144) / HDR10+(T.35) 的编号也一致。
             ParseSeiRbsp(nal.payload, nal.size, /*is_hevc=*/true);
             return;
         }
 
-        if (type < 0 || type > kVvcNalVclLast)
+        if (type < 0 || type > kVvcNutVclLast)
             return; // AUD / OPI / DCI / APS / EOS / EOB / FD：与 slice 无关
 
         const std::vector<uint8_t> rbsp = UnescapeRbsp(nal.payload, nal.size);

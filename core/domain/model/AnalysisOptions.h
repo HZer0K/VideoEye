@@ -314,7 +314,8 @@ struct AnalysisOptions {
     // 编码码流解析（从 AVCodecParameters::extradata 解析 SPS/VPS/Sequence Header，
     // 与容器层宽高/位深/色彩做一致性对比，见 core/analysis/codec/BitstreamAnalyzer.h）。
     // 不解码、只读 KB 级 extradata，成本可忽略；目前支持 H.264 / HEVC / VP9 / AV1 / VVC
-    // （VVC 为实验性部分支持：参数集关键字段能解，PPS 与真实样本覆盖仍不完整）。
+    // （VVC 的参数集与帧级 slice 已能解；QP 仍受 slice 侧可变段限制，见 VvcSliceHeader.h
+    //  的边界表 —— 那里写的是"哪一类流拿不到 QP 以及原因"，不是"整体不可用"）。
     //
     // extradata 为空的封装（MPEG-TS / 裸流 / fMP4 媒体分片）改走"带内参数集"：
     // 扫前若干个视频包、从码流里抽 SPS/VPS/序列头（见 core/analysis/codec/

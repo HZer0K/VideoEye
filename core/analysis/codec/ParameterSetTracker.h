@@ -62,7 +62,8 @@ public:
     }
     void Reset(int codec_id, int stream_index, const Options& options);
 
-    // H.264 / HEVC / AV1 才有意义（VVC/VP9 暂未接入，理由见 .cpp）
+    // H.264 / HEVC / VVC / AV1 才有意义（VP9 暂未接入：它的"参数集"只在
+    // 关键帧头里，没有独立的参数集单元可逐份比对，理由见 .cpp）
     bool enabled() const {
         return enabled_;
     }
@@ -107,6 +108,7 @@ private:
     void FeedH264(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
     void FeedHevc(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
     void FeedAv1(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
+    void FeedVvc(const uint8_t* data, size_t size, double pts, int64_t packet_index, int64_t file_offset);
 
     // 这一包用长度前缀还是 Annex B（Auto 模式下可能在这里做首包探测）。
     // 返回 true 时 *width 是前缀字节数；<= 0 表示"判定为长度前缀但宽度未知"，该包放弃。
@@ -121,6 +123,9 @@ private:
     bool RegisterHevcVps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
     bool RegisterHevcSps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
     bool RegisterHevcPps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterVvcVps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterVvcSps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
+    bool RegisterVvcPps(const NalView& nal, double pts, int64_t packet_index, int64_t file_offset);
 
     // 登记（或更新）一份参数集；内容变化时产出变化事件
     void RegisterSet(model::ParameterSetKind kind, int id, const std::string& summary, const uint8_t* payload,

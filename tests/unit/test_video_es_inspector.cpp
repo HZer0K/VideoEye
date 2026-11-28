@@ -888,7 +888,7 @@ TEST(VideoEsInspectorTests, VvcIdrSliceYieldsTypeAndQp) {
     EXPECT_EQ(s.qp_parsed_slices, 1);
 }
 
-// 非 I slice：类型照给，QP 必须拒绝，并写清"为什么"。
+// 非 I slice 且 RPL 数据不全：类型照给，QP 拒绝，并写清"为什么"。
 TEST(VideoEsInspectorTests, VvcPSliceKeepsTypeButNotQp) {
     VideoEsInspector inspector;
     inspector.Reset(AV_CODEC_ID_VVC);
@@ -911,8 +911,50 @@ TEST(VideoEsInspectorTests, VvcPSliceKeepsTypeButNotQp) {
     EXPECT_EQ(s.type_p, 1);
     EXPECT_EQ(s.frames, 1);
     EXPECT_FALSE(s.qp_valid);
-    // 具体原因必须露出来：与 H.264 的"没有 PPS 基准"完全不是一回事
-    EXPECT_NE(s.qp_unavailable_reason.find("非 I slice"), std::string::npos) << s.qp_unavailable_reason;
+    // 具体原因必须露出来：与 H.264 的"没有 PPS 基准"完全不是一回事。
+    EXPECT_NE(s.qp_unavailable_reason.find("ref_pic_lists()"), std::string::npos) << s.qp_unavailable_reason;
+}
+
+// P slice 带完整 RPL 数据时应当真的给出 QP —— 与上面那个用例是一对：
+// 一个证明"缺数据会拒绝"，一个证明"数据齐了会给"，避免把"永远不给"当成设计。
+TEST(VideoEsInspectorTests, VvcPSliceWithRplYieldsQp) {
+    VideoEsInspector inspector;
+    inspector.Reset(AV_CODEC_ID_VVC);
+    inspector.SetNalFraming(VideoEsInspector::NalFraming::AnnexB);
+
+    videoeye::model::VvcSpsInfo sps = MakeVvcSps();
+    sps.sps_num_ref_pic_lists[0] = 1;
+    sps.sps_num_ref_pic_lists[1] = 0;
+    sps.rpl_recorded = true;
+    auto& list = sps.sps_ref_pic_lists[0][0];
+    list.recorded = true;
+    list.num_ref_entries = 1;
+    list.ltrp_in_header_flag = false;
+    list.inter_layer_ref_pic_flag = {0};
+    list.st_ref_pic_flag = {1}; // 短期参考 ⇒ 没有 ltrp 段
+    inspector.SetVvcParameterSets(sps, MakeVvcPps());
+
+    std::vector<uint8_t> packet = MakeVvcAnnexB(19, MakeVvcPhPayload(true, 0));
+    BitWriter w;
+    w.PutBool(false);
+    w.PutUE(1);      // P
+    w.PutBool(true); // rpl_sps_flag[0] = 1（用 SPS 里那一条，num_ref_pic_lists==1 ⇒ 不读 rpl_idx）
+    w.PutUE(0);      // list 1 内联：num_ref_entries = 0
+    // num_entries[0] == 1 ⇒ sh_num_ref_idx_active_override_flag 不存在
+    w.PutSE(2); // sh_qp_delta
+    const std::vector<uint8_t> slice = MakeVvcAnnexB(0, w.bytes());
+    packet.insert(packet.end(), slice.begin(), slice.end());
+
+    ASSERT_TRUE(inspector.Feed(packet.data(), packet.size()));
+    inspector.Finish();
+
+    const auto& s = inspector.result().slices;
+    EXPECT_TRUE(s.supported);
+    ASSERT_EQ(s.slice_count, 1);
+    EXPECT_EQ(s.type_p, 1);
+    EXPECT_TRUE(s.qp_valid) << s.qp_unavailable_reason;
+    EXPECT_EQ(s.qp_parsed_slices, 1);
+    EXPECT_EQ(s.qp_min, 26 + 4 + 2);
 }
 
 // 一幅图像两个 slice（4 个 tile 的非矩形布局）：slice 数 2，帧数 1。

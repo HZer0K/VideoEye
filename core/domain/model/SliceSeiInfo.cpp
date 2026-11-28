@@ -59,6 +59,14 @@ std::string SliceSummary::Summary() const {
     out += ")";
     if (qp_valid) {
         out += " / QP=[" + std::to_string(qp_min) + ", " + std::to_string(qp_max) + "] avg=" + Fixed(qp_avg, 1);
+        // ❗ 分母必须说出来。qp_min/max/avg 的分母是 qp_parsed_slices，而
+        // slice_count 可能明显更大 —— VVC 的非 I slice 在 ref_pic_lists() /
+        // pred_weight_table() 之后才轮到 sh_qp_delta，拿不到 QP 时只记类型。
+        // 只报区间和均值，读到的人会以为这是全片逐帧曲线（而它可能只覆盖几个
+        // IDR slice），这是"看着合理的假结论"，比没有更糟。
+        if (qp_parsed_slices < slice_count) {
+            out += "（覆盖 " + std::to_string(qp_parsed_slices) + "/" + std::to_string(slice_count) + " slice）";
+        }
     } else {
         out += " / QP 不可用";
         if (!qp_unavailable_reason.empty()) {

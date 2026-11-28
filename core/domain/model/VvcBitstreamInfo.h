@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace videoeye {
 namespace model {
@@ -101,6 +102,32 @@ struct VvcVpsInfo {
 inline constexpr int kMaxVvcExtraBytes = 3;
 inline constexpr int kMaxVvcExtraBitFlags = kMaxVvcExtraBytes * 8;
 
+// 一条 ref_pic_list_struct（H.266 7.3.2.5）的**记录**形态。
+//
+// 为什么必须记下来：slice_header 的 ref_pic_lists() 在 rpl_sps_flag == 1 时
+// 只知道"用 SPS 里的第 rpl_idx 条"，而它后面压着一段 ltrp 语法 ——
+//   num_ltrp_entries = 该项里 inter_layer_ref_pic_flag == 0 且
+//                      st_ref_pic_flag == 0 的项数
+//   for j < num_ltrp_entries: [poc_lsb_lt] delta_poc_msb_cycle_present_flag ...
+// 不记这两个标志就数不出 num_ltrp_entries，也就定位不到 sh_qp_delta。
+// 后果不是报错，是"P/B slice 一律没有 QP"（看起来像"本来就不支持"）。
+struct VvcRefPicListStruct {
+    bool recorded = false;
+    int num_ref_entries = 0;
+    bool ltrp_in_header_flag = false;
+    // 每项两个属性。用 uint8_t 而不是 vector<bool>：后者不是容器，
+    // 取地址/并发读都是坑，而这里只有 0/1。
+    std::vector<std::uint8_t> inter_layer_ref_pic_flag;
+    std::vector<std::uint8_t> st_ref_pic_flag;
+};
+
+// 两条 RPL 各最多多少份（sps_num_ref_pic_lists[i] 的规范上限是 64）
+inline constexpr int kMaxVvcRefPicLists = 64;
+// 单份 RPL 最多记多少项（num_ref_entries 的规范上限是 64）。
+// 超过说明是畸形流：整份 SPS 仍可用，但 rpl_recorded 置 false，
+// slice 侧据此拒绝 QP —— 不猜。
+inline constexpr int kMaxRecordedRefEntries = 64;
+
 struct VvcSpsInfo {
     bool present = false;
 
@@ -177,6 +204,15 @@ struct VvcSpsInfo {
     bool sps_dep_quant_enabled_flag = false;
     bool sps_sign_data_hiding_enabled_flag = false;
     int sps_num_ref_pic_lists[2] = {0, 0};
+
+    // SPS 里携带的 RPL 结构本体（slice 侧 ref_pic_lists() 的地基，见
+    // VvcRefPicListStruct 上方说明）。
+    //   rpl_recorded  —— 这一段是否**完整**记下来了。任何一个 list 超限、
+    //                    或位流在读这段时出错，都置 false；此时 sps_ref_pic_lists
+    //                    的内容不可信，slice 侧必须据此拒绝 QP，不能"用剩下的凑"。
+    // 记的是 [list_idx][rpls_idx]。
+    bool rpl_recorded = false;
+    VvcRefPicListStruct sps_ref_pic_lists[2][kMaxVvcRefPicLists];
 
     bool sps_field_seq_flag = false;
     bool sps_vui_parameters_present_flag = false;

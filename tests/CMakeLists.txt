@@ -1374,6 +1374,20 @@ target_link_libraries(test_vvc_slice_header PRIVATE VideoEyeAnalysis)
 add_test(NAME VvcSliceHeaderTests COMMAND test_vvc_slice_header)
 
 # =================================================
+# 测试 23-A2：slice/SEI 摘要文案（纯 model 层）
+#
+# QP 的 min/max/avg 只对「成功解出 QP 的那部分 slice」成立。把分母吞掉，
+# QP=[22,34] avg=26.7 就会被读成全片逐帧曲线 —— 而 VVC 上"1 个 IDR 有 QP、
+# 52 个 P/B 没有"是常态。这里守的就是这句分母、以及"QP 不可用"必须带上
+# 具体原因（不是一律写"缺少 PPS 基准"）。
+# =================================================
+videoeye_add_test(test_slice_sei_summary
+    unit/test_slice_sei_summary.cpp
+)
+target_link_libraries(test_slice_sei_summary PRIVATE VideoEyeDomain)
+add_test(NAME SliceSeiSummaryTests COMMAND test_slice_sei_summary)
+
+# =================================================
 # 测试 23-B：VP9 码流解析（关键帧 uncompressed header）
 # 说明: VP9 没有参数集，序列配置写在关键帧头部；测试数据由测试文件内的
 #       逐位 BitWriter 按规范 6.2 生成，不参考 parser 实现。

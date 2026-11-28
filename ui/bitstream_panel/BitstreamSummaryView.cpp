@@ -128,8 +128,12 @@ void BitstreamSummaryView::SetResult(const model::BitstreamAnalysisResult& resul
         } else {
             const QString codec = result.codec_name.empty() ? QString::fromStdString(result.codec_id_str)
                                                             : QString::fromStdString(result.codec_name);
-            summary_label_->setText(tr("编码格式 %1 暂不支持码流级解析（当前支持 H.264 / HEVC / VP9 / AV1；"
-                                       "VVC 为实验性部分支持）。")
+            // ❗ 旧文案前后自相矛盾："暂不支持码流级解析（当前支持 …；VVC 为
+            //    实验性部分支持）" —— 既说不支持又说部分支持，读者无法判断
+            //    到底该不该换封装重解。这里只陈述"这一次没拿到结果"与
+            //    "支持范围到哪一层"，不再用"暂不支持"这种含混措辞。
+            summary_label_->setText(tr("编码格式 %1 本次没有可用的码流级解析结果（当前支持 "
+                                       "H.264 / HEVC / VVC / AV1 的参数集与帧级解析；VP9 只到参数集层）。")
                                         .arg(codec.isEmpty() ? tr("未知") : codec));
         }
         if (!result.capability_note.empty()) {

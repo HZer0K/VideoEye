@@ -108,6 +108,9 @@ struct SliceSummary {
     // 成功解出 QP 的 slice 数（qp_min/max/avg 的分母）。
     // ❗ slice_count 可能大于它：slice header 解到一半失败时，类型分布算不出来、
     // QP 更算不出来。把两者混为一个数会让"QP 均值"看着像覆盖了全部 slice。
+    // ❗❗ Summary() 必须把这两个数一起说出来（覆盖 N/M slice）。这不是措辞问题：
+    // VVC 的 sh_qp_delta 排在 ref_pic_lists() / pred_weight_table() 之后，非 I
+    // slice 很可能整段拿不到 QP —— 只报区间和均值就是一句"看着合理的假结论"。
     int qp_parsed_slices = 0;
     // QP 是不是真的算了：需要 PPS 给出 pic_init_qp_minus26 作为基准，且至少有一个
     // slice 的 QP 通过取值范围校验。拿不到 PPS 时只能把 slice_qp_delta 相加，

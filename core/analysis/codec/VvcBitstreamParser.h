@@ -43,10 +43,12 @@ public:
     // general_level_idc -> "3.1"（H.266 A.4：major * 16 + minor * 3）
     static std::string GetLevelVersion(uint32_t general_level_idc);
 
-private:
-    // 取出 RBSP：NalUnit::data 只含 payload，只需做 emulation prevention 反转义
+    // 取出 RBSP：NalUnit::data 只含 payload，只需做 emulation prevention 反转义。
+    // 公开是因为凡"解 VVC 位流"的调用方都要先过这一步（PH 前缀、slice header），
+    // 各抄一份 unescape 迟早会漏掉 00 00 03 的边界处理。
     static std::vector<uint8_t> GetRbsp(const videoeye::NalUnit& nal_unit);
 
+private:
     struct TimingHrdContext {
         bool nal_hrd_present = false;
         bool vcl_hrd_present = false;
@@ -66,8 +68,12 @@ private:
     static void SkipSubLayerHrdParameters(videoeye::BitReader& reader, const TimingHrdContext& ctx);
     static void SkipOlsTimingHrdParameters(videoeye::BitReader& reader, int first_sublayer, int max_sublayers_minus1,
                                            const TimingHrdContext& ctx);
+    // record != nullptr 时把这条 RPL 的结构一并记下来（slice 侧 ref_pic_lists()
+    // 要靠它算 num_ltrp_entries）。读出错或超出记录上限时 record->recorded = false，
+    // 调用方据此知道"这段不可信"，而不是拿到一份半截数据。
     static void SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
-                                     bool inter_layer_prediction, bool weighted_pred);
+                                     bool inter_layer_prediction, bool weighted_pred,
+                                     model::VvcRefPicListStruct* record = nullptr);
     static void ParseVuiParameters(videoeye::BitReader& reader, model::VvcVuiInfo& vui);
 };
 

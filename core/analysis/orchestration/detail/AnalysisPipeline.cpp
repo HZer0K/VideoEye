@@ -443,7 +443,7 @@ void AnalysisPipeline::PrepareBitstream(AVFormatContext* fmt, model::AnalysisRes
             parameter_trackers_.push_back(std::move(slot));
         }
         if (parameter_trackers_.empty()) {
-            LOG_INFO("参数变化追踪: 没有可追踪的视频轨（编码需为 H.264 / HEVC / AV1）");
+            LOG_INFO("参数变化追踪: 没有可追踪的视频轨（编码需为 H.264 / HEVC / VVC / AV1）");
         }
     }
 

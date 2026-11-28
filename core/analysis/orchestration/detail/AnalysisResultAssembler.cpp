@@ -211,7 +211,7 @@ DimensionStatus BuildParameterTimelineStatus(const DimensionContext& ctx) {
         return model::MakeSkippedDimension(AnalysisDimension::ParameterTimeline, "参数变化追踪选项已关闭");
     if (ctx.result.parameter_timelines.empty()) {
         return model::MakeSkippedDimension(AnalysisDimension::ParameterTimeline,
-                                           "没有可追踪的视频轨（需要 H.264 / HEVC / AV1）");
+                                           "没有可追踪的视频轨（需要 H.264 / HEVC / VVC / AV1）");
     }
     DimensionStatus status;
     status.dimension = AnalysisDimension::ParameterTimeline;

@@ -53,7 +53,7 @@ void ParameterTimelineView::RebuildTable() {
     }
     if (result_->parameter_timelines.empty()) {
         if (hint_)
-            hint_->setText(tr("本次未追踪参数变化（没有 H.264/HEVC/AV1 视频轨，或「参数变化追踪」选项已关闭）。"));
+            hint_->setText(tr("本次未追踪参数变化（没有 H.264/HEVC/VVC/AV1 视频轨，或「参数变化追踪」选项已关闭）。"));
         return;
     }
 

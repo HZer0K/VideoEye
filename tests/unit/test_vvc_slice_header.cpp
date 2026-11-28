@@ -429,10 +429,13 @@ TEST(VvcSliceHeaderTests, OutOfRangeQpIsRejected) {
 // QP：应当拒绝（并给出具体原因）的四种情形
 // --------------------------------------------------------------------------
 
-TEST(VvcSliceHeaderTests, NonIntraSliceDoesNotClaimQp) {
+TEST(VvcSliceHeaderTests, NonIntraSliceWithoutRplDataReportsWhy) {
     const VvcSpsInfo sps = MakeSps();
     const VvcPpsInfo pps = MakePps();
 
+    // 只写 inline_ph + 类型就结束：P slice 后面必须跟两条 RPL，缺了就是截断。
+    // 要点不是"拒绝"这件事，而是拒绝的理由必须指向 ref_pic_lists()，
+    // 别说成"非 I slice 一律不支持" —— 那是旧实现的能力缺失，不是规范结论。
     BitWriter w;
     w.Bit(0);
     w.Ue(1); // P
@@ -440,7 +443,171 @@ TEST(VvcSliceHeaderTests, NonIntraSliceDoesNotClaimQp) {
     ASSERT_TRUE(info.parsed);
     EXPECT_EQ(info.slice_type, 0);
     EXPECT_FALSE(info.has_qp);
-    EXPECT_NE(info.stop_reason.find("非 I slice"), std::string::npos) << info.stop_reason;
+    EXPECT_NE(info.stop_reason.find("ref_pic_lists()"), std::string::npos) << info.stop_reason;
+}
+
+// --------------------------------------------------------------------------
+// P slice 走完整 RPL 通道后应当真的给出 QP
+//
+// 这是本次改动的核心：以前"非 I slice 一律不给 QP"，理由是 RPL 与
+// pred_weight_table 是可变长段。现在按规范把这两段逐位跳过，P slice 也能给。
+// --------------------------------------------------------------------------
+
+TEST(VvcSliceHeaderTests, PSliceWithSpsRplGetsQp) {
+    VvcSpsInfo sps = MakeSps();
+    sps.sps_num_ref_pic_lists[0] = 1;
+    sps.sps_num_ref_pic_lists[1] = 0;
+    sps.rpl_recorded = true;
+    auto& list = sps.sps_ref_pic_lists[0][0];
+    list.recorded = true;
+    list.num_ref_entries = 2;
+    list.ltrp_in_header_flag = false;
+    list.inter_layer_ref_pic_flag = {0, 0};
+    list.st_ref_pic_flag = {1, 1}; // 两项都是短期参考 ⇒ num_ltrp_entries = 0
+
+    const VvcPpsInfo pps = MakePps();
+
+    BitWriter w;
+    w.Bit(0); // sh_picture_header_in_slice_header_flag
+    w.Ue(1);  // P
+    // ref_pic_lists()：
+    //   list 0 —— sps_num_ref_pic_lists[0] == 1 ⇒ 读 rpl_sps_flag，rpl_idx 推断为 0
+    w.Bit(1); // rpl_sps_flag[0] = 1（用 SPS 里那一条）
+    //   list 1 —— sps_num_ref_pic_lists[1] == 0 ⇒ rpl_sps_flag 推断 0，内联一条
+    w.Ue(0); // num_ref_entries = 0
+    // sh_num_ref_idx_active_override_flag：num_entries[0] == 2 > 1 ⇒ 存在
+    w.Bit(0); // 不覆盖 ⇒ num_ref_idx_active[0] = min(2, 默认 1) = 1
+    w.Se(2);  // sh_qp_delta
+
+    const VvcSliceHeaderInfo info = Parse(w.Bytes(), kTrail, MakePh(), sps, pps);
+    ASSERT_TRUE(info.parsed);
+    EXPECT_EQ(info.slice_type, 0);
+    ASSERT_TRUE(info.has_qp) << info.stop_reason;
+    EXPECT_EQ(info.qp, 26 + 4 + 2);
+}
+
+TEST(VvcSliceHeaderTests, IntraSliceWithInlineRplGetsQp) {
+    // I slice 也照样要读 ref_pic_lists()（条件不看 slice_type）。
+    // 两条 list 都内联，各带一个空的 num_ref_entries。
+    const VvcSpsInfo sps = MakeSps();
+    const VvcPpsInfo pps = MakePps();
+
+    BitWriter w;
+    w.Bit(0);
+    w.Ue(2); // I
+    w.Ue(0); // list 0 内联：num_ref_entries = 0
+    w.Ue(0); // list 1 内联：num_ref_entries = 0
+    w.Se(-1);
+
+    const VvcSliceHeaderInfo info = Parse(w.Bytes(), kTrail, MakePh(), sps, pps);
+    ASSERT_TRUE(info.parsed);
+    ASSERT_TRUE(info.has_qp) << info.stop_reason;
+    EXPECT_EQ(info.qp, 26 + 4 - 1);
+}
+
+// 加权预测：pred_weight_table() 的每一项都带"标志位 + 可选参数"，
+// 少读一个 chroma 标志后面就整段错位 —— 但错位后 QP 仍在合法范围内，
+// 只有"读出来的 QP 不等于期望值"能抓到。
+TEST(VvcSliceHeaderTests, PSliceWithWeightedPredictionGetsQp) {
+    VvcSpsInfo sps = MakeSps();
+    sps.sps_num_ref_pic_lists[0] = 1;
+    sps.sps_num_ref_pic_lists[1] = 0;
+    sps.rpl_recorded = true;
+    auto& list = sps.sps_ref_pic_lists[0][0];
+    list.recorded = true;
+    list.num_ref_entries = 2;
+    list.ltrp_in_header_flag = false;
+    list.inter_layer_ref_pic_flag = {0, 0};
+    list.st_ref_pic_flag = {1, 1};
+
+    VvcPpsInfo pps = MakePps();
+    pps.pps_weighted_pred_flag = true; // ⇒ P slice 里出现 pred_weight_table()
+
+    BitWriter w;
+    w.Bit(0);
+    w.Ue(1);  // P
+    w.Bit(1); // rpl_sps_flag[0] = 1
+    w.Ue(0);  // list 1 内联：num_ref_entries = 0
+    w.Bit(0); // sh_num_ref_idx_active_override_flag = 0 ⇒ num_ref_idx_active[0] = 1
+    // pred_weight_table()：luma denom + 两条标志 + 各自的差值
+    w.Ue(0);  // luma_log2_weight_denom
+    w.Se(0);  // delta_chroma_log2_weight_denom（chroma_format_idc != 0 才有）
+    w.Bit(1); // luma_weight_l0_flag[0]
+    w.Bit(1); // chroma_weight_l0_flag[0]
+    w.Se(1);  // delta_luma_weight_l0
+    w.Se(0);  // luma_offset_l0
+    w.Se(1);  // delta_chroma_weight_l0[0][0]
+    w.Se(0);  // delta_chroma_offset_l0[0][0]
+    w.Se(1);  // delta_chroma_weight_l0[0][1]
+    w.Se(0);  // delta_chroma_offset_l0[0][1]
+    w.Se(3);  // sh_qp_delta
+
+    const VvcSliceHeaderInfo info = Parse(w.Bytes(), kTrail, MakePh(), sps, pps);
+    ASSERT_TRUE(info.parsed);
+    ASSERT_TRUE(info.has_qp) << info.stop_reason;
+    EXPECT_EQ(info.qp, 26 + 4 + 3);
+}
+
+// 内联 RPL + 长期参考：ltrp_in_header_flag 在"内联位置"被规范推断为 1，
+// 也就是说 **码流里没有这一位**，长期参考项的 poc_lsb 也不出现在 RPL 里。
+// 照 SPS 的分支去读会多吃一位，后面整体错位 —— 而 QP 可能仍在合法范围内。
+TEST(VvcSliceHeaderTests, InlineRplWithLongTermRefInfersLtrpInHeader) {
+    VvcSpsInfo sps = MakeSps();
+    sps.sps_long_term_ref_pics_flag = true;
+
+    const VvcPpsInfo pps = MakePps();
+    const int poc_bits = sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4;
+
+    BitWriter w;
+    w.Bit(0);
+    w.Ue(2); // I
+    // list 0 内联：3 项，长期 / 短期 / 长期**交错**。
+    //
+    // ❗ 交错是必须的。只有 1 个长期项时这个用例判别不了 ltrp_in_header 的推断：
+    //    "项循环少读 7 位 poc_lsb_lt" 与 "ltrp 段多读 7 位" 位数相同、位置相邻，
+    //    读者落点一模一样 —— 那时把推断值改成 false 也测不出差异（实测判绿）。
+    //    3 项里两个长期项被一个短期项隔开，poc_lsb_lt 的位置就与短期项字段
+    //    咬合在一起，推断错一位立即整体错位。
+    w.Ue(3);  // num_ref_entries
+    w.Bit(0); // [0] st_ref_pic_flag = 0（长期）
+    w.Bit(1); // [1] st_ref_pic_flag = 1（短期）
+    w.Ue(0);  // [1] abs_delta_poc_minus1 = 0
+    w.Bit(0); // [1] strp_entry_sign_flag（abs_delta_poc_st = 1 > 0 才有这一位）
+    w.Bit(0); // [2] st_ref_pic_flag = 0（长期）
+    // ❗ 内联位置 ltrp_in_header 恒为 1 ⇒ 项循环里**没有** rpls_poc_lsb_lt
+    // ltrp 段：num_ltrp_entries = 2
+    w.Bits(7, poc_bits); // [0] poc_lsb_lt
+    w.Bit(0);            // [0] delta_poc_msb_cycle_present_flag = 0
+    w.Bits(5, poc_bits); // [1] poc_lsb_lt
+    w.Bit(0);            // [1] delta_poc_msb_cycle_present_flag = 0
+    // list 1 内联：空
+    w.Ue(0);
+    w.Se(1);
+
+    const VvcSliceHeaderInfo info = Parse(w.Bytes(), kTrail, MakePh(), sps, pps);
+    ASSERT_TRUE(info.parsed);
+    ASSERT_TRUE(info.has_qp) << info.stop_reason;
+    EXPECT_EQ(info.qp, 26 + 4 + 1);
+}
+
+TEST(VvcSliceHeaderTests,
+     TemporalMvpBlocksNonIntraQp) { // sh_collocated_* 段是否存在取决于 PH 的 ph_temporal_mvp_enabled_flag，
+    // 而 PH 不在这里解析 —— 只能拒绝，并且说清楚是这个原因。
+    VvcSpsInfo sps = MakeSps();
+    sps.sps_temporal_mvp_enabled_flag = true;
+    const VvcPpsInfo pps = MakePps();
+
+    BitWriter w;
+    w.Bit(0);
+    w.Ue(1); // P
+    w.Ue(0); // list 0 内联
+    w.Ue(0); // list 1 内联
+    w.Se(0);
+
+    const VvcSliceHeaderInfo info = Parse(w.Bytes(), kTrail, MakePh(), sps, pps);
+    ASSERT_TRUE(info.parsed);
+    EXPECT_FALSE(info.has_qp);
+    EXPECT_NE(info.stop_reason.find("temporal MVP"), std::string::npos) << info.stop_reason;
 }
 
 TEST(VvcSliceHeaderTests, QpDeltaInPictureHeaderIsRejected) {
@@ -486,18 +653,25 @@ TEST(VvcSliceHeaderTests, ExplicitScalingListBlocksQp) {
 }
 
 // IDR + SPS 声明携带 RPL ⇒ ref_pic_lists() 就在 slice 里，QP 不给。
-TEST(VvcSliceHeaderTests, IdrWithRplPresentInSpsBlocksQp) {
+TEST(VvcSliceHeaderTests, IdrWithRplPresentInSpsYieldsQp) {
+    // IDR 一般不带 RPL，但 sps_idr_rpl_present_flag=1 时带 —— 这条路径以前是
+    // "一律拒绝"，现在能精确跳过两条内联 RPL 并给出 QP。
     VvcSpsInfo sps = MakeSps();
     sps.sps_idr_rpl_present_flag = true;
     const VvcPpsInfo pps = MakePps();
 
     BitWriter w;
     w.Bit(0);
-    w.Ue(2);
+    w.Ue(2);  // I
+    w.Bit(0); // sh_no_output_of_prior_pics_flag（IDR 才有）
+    w.Ue(0);  // list 0 内联
+    w.Ue(0);  // list 1 内联
+    w.Se(3);
+
     const VvcSliceHeaderInfo info = Parse(w.Bytes(), kIdrWRadl, MakePh(), sps, pps);
     ASSERT_TRUE(info.parsed);
-    EXPECT_FALSE(info.has_qp);
-    EXPECT_NE(info.stop_reason.find("ref_pic_lists"), std::string::npos) << info.stop_reason;
+    ASSERT_TRUE(info.has_qp) << info.stop_reason;
+    EXPECT_EQ(info.qp, 26 + 4 + 3);
 }
 
 // --------------------------------------------------------------------------

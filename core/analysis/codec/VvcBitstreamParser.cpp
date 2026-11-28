@@ -2,15 +2,11 @@
 
 #include <algorithm>
 
+#include "core/analysis/codec/VvcNalTypes.h"
 #include "core/media/codec/BitReader.h"
 
 namespace videoeye {
 namespace {
-
-// H.266 7.3.1.3（Table 5）：VPS / SPS / PPS 的 NAL unit type
-constexpr int kVvcNutVps = 14;
-constexpr int kVvcNutSps = 15;
-constexpr int kVvcNutPps = 16;
 
 int SubWidthC(int chroma_format_idc) {
     return (chroma_format_idc == 1 || chroma_format_idc == 2) ? 2 : 1;
@@ -475,7 +471,11 @@ void VvcBitstreamParser::SkipOlsTimingHrdParameters(videoeye::BitReader& reader,
 }
 
 void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int poc_lsb_bits, bool long_term_ref_pics,
-                                              bool inter_layer_prediction, bool weighted_pred) {
+                                              bool inter_layer_prediction, bool weighted_pred,
+                                              model::VvcRefPicListStruct* record) {
+    if (record != nullptr)
+        *record = model::VvcRefPicListStruct();
+
     // 每条参考项至少读 1 bit（inter_layer_ref_pic_flag 或 st_ref_pic_flag），
     // 不封顶就是一个 ue(v) 撑起几十亿次循环。
     //
@@ -492,16 +492,31 @@ void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int p
         ltrp_in_header = reader.ReadBit();
     }
 
+    // 只记规范上限以内的项。超限说明码流畸形：SPS 的其他字段仍然可用，
+    // 但这张 RPL 表不可信 —— record->recorded 保持 false，slice 侧据此拒绝 QP。
+    const bool can_record =
+        record != nullptr && num_ref_entries <= static_cast<uint32_t>(model::kMaxRecordedRefEntries);
+    if (can_record) {
+        record->num_ref_entries = static_cast<int>(num_ref_entries);
+        record->ltrp_in_header_flag = ltrp_in_header;
+        record->inter_layer_ref_pic_flag.assign(num_ref_entries, 0);
+        record->st_ref_pic_flag.assign(num_ref_entries, 0);
+    }
+
     for (uint32_t i = 0; i < num_ref_entries; ++i) {
         bool inter_layer_ref_pic = false;
         if (inter_layer_prediction) {
             inter_layer_ref_pic = reader.ReadBit();
         }
+        if (can_record)
+            record->inter_layer_ref_pic_flag[i] = inter_layer_ref_pic ? 1 : 0;
         if (!inter_layer_ref_pic) {
             bool st_ref_pic = true;
             if (long_term_ref_pics) {
                 st_ref_pic = reader.ReadBit();
             }
+            if (can_record)
+                record->st_ref_pic_flag[i] = st_ref_pic ? 1 : 0;
             if (st_ref_pic) {
                 const uint32_t abs_delta_poc_minus1 = reader.ReadUE();
                 // H.266 7.3.8.6：只有当加权预测开启且 i > 0 时 abs_delta_poc_st 才直接
@@ -519,6 +534,9 @@ void VvcBitstreamParser::SkipRefPicListStruct(videoeye::BitReader& reader, int p
             reader.ReadUE(); // ilrp_idx[i]（多层才可能出现）
         }
     }
+
+    if (can_record)
+        record->recorded = !reader.HasError();
 }
 
 // --------------------------------------------------------------------------
@@ -940,7 +958,12 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
     sps.sps_idr_rpl_present_flag = reader.ReadBit();
     const bool rpl1_same_as_rpl0 = reader.ReadBit();
 
-    for (int i = 0; i < (rpl1_same_as_rpl0 ? 1 : 2); ++i) {
+    // RPL 结构要**记下来**，不能只跳过：slice 侧 ref_pic_lists() 在
+    // rpl_sps_flag==1 时要用它的 num_ref_entries 与每项的长/短期属性算
+    // num_ltrp_entries，否则 sh_qp_delta 定位不到（P/B slice 永远没有 QP）。
+    sps.rpl_recorded = true;
+    const int rpl_list_count = rpl1_same_as_rpl0 ? 1 : 2;
+    for (int i = 0; i < rpl_list_count; ++i) {
         sps.sps_num_ref_pic_lists[i] = static_cast<int>(reader.ReadUE());
         // 双重循环：list 数 × 每条里的参考项数（后者在 SkipRefPicListStruct 里也封了顶），
         // 外层的这个 ue(v) 同样要夹住
@@ -950,12 +973,21 @@ model::VvcSpsInfo VvcBitstreamParser::ParseSpsFromNalUnit(const videoeye::NalUni
         for (int j = 0; j < sps.sps_num_ref_pic_lists[i]; ++j) {
             SkipRefPicListStruct(reader, sps.sps_log2_max_pic_order_cnt_lsb_minus4 + 4, sps.sps_long_term_ref_pics_flag,
                                  sps.sps_inter_layer_prediction_enabled_flag,
-                                 sps.sps_weighted_pred_flag || sps.sps_weighted_bipred_flag);
+                                 sps.sps_weighted_pred_flag || sps.sps_weighted_bipred_flag,
+                                 &sps.sps_ref_pic_lists[i][j]);
+            if (!sps.sps_ref_pic_lists[i][j].recorded)
+                sps.rpl_recorded = false;
         }
     }
     if (rpl1_same_as_rpl0) {
         sps.sps_num_ref_pic_lists[1] = sps.sps_num_ref_pic_lists[0];
+        // rpl1_same_as_rpl0 时 list 1 的条目就是 list 0 的副本（规范 7.4.3.4），
+        // swap 指针不可行（定长数组），逐条拷一遍把"list 1 也能用"这件事落实。
+        for (int j = 0; j < sps.sps_num_ref_pic_lists[0] && j < model::kMaxVvcRefPicLists; ++j)
+            sps.sps_ref_pic_lists[1][j] = sps.sps_ref_pic_lists[0][j];
     }
+    if (reader.HasError())
+        sps.rpl_recorded = false;
 
     reader.SkipBits(1); // sps_ref_wraparound_enabled_flag
     sps.sps_temporal_mvp_enabled_flag = reader.ReadBit();
